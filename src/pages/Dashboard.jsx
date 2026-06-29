@@ -82,17 +82,17 @@ export default function Dashboard(props) {
 
   return (
     <div style={{textTransform:'uppercase'}}>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-6">
+        <h1 className="text-lg md:text-xl font-bold">
           {props.projectName || 'MINIMATE'}
-          <span className="text-dgray font-normal text-sm ml-2">{props.projectSub || ''}</span>
+          <span className="text-dgray font-normal text-xs md:text-sm ml-2">{props.projectSub || ''}</span>
         </h1>
-        <button className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 transition">
+        <button className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 transition w-fit">
           EXPORT REPORT
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 gap-3 mb-6">
         <StatCard label="DDC PANELS" value={stats.totalPanels} color="text-cyan" sub={stats.completedPanels + ' COMPLETED'} />
         <StatCard label="IO POINTS" value={stats.totalPoints} color="text-cyan" sub={stats.pointsFuncTest + ' FUNC TESTED'} />
         <StatCard label="IO PROGRESS" value={ioPct + '%'} color={ioPct >= 80 ? 'text-green' : ioPct >= 40 ? 'text-orange' : 'text-red'} sub="FUNCTIONAL TEST" />
@@ -101,7 +101,7 @@ export default function Dashboard(props) {
 
       <div className="bg-card rounded-xl p-4 border border-border mb-4">
         <h3 className="text-sm font-semibold mb-3">IO COMMISSIONING PIPELINE</h3>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
           {pipelineStages.map(function(s, i) {
             var pct = stats.totalPoints > 0 ? Math.round(s.val / stats.totalPoints * 100) : 0
             return (

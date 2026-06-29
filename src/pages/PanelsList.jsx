@@ -68,7 +68,7 @@ export default function PanelsList(props) {
 
   return (
     <div style={{textTransform:'uppercase'}}>
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-5">
         <h1 className="text-xl font-bold">
           DDC PANELS
           <span className="text-dgray font-normal text-sm ml-2">{panels.length} PANELS</span>
@@ -79,11 +79,11 @@ export default function PanelsList(props) {
           value={search}
           onChange={function(e) { setSearch(e.target.value) }}
           style={{textTransform:'uppercase'}}
-          className="bg-card2 border border-border rounded-md px-3 py-1.5 text-xs text-white placeholder:text-dgray outline-none focus:border-teal w-48"
+          className="bg-card2 border border-border rounded-md px-3 py-1.5 text-xs text-white placeholder:text-dgray outline-none focus:border-teal w-full md:w-48"
         />
       </div>
 
-      <div className="flex gap-1 bg-card2 rounded-lg p-1 w-fit mb-5">
+      <div className="flex gap-1 bg-card2 rounded-lg p-1 w-fit mb-5 overflow-x-auto max-w-full">
         {filterTabs.map(function(tab) {
           var key = tab[0]
           var label = tab[1]

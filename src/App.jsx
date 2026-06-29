@@ -315,8 +315,8 @@ export default function App() {
     var dt = r.docType
 
     return (
-      <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-6" onClick={cancelImport}>
-        <div className="bg-card rounded-2xl border-2 border-orange p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={function(e){e.stopPropagation()}}>
+      <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-3 md:p-6" onClick={cancelImport}>
+        <div className="bg-card rounded-2xl border-2 border-orange p-4 md:p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={function(e){e.stopPropagation()}}>
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-bold uppercase text-orange">IMPORT PREVIEW</h3>
             <div className="flex items-center gap-2">
@@ -449,11 +449,11 @@ export default function App() {
   return (
     <div className="min-h-screen bg-navy text-white">
       <Sidebar projectName={projectName} onImportFile={handleImportFile} onSwitchProject={handleSwitchProject} isDemo={isDemo} />
-      {canUndo && (<button onClick={handleUndo} className="fixed top-3 right-4 z-50 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
+      {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
 
       {/* Save status indicator */}
       {!isDemo && saveStatus !== 'idle' && (
-        <div className={'fixed top-3 z-50 text-[10px] uppercase tracking-wider transition-opacity ' + (canUndo ? 'right-14' : 'right-4') + (saveStatus === 'error' ? ' text-red' : saveStatus === 'saving' ? ' text-dgray' : ' text-green')}>
+        <div className={'fixed top-14 md:top-3 z-40 text-[10px] uppercase tracking-wider transition-opacity ' + (canUndo ? 'right-14' : 'right-4') + (saveStatus === 'error' ? ' text-red' : saveStatus === 'saving' ? ' text-dgray' : ' text-green')}>
           {saveStatus === 'saving' ? 'SAVING...' : saveStatus === 'saved' ? 'SAVED ✓' : 'SAVE ERROR'}
         </div>
       )}
@@ -467,7 +467,7 @@ export default function App() {
         </div>
       )}
       {renderImportModal()}
-      <div className="ml-[220px] p-6">
+      <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
           <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} />} />

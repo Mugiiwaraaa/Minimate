@@ -172,21 +172,21 @@ export default function CommDevices(props){
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-5">
-        <h1 className="text-xl font-bold uppercase">FIELD DEVICES <span className="text-dgray font-normal text-sm ml-2">{totalDevices} DEVICES ACROSS {loops.length} LOOPS</span></h1>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-5">
+        <h1 className="text-lg md:text-xl font-bold uppercase">FIELD DEVICES <span className="text-dgray font-normal text-xs md:text-sm ml-2">{totalDevices} DEVICES / {loops.length} LOOPS</span></h1>
         <div className="flex gap-2">
-          <button onClick={function(){setView('loops');setExpanded(null)}} className={'px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='loops'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOOP VIEW</button>
-          <button onClick={function(){setView('location');setExpanded(null)}} className={'px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='location'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOCATION VIEW</button>
+          <button onClick={function(){setView('loops');setExpanded(null)}} className={'px-3 md:px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='loops'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOOP VIEW</button>
+          <button onClick={function(){setView('location');setExpanded(null)}} className={'px-3 md:px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='location'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOCATION VIEW</button>
         </div>
       </div>
-      <div className="grid grid-cols-4 gap-3 mb-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
         {[{l:'LOOPS',v:loops.length},{l:'TOTAL DEVICES',v:totalDevices},{l:'OVERALL PROGRESS',v:calcWeightedPct(allDevices)+'%',c:calcWeightedPct(allDevices)>=80?'text-green':calcWeightedPct(allDevices)>=40?'text-orange':'text-red'},{l:'INSTALLED',v:totalInstalled+'/'+totalDevices,c:totalInstalled===totalDevices&&totalDevices>0?'text-green':'text-cyan'}].map(function(s,i){
           return <div key={i} className="bg-card rounded-xl p-4 border border-border"><div className="text-[11px] text-dgray uppercase">{s.l}</div><div className={'text-2xl font-extrabold '+(s.c||'text-cyan')}>{s.v}</div></div>
         })}
       </div>
       <div className="bg-card rounded-xl p-4 border border-border mb-5">
         <div className="text-[10px] text-dgray mb-2 uppercase font-semibold">COMMISSIONING PIPELINE</div>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
           {loopStages.filter(function(s){return s!=='address_set'}).map(function(s){
             var cnt=stageCount(allDevices,s)
             var spct=totalDevices>0?Math.round(cnt/totalDevices*100):0
@@ -209,7 +209,7 @@ export default function CommDevices(props){
       <div className="flex justify-end mb-3"><button onClick={function(){setShowAdd(!showAdd)}} className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase">+ ADD LOOP</button></div>
       {showAdd&&(<div className="bg-card rounded-xl border border-teal p-4 mb-4">
         <h3 className="text-sm font-semibold mb-3 uppercase">NEW COMMUNICATION LOOP</h3>
-        <div className="grid grid-cols-6 gap-3 mb-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3">
           <div><label className="text-[10px] text-dgray block mb-1">FLOOR</label><input value={newLoop.floor} onChange={function(e){setNewLoop(Object.assign({},newLoop,{floor:e.target.value}))}} placeholder="GF" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
           <div><label className="text-[10px] text-dgray block mb-1">ZONE (OPT)</label><input value={newLoop.zone} onChange={function(e){setNewLoop(Object.assign({},newLoop,{zone:e.target.value}))}} placeholder="Z1" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
           <div><label className="text-[10px] text-dgray block mb-1">DDC REF</label><input value={newLoop.ddc_ref} onChange={function(e){setNewLoop(Object.assign({},newLoop,{ddc_ref:e.target.value}))}} placeholder="DDC-GF-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
@@ -219,7 +219,7 @@ export default function CommDevices(props){
         </div>
         <div className="flex gap-2"><button onClick={addLoop} className="px-4 py-1.5 bg-teal text-white text-xs font-semibold rounded hover:bg-teal/80 uppercase">CREATE LOOP</button><button onClick={function(){setShowAdd(false)}} className="px-4 py-1.5 bg-card2 text-dgray text-xs rounded hover:text-white uppercase">CANCEL</button></div>
       </div>)}
-      {loops.length>0&&(<div className="bg-card2 rounded-t-lg px-4 py-2 grid grid-cols-12 gap-2 text-[9px] text-dgray uppercase font-semibold border border-border/50 border-b-0">
+      {loops.length>0&&(<div className="hidden md:grid bg-card2 rounded-t-lg px-4 py-2 grid-cols-12 gap-2 text-[9px] text-dgray uppercase font-semibold border border-border/50 border-b-0">
         <div className="col-span-1">FLOOR</div><div className="col-span-1">ZONE</div><div className="col-span-2">DDC REF</div><div className="col-span-2">GATEWAY</div><div className="col-span-2">LOOP NAME</div><div className="col-span-1">PROTOCOL</div><div className="col-span-1 text-center">DEVICES</div><div className="col-span-2 text-right">PROGRESS</div>
       </div>)}
       {loops.map(function(loop,li){
@@ -227,15 +227,15 @@ export default function CommDevices(props){
         var pct=calcWeightedPct(loop.devices),isDT=dragDev&&dragDev.type==='loop'&&dragDev.fromLoopId!==loop.id
         return (<div key={loop.id} className={'bg-card border border-border/50 overflow-hidden transition '+(isDT?'border-cyan border-2':'')+(li===loops.length-1?' rounded-b-lg':'')}
           onDragOver={function(e){if(dragDev&&dragDev.type==='loop')e.preventDefault()}} onDrop={function(){if(dragDev&&dragDev.type==='loop')dropOnLoop(loop.id)}}>
-          <div className="px-4 py-2.5 grid grid-cols-12 gap-2 items-center cursor-pointer hover:bg-card2/50" onClick={function(){setExpanded(isExp?null:loop.id)}}>
-            <div className="col-span-1 text-[11px] font-bold text-orange">{loop.floor||'-'}</div>
-            <div className="col-span-1 text-[11px] text-orange">{loop.zone||'-'}</div>
-            <div className="col-span-2 text-[11px] text-cyan font-medium">{loop.ddc_ref||'-'}</div>
-            <div className="col-span-2 text-[11px] text-cyan">{loop.gateway||'-'}</div>
-            <div className="col-span-2 text-sm font-bold uppercase">{loop.name}</div>
-            <div className="col-span-1"><span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{loop.protocol}</span></div>
-            <div className="col-span-1 text-center text-[11px] text-dgray">{dc}</div>
-            <div className="col-span-2 flex items-center justify-end gap-2">
+          <div className="px-4 py-2.5 flex flex-wrap md:grid md:grid-cols-12 gap-2 items-center cursor-pointer hover:bg-card2/50" onClick={function(){setExpanded(isExp?null:loop.id)}}>
+            <div className="hidden md:block md:col-span-1 text-[11px] font-bold text-orange">{loop.floor||'-'}</div>
+            <div className="hidden md:block md:col-span-1 text-[11px] text-orange">{loop.zone||'-'}</div>
+            <div className="hidden md:block md:col-span-2 text-[11px] text-cyan font-medium">{loop.ddc_ref||'-'}</div>
+            <div className="hidden md:block md:col-span-2 text-[11px] text-cyan">{loop.gateway||'-'}</div>
+            <div className="flex-1 md:flex-none md:col-span-2 text-sm font-bold uppercase">{loop.name}</div>
+            <div className="md:col-span-1"><span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{loop.protocol}</span></div>
+            <div className="md:col-span-1 text-center text-[11px] text-dgray">{dc} DEV</div>
+            <div className="md:col-span-2 flex items-center justify-end gap-2">
               <div className="w-16 h-1.5 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(pct>=100?'bg-green':pct>=50?'bg-teal':pct>0?'bg-orange':'bg-red')} style={{width:pct+'%'}}/></div>
               <span className="text-[10px] text-dgray w-8 text-right">{pct}%</span>
               <button onClick={function(e){e.stopPropagation();deleteLoop(loop.id)}} className="text-[10px] text-red/40 hover:text-red ml-1">X</button>
@@ -250,7 +250,7 @@ export default function CommDevices(props){
               <div className="flex items-center gap-1"><span className="text-dgray">PROTOCOL:</span><select value={loop.protocol} onChange={function(e){handleLoopField(loop.id,'protocol',e.target.value)}} className="bg-transparent text-[11px] text-purple outline-none cursor-pointer uppercase">{protocols.map(function(p){return <option key={p} value={p}>{p}</option>})}</select></div>
             </div>
             {addDevTo===loop.id?(<div className="bg-card2 rounded-lg p-3 mb-3 border border-border">
-              <div className="grid grid-cols-5 gap-2 mb-2">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
                 <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">EQUIP TAG</label><input value={newDev.tag} onChange={function(e){setNewDev(Object.assign({},newDev,{tag:e.target.value}))}} placeholder="FCU-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ROOM</label><input value={newDev.room_name} onChange={function(e){setNewDev(Object.assign({},newDev,{room_name:e.target.value}))}} placeholder="ROOM 101" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
@@ -339,7 +339,7 @@ export default function CommDevices(props){
           {isExp&&(<div className="px-4 py-3">
             {addDevArea===area.id?(<div className="bg-card2 rounded-lg p-3 mb-3 border border-border">
               <div className="text-[9px] text-dgray mb-1 uppercase">NEW DEVICE (ADDED TO UNASSIGNED LOOP - MOVE TO PROPER LOOP LATER)</div>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
                 <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">EQUIP TAG</label><input value={newDev.tag} onChange={function(e){setNewDev(Object.assign({},newDev,{tag:e.target.value}))}} placeholder="FCU-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ROOM</label><input value={newDev.room_name} onChange={function(e){setNewDev(Object.assign({},newDev,{room_name:e.target.value}))}} placeholder="ROOM 101" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>

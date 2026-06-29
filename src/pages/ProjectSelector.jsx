@@ -100,10 +100,10 @@ export default function ProjectSelector(props) {
   }
 
   return (
-    <div className="min-h-screen bg-navy flex items-center justify-center p-6" style={{textTransform:'uppercase'}}>
+    <div className="min-h-screen bg-navy flex items-center justify-center p-4 md:p-6" style={{textTransform:'uppercase'}}>
       <div className="max-w-3xl w-full">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-black mb-1">
+        <div className="text-center mb-6 md:mb-8">
+          <h1 className="text-2xl md:text-3xl font-black mb-1">
             <span className="text-white">MINI</span><span className="text-teal">MATE</span>
           </h1>
           <p className="text-dgray text-sm">SELECT A PROJECT OR CREATE A NEW ONE</p>

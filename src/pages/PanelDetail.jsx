@@ -195,7 +195,7 @@ export default function PanelDetail(props) {
   function renderIOView() {
     return (
       <div>
-        <div className="grid grid-cols-5 gap-2 mb-5">
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2 mb-5">
           {stages.map(function(s) {
             var done = activePoints.filter(function(p) { return p[s] }).length
             var total = activePoints.length
@@ -544,13 +544,13 @@ export default function PanelDetail(props) {
   return (
     <div style={{textTransform:'uppercase'}}>
       <div className="flex items-center gap-3 mb-5">
-        <Link to="/panels" className="text-dgray hover:text-white text-sm">BACK TO PANELS</Link>
+        <Link to="/panels" className="text-dgray hover:text-white text-sm">BACK</Link>
         <span className="text-dgray">/</span>
-        <h1 className="text-xl font-bold">{panel.name}</h1>
+        <h1 className="text-lg md:text-xl font-bold">{panel.name}</h1>
       </div>
-      <div className="text-xs text-dgray mb-4">
-        {panel.location}
-        <span className="ml-3">ACTIVE IO: <strong className="text-cyan">{activePoints.length}</strong> POINTS ACROSS {equipment.length} EQUIPMENT GROUPS</span>
+      <div className="text-xs text-dgray mb-4 flex flex-wrap gap-x-3 gap-y-1">
+        <span>{panel.location}</span>
+        <span>ACTIVE IO: <strong className="text-cyan">{activePoints.length}</strong> POINTS / {equipment.length} GROUPS</span>
         {allPoints.length !== activePoints.length && (
           <span className="ml-2 text-orange">({allPoints.length - activePoints.length} EXCLUDED)</span>
         )}
