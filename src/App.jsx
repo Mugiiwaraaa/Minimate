@@ -49,6 +49,9 @@ export default function App() {
   var ipState = useState(null)
   var importPreview = ipState[0]
   var setImportPreview = ipState[1]
+  var exclState = useState({})
+  var importExclusions = exclState[0]
+  var setImportExclusions = exclState[1]
   var ipLoading = useState(false)
   var importLoading = ipLoading[0]
   var setImportLoading = ipLoading[1]
@@ -214,6 +217,21 @@ export default function App() {
     })
   }, [])
 
+  function handleDeletePanel(panelId) {
+    pushUndo()
+    setPanels(function(prev) { return prev.filter(function(p) { return p.id !== panelId }) })
+    setEquipmentMap(function(prev) {
+      var next = Object.assign({}, prev)
+      delete next[panelId]
+      return next
+    })
+    setTerminationMap(function(prev) {
+      var next = Object.assign({}, prev)
+      delete next[panelId]
+      return next
+    })
+  }
+
   // ─── Smart Parser Import Handler ────────────────────────
   function handleImportFile(e) {
     var file = e.target.files[0]
@@ -226,6 +244,7 @@ export default function App() {
     }
     smartParse(file, context, function(result) {
       setImportLoading(false)
+      setImportExclusions({})
       setImportPreview(result)
     })
     e.target.value = ''
@@ -236,54 +255,109 @@ export default function App() {
     pushUndo()
 
     var dt = importPreview.docType
+    var excl = importExclusions
+
+    // Filter helper: create filtered copy of import data based on exclusions
+    function filterPanels(panelList) {
+      if (!panelList) return []
+      return panelList.filter(function(p) { return !excl['panel:' + p.id] })
+    }
+    function filterEquipMap(eqMap) {
+      if (!eqMap) return {}
+      var filtered = {}
+      Object.keys(eqMap).forEach(function(pid) {
+        if (!excl['panel:' + pid]) filtered[pid] = eqMap[pid]
+      })
+      return filtered
+    }
+    function filterDevices(devList) {
+      if (!devList) return []
+      return devList.filter(function(d) { return !excl['device:' + d.id] })
+    }
+    function filterAreas(areaList, filteredDevIds) {
+      if (!areaList) return []
+      return areaList.map(function(a) {
+        return Object.assign({}, a, { device_ids: a.device_ids.filter(function(did) { return filteredDevIds.indexOf(did) >= 0 }) })
+      }).filter(function(a) { return a.device_ids.length > 0 })
+    }
 
     if (dt === DOC_TYPES.FCU_SCHEDULE || dt === DOC_TYPES.VAV_SCHEDULE) {
-      var ul = loops.find(function(l) { return l.id === 'loop-unassigned' })
-      var newLoops = loops.slice()
-      if (!ul) {
-        ul = {id:'loop-unassigned', name:'UNASSIGNED', protocol:'MODBUS RTU', gateway:'', ddc_ref:'', floor:'', zone:'', devices:[]}
-        newLoops.push(ul)
+      var filtDevs = filterDevices(importPreview.devices)
+      var filtDevIds = filtDevs.map(function(d) { return d.id })
+      var filtAreas = filterAreas(importPreview.areas, filtDevIds)
+      if (filtDevs.length > 0) {
+        var ul = loops.find(function(l) { return l.id === 'loop-unassigned' })
+        var newLoops = loops.slice()
+        if (!ul) {
+          ul = {id:'loop-unassigned', name:'UNASSIGNED', protocol:'MODBUS RTU', gateway:'', ddc_ref:'', floor:'', zone:'', devices:[]}
+          newLoops.push(ul)
+        }
+        newLoops = newLoops.map(function(l) {
+          if (l.id !== 'loop-unassigned') return l
+          return Object.assign({}, l, {devices: l.devices.concat(filtDevs)})
+        })
+        setLoops(newLoops)
+        setAreaGroups(areaGroups.concat(filtAreas))
       }
-      newLoops = newLoops.map(function(l) {
-        if (l.id !== 'loop-unassigned') return l
-        return Object.assign({}, l, {devices: l.devices.concat(importPreview.devices)})
-      })
-      setLoops(newLoops)
-      setAreaGroups(areaGroups.concat(importPreview.areas))
     }
 
     if (dt === DOC_TYPES.IO_LIST) {
-      if (importPreview.panels && importPreview.panels.length > 0) {
-        setPanels(panels.concat(importPreview.panels))
+      var filtPanels = filterPanels(importPreview.panels)
+      if (filtPanels.length > 0) {
+        setPanels(panels.concat(filtPanels))
       }
-      if (importPreview.equipMap) {
+      var filtEq = filterEquipMap(importPreview.equipMap)
+      if (Object.keys(filtEq).length > 0) {
         var newEq = Object.assign({}, equipmentMap)
-        Object.keys(importPreview.equipMap).forEach(function(pid) {
-          newEq[pid] = importPreview.equipMap[pid]
+        Object.keys(filtEq).forEach(function(pid) {
+          newEq[pid] = filtEq[pid]
         })
         setEquipmentMap(newEq)
       }
     }
 
     if (dt === DOC_TYPES.DDC_TERMINATION) {
-      applyPanelData(importPreview)
+      // Filter panel updates and termination data
+      var filtImport = Object.assign({}, importPreview)
+      filtImport.newPanels = filterPanels(importPreview.newPanels)
+      filtImport.panelUpdates = (importPreview.panelUpdates || []).filter(function(u) { return !excl['panel:' + u.panelId] })
+      if (importPreview.terminationData) {
+        filtImport.terminationData = {}
+        Object.keys(importPreview.terminationData).forEach(function(pid) {
+          if (!excl['panel:' + pid]) filtImport.terminationData[pid] = importPreview.terminationData[pid]
+        })
+      }
+      applyPanelData(filtImport)
     }
 
     if (dt === DOC_TYPES.COMBINED) {
-      // Apply panel data (new panels + updates + termination)
-      applyPanelData(importPreview)
+      // Apply filtered panel data
+      var filtCombined = Object.assign({}, importPreview)
+      filtCombined.newPanels = filterPanels(importPreview.newPanels)
+      filtCombined.panelUpdates = (importPreview.panelUpdates || []).filter(function(u) { return !excl['panel:' + u.panelId] })
+      if (importPreview.terminationData) {
+        filtCombined.terminationData = {}
+        Object.keys(importPreview.terminationData).forEach(function(pid) {
+          if (!excl['panel:' + pid]) filtCombined.terminationData[pid] = importPreview.terminationData[pid]
+        })
+      }
+      applyPanelData(filtCombined)
 
-      // Apply IO list data
-      if (importPreview.equipMap && Object.keys(importPreview.equipMap).length > 0) {
+      // Apply filtered IO list data
+      var filtEq2 = filterEquipMap(importPreview.equipMap)
+      if (Object.keys(filtEq2).length > 0) {
         var newEq2 = Object.assign({}, equipmentMap)
-        Object.keys(importPreview.equipMap).forEach(function(pid) {
-          newEq2[pid] = importPreview.equipMap[pid]
+        Object.keys(filtEq2).forEach(function(pid) {
+          newEq2[pid] = filtEq2[pid]
         })
         setEquipmentMap(newEq2)
       }
 
-      // Apply field device data
-      if (importPreview.devices && importPreview.devices.length > 0) {
+      // Apply filtered field device data
+      var filtDevs2 = filterDevices(importPreview.devices)
+      if (filtDevs2.length > 0) {
+        var filtDevIds2 = filtDevs2.map(function(d) { return d.id })
+        var filtAreas2 = filterAreas(importPreview.areas, filtDevIds2)
         var ul2 = loops.find(function(l) { return l.id === 'loop-unassigned' })
         var newLoops2 = loops.slice()
         if (!ul2) {
@@ -292,16 +366,17 @@ export default function App() {
         }
         newLoops2 = newLoops2.map(function(l) {
           if (l.id !== 'loop-unassigned') return l
-          return Object.assign({}, l, {devices: l.devices.concat(importPreview.devices)})
+          return Object.assign({}, l, {devices: l.devices.concat(filtDevs2)})
         })
         setLoops(newLoops2)
-        if (importPreview.areas) {
-          setAreaGroups(areaGroups.concat(importPreview.areas))
+        if (filtAreas2.length > 0) {
+          setAreaGroups(areaGroups.concat(filtAreas2))
         }
       }
     }
 
     setImportPreview(null)
+    setImportExclusions({})
   }
 
   // Helper: apply panel schedule / termination data from import result
@@ -345,6 +420,15 @@ export default function App() {
 
   function cancelImport() {
     setImportPreview(null)
+    setImportExclusions({})
+  }
+
+  function toggleExclude(key) {
+    setImportExclusions(function(prev) {
+      var next = Object.assign({}, prev)
+      if (next[key]) { delete next[key] } else { next[key] = true }
+      return next
+    })
   }
 
   // ─── Import Preview Modal Renderer ──────────────────────
@@ -374,26 +458,39 @@ export default function App() {
 
           {(dt === DOC_TYPES.FCU_SCHEDULE || dt === DOC_TYPES.VAV_SCHEDULE) && (
             <div>
-              <div className="grid grid-cols-4 gap-3 mb-4">
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL DEVICES</div><div className="text-2xl font-extrabold text-cyan">{r.devices.length}</div></div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL DEVICES</div><div className="text-2xl font-extrabold text-cyan">{r.devices.filter(function(d){return !importExclusions['device:'+d.id]}).length}</div></div>
                 <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">AREA GROUPS</div><div className="text-2xl font-extrabold text-cyan">{r.areas.length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">COMM CABLE DONE</div><div className="text-2xl font-extrabold text-green">{r.devices.filter(function(d){return d.comm_cable}).length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERMINATION DONE</div><div className="text-2xl font-extrabold text-green">{r.devices.filter(function(d){return d.termination}).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">COMM CABLE DONE</div><div className="text-2xl font-extrabold text-green">{r.devices.filter(function(d){return d.comm_cable && !importExclusions['device:'+d.id]}).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EXCLUDED</div><div className="text-2xl font-extrabold text-orange">{r.devices.filter(function(d){return importExclusions['device:'+d.id]}).length}</div></div>
               </div>
-              <div className="max-h-40 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
-                <table className="w-full text-[10px]"><thead><tr className="border-b border-border/50 text-dgray"><th className="text-left py-1 px-2">AREA</th><th className="text-center py-1 px-2">DEVICES</th></tr></thead><tbody>
-                {r.areas.map(function(a){return <tr key={a.id} className="border-b border-border/20"><td className="py-1 px-2 text-white uppercase">{a.name}</td><td className="text-center py-1 px-2 text-cyan">{a.device_ids.length}</td></tr>})}
-                </tbody></table>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] text-dgray uppercase">CLICK DEVICES TO INCLUDE/EXCLUDE</div>
+                <div className="flex gap-2">
+                  <button onClick={function(){var ex={};r.devices.forEach(function(d){ex['device:'+d.id]=true});setImportExclusions(Object.assign({},importExclusions,ex))}} className="text-[9px] text-orange hover:text-white transition">DESELECT ALL</button>
+                  <button onClick={function(){var ex=Object.assign({},importExclusions);r.devices.forEach(function(d){delete ex['device:'+d.id]});setImportExclusions(ex)}} className="text-[9px] text-teal hover:text-white transition">SELECT ALL</button>
+                </div>
+              </div>
+              <div className="max-h-48 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
+                {r.devices.map(function(d){
+                  var excluded = importExclusions['device:'+d.id]
+                  return <button key={d.id} onClick={function(){toggleExclude('device:'+d.id)}} className={'text-left px-2 py-1 rounded text-[10px] transition ' + (excluded ? 'bg-red/10 text-dgray line-through opacity-50' : 'bg-teal/10 text-white')}>
+                    {d.tag || d.id}
+                  </button>
+                })}
+                </div>
               </div>
             </div>
           )}
 
           {dt === DOC_TYPES.IO_LIST && (
             <div>
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">{r.updated.length > 0 ? 'NEW PANELS' : 'PANELS'}</div><div className="text-2xl font-extrabold text-cyan">{r.panels.length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EQUIPMENT GROUPS</div><div className="text-2xl font-extrabold text-cyan">{r.totalEquipment}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL IO POINTS</div><div className="text-2xl font-extrabold text-cyan">{r.totalPoints}</div></div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">{r.updated.length > 0 ? 'NEW PANELS' : 'PANELS'}</div><div className="text-2xl font-extrabold text-cyan">{Object.keys(r.equipMap).filter(function(pid){return !importExclusions['panel:'+pid]}).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EQUIPMENT</div><div className="text-2xl font-extrabold text-cyan">{Object.keys(r.equipMap).filter(function(pid){return !importExclusions['panel:'+pid]}).reduce(function(s,pid){return s+r.equipMap[pid].length},0)}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">IO POINTS</div><div className="text-2xl font-extrabold text-cyan">{Object.keys(r.equipMap).filter(function(pid){return !importExclusions['panel:'+pid]}).reduce(function(s,pid){var c=0;r.equipMap[pid].forEach(function(eq){eq.points.forEach(function(pt){c+=pt.qty})});return s+c},0)}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EXCLUDED</div><div className="text-2xl font-extrabold text-orange">{Object.keys(r.equipMap).filter(function(pid){return importExclusions['panel:'+pid]}).length}</div></div>
               </div>
               {r.updated.length > 0 && (
                 <div className="bg-orange/10 border border-orange/30 rounded-lg p-3 mb-4">
@@ -401,15 +498,28 @@ export default function App() {
                   <div className="text-[10px] text-dgray uppercase">{r.updated.join(', ')}</div>
                 </div>
               )}
-              <div className="max-h-40 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
-                <table className="w-full text-[10px]"><thead><tr className="border-b border-border/50 text-dgray"><th className="text-left py-1 px-2">PANEL</th><th className="text-center py-1 px-2">EQUIPMENT</th><th className="text-center py-1 px-2">POINTS</th></tr></thead><tbody>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] text-dgray uppercase">CLICK PANELS TO INCLUDE/EXCLUDE</div>
+                <div className="flex gap-2">
+                  <button onClick={function(){var ex={};Object.keys(r.equipMap).forEach(function(pid){ex['panel:'+pid]=true});setImportExclusions(Object.assign({},importExclusions,ex))}} className="text-[9px] text-orange hover:text-white transition">DESELECT ALL</button>
+                  <button onClick={function(){var ex=Object.assign({},importExclusions);Object.keys(r.equipMap).forEach(function(pid){delete ex['panel:'+pid]});setImportExclusions(ex)}} className="text-[9px] text-teal hover:text-white transition">SELECT ALL</button>
+                </div>
+              </div>
+              <div className="max-h-48 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
+                <table className="w-full text-[10px]"><thead><tr className="border-b border-border/50 text-dgray"><th className="w-6"></th><th className="text-left py-1 px-2">PANEL</th><th className="text-center py-1 px-2">EQUIPMENT</th><th className="text-center py-1 px-2">POINTS</th></tr></thead><tbody>
                 {Object.keys(r.equipMap).map(function(pid){
                   var eqs = r.equipMap[pid]
                   var pName = ''
                   r.panels.forEach(function(p){if(p.id===pid)pName=p.name})
                   if(!pName) panels.forEach(function(p){if(p.id===pid)pName=p.name})
                   var ptCount = 0; eqs.forEach(function(eq){eq.points.forEach(function(pt){ptCount+=pt.qty})})
-                  return <tr key={pid} className="border-b border-border/20"><td className="py-1 px-2 text-white uppercase">{pName||pid}</td><td className="text-center py-1 px-2 text-cyan">{eqs.length}</td><td className="text-center py-1 px-2 text-cyan">{ptCount}</td></tr>
+                  var excluded = importExclusions['panel:'+pid]
+                  return <tr key={pid} onClick={function(){toggleExclude('panel:'+pid)}} className={'border-b border-border/20 cursor-pointer transition ' + (excluded ? 'opacity-40' : 'hover:bg-teal/5')}>
+                    <td className="py-1 px-1 text-center"><span className={'inline-block w-3 h-3 rounded border ' + (excluded ? 'border-dgray bg-transparent' : 'border-teal bg-teal')} style={{lineHeight:'12px',fontSize:'8px',color:'white'}}>{excluded ? '' : '✓'}</span></td>
+                    <td className={'py-1 px-2 uppercase ' + (excluded ? 'text-dgray line-through' : 'text-white')}>{pName||pid}</td>
+                    <td className="text-center py-1 px-2 text-cyan">{eqs.length}</td>
+                    <td className="text-center py-1 px-2 text-cyan">{ptCount}</td>
+                  </tr>
                 })}
                 </tbody></table>
               </div>
@@ -418,25 +528,37 @@ export default function App() {
 
           {dt === DOC_TYPES.DDC_TERMINATION && (
             <div>
-              <div className="grid grid-cols-4 gap-3 mb-4">
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">PANELS UPDATED</div><div className="text-2xl font-extrabold text-green">{(r.panelUpdates||[]).length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">NEW PANELS</div><div className="text-2xl font-extrabold text-cyan">{(r.newPanels||[]).length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERMINATION SHEETS</div><div className="text-2xl font-extrabold text-teal">{r.termPanelCount || 0}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL PINS</div><div className="text-2xl font-extrabold text-dgray">{r.terminationData ? Object.values(r.terminationData).reduce(function(s,t){return s + (t.pins||[]).length}, 0) : 0}</div></div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">PANELS UPDATED</div><div className="text-2xl font-extrabold text-green">{(r.panelUpdates||[]).filter(function(u){return !importExclusions['panel:'+u.panelId]}).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">NEW PANELS</div><div className="text-2xl font-extrabold text-cyan">{(r.newPanels||[]).filter(function(p){return !importExclusions['panel:'+p.id]}).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERM SHEETS</div><div className="text-2xl font-extrabold text-teal">{r.termPanelCount || 0}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EXCLUDED</div><div className="text-2xl font-extrabold text-orange">{(r.panelUpdates||[]).filter(function(u){return importExclusions['panel:'+u.panelId]}).length + (r.newPanels||[]).filter(function(p){return importExclusions['panel:'+p.id]}).length}</div></div>
               </div>
               {(r.panelUpdates||[]).length > 0 && (
-                <div className="max-h-40 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
-                  <table className="w-full text-[10px]"><thead><tr className="border-b border-border/50 text-dgray"><th className="text-left py-1 px-2">PANEL</th><th className="text-center py-1 px-2">ENCL</th><th className="text-center py-1 px-2">ASSEMBLED</th><th className="text-center py-1 px-2">DDC</th><th className="text-center py-1 px-2">CABLE</th><th className="text-center py-1 px-2">TERM</th><th className="text-center py-1 px-2">INSP</th></tr></thead><tbody>
-                  {r.panelUpdates.map(function(u){return <tr key={u.panelId} className="border-b border-border/20">
-                    <td className="py-1 px-2 text-white uppercase">{u.panelName}</td>
-                    <td className="text-center py-1 px-2">{u.progress.enclosure?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                    <td className="text-center py-1 px-2">{u.progress.assembled?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                    <td className="text-center py-1 px-2">{u.progress.ddcInstall?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                    <td className="text-center py-1 px-2">{u.progress.cablePull?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                    <td className="text-center py-1 px-2">{u.progress.termination?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                    <td className="text-center py-1 px-2">{u.progress.inspection?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
-                  </tr>})}
-                  </tbody></table>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[10px] text-dgray uppercase">CLICK PANELS TO INCLUDE/EXCLUDE</div>
+                    <div className="flex gap-2">
+                      <button onClick={function(){var ex={};(r.panelUpdates||[]).forEach(function(u){ex['panel:'+u.panelId]=true});(r.newPanels||[]).forEach(function(p){ex['panel:'+p.id]=true});setImportExclusions(Object.assign({},importExclusions,ex))}} className="text-[9px] text-orange hover:text-white transition">DESELECT ALL</button>
+                      <button onClick={function(){var ex=Object.assign({},importExclusions);(r.panelUpdates||[]).forEach(function(u){delete ex['panel:'+u.panelId]});(r.newPanels||[]).forEach(function(p){delete ex['panel:'+p.id]});setImportExclusions(ex)}} className="text-[9px] text-teal hover:text-white transition">SELECT ALL</button>
+                    </div>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto mb-4 bg-navy rounded-lg p-3">
+                    <table className="w-full text-[10px]"><thead><tr className="border-b border-border/50 text-dgray"><th className="w-6"></th><th className="text-left py-1 px-2">PANEL</th><th className="text-center py-1 px-2">ENCL</th><th className="text-center py-1 px-2">ASSEMBLED</th><th className="text-center py-1 px-2">DDC</th><th className="text-center py-1 px-2">CABLE</th><th className="text-center py-1 px-2">TERM</th><th className="text-center py-1 px-2">INSP</th></tr></thead><tbody>
+                    {r.panelUpdates.map(function(u){
+                      var excluded = importExclusions['panel:'+u.panelId]
+                      return <tr key={u.panelId} onClick={function(){toggleExclude('panel:'+u.panelId)}} className={'border-b border-border/20 cursor-pointer transition ' + (excluded ? 'opacity-40' : 'hover:bg-teal/5')}>
+                      <td className="py-1 px-1 text-center"><span className={'inline-block w-3 h-3 rounded border ' + (excluded ? 'border-dgray bg-transparent' : 'border-teal bg-teal')} style={{lineHeight:'12px',fontSize:'8px',color:'white'}}>{excluded ? '' : '✓'}</span></td>
+                      <td className={'py-1 px-2 uppercase ' + (excluded ? 'text-dgray line-through' : 'text-white')}>{u.panelName}</td>
+                      <td className="text-center py-1 px-2">{u.progress.enclosure?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                      <td className="text-center py-1 px-2">{u.progress.assembled?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                      <td className="text-center py-1 px-2">{u.progress.ddcInstall?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                      <td className="text-center py-1 px-2">{u.progress.cablePull?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                      <td className="text-center py-1 px-2">{u.progress.termination?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                      <td className="text-center py-1 px-2">{u.progress.inspection?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
+                    </tr>})}
+                    </tbody></table>
+                  </div>
                 </div>
               )}
             </div>
@@ -449,17 +571,31 @@ export default function App() {
               {/* Panel section */}
               {((r.newPanels && r.newPanels.length > 0) || (r.panelUpdates && r.panelUpdates.length > 0)) && (
                 <div className="mb-4">
-                  <div className="text-[10px] text-cyan font-bold uppercase mb-2">DDC PANELS</div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[10px] text-cyan font-bold uppercase">DDC PANELS — CLICK TO INCLUDE/EXCLUDE</div>
+                    <div className="flex gap-2">
+                      <button onClick={function(){var ex={};(r.newPanels||[]).forEach(function(p){ex['panel:'+p.id]=true});(r.panelUpdates||[]).forEach(function(u){ex['panel:'+u.panelId]=true});setImportExclusions(Object.assign({},importExclusions,ex))}} className="text-[9px] text-orange hover:text-white transition">DESELECT ALL</button>
+                      <button onClick={function(){var ex=Object.assign({},importExclusions);(r.newPanels||[]).forEach(function(p){delete ex['panel:'+p.id]});(r.panelUpdates||[]).forEach(function(u){delete ex['panel:'+u.panelId]});setImportExclusions(ex)}} className="text-[9px] text-teal hover:text-white transition">SELECT ALL</button>
+                    </div>
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">NEW PANELS</div><div className="text-xl font-extrabold text-cyan">{(r.newPanels||[]).length}</div></div>
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">UPDATED</div><div className="text-xl font-extrabold text-green">{(r.panelUpdates||[]).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">NEW PANELS</div><div className="text-xl font-extrabold text-cyan">{(r.newPanels||[]).filter(function(p){return !importExclusions['panel:'+p.id]}).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">UPDATED</div><div className="text-xl font-extrabold text-green">{(r.panelUpdates||[]).filter(function(u){return !importExclusions['panel:'+u.panelId]}).length}</div></div>
                     {r.termPanelCount > 0 && <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERM SHEETS</div><div className="text-xl font-extrabold text-teal">{r.termPanelCount}</div></div>}
                     {r.totalPoints > 0 && <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">IO POINTS</div><div className="text-xl font-extrabold text-cyan">{r.totalPoints}</div></div>}
                   </div>
                   {(r.newPanels||[]).length > 0 && (
                     <div className="max-h-28 overflow-y-auto bg-navy rounded-lg p-2">
                       <table className="w-full text-[10px]"><tbody>
-                      {r.newPanels.map(function(p){return <tr key={p.id} className="border-b border-border/20"><td className="py-0.5 px-2 text-white uppercase">{p.name}</td><td className="py-0.5 px-2 text-dgray uppercase">{p.location}</td><td className="py-0.5 px-2 text-dgray uppercase">{p.floor}</td></tr>})}
+                      {r.newPanels.map(function(p){
+                        var excluded = importExclusions['panel:'+p.id]
+                        return <tr key={p.id} onClick={function(){toggleExclude('panel:'+p.id)}} className={'border-b border-border/20 cursor-pointer transition ' + (excluded ? 'opacity-40' : 'hover:bg-teal/5')}>
+                          <td className="py-0.5 px-1 w-6"><span className={'inline-block w-3 h-3 rounded border ' + (excluded ? 'border-dgray bg-transparent' : 'border-teal bg-teal')} style={{lineHeight:'12px',fontSize:'8px',color:'white'}}>{excluded ? '' : '✓'}</span></td>
+                          <td className={'py-0.5 px-2 uppercase ' + (excluded ? 'text-dgray line-through' : 'text-white')}>{p.name}</td>
+                          <td className="py-0.5 px-2 text-dgray uppercase">{p.location}</td>
+                          <td className="py-0.5 px-2 text-dgray uppercase">{p.floor}</td>
+                        </tr>
+                      })}
                       </tbody></table>
                     </div>
                   )}
@@ -480,17 +616,28 @@ export default function App() {
               {/* Field devices section */}
               {(r.devices||[]).length > 0 && (
                 <div className="mb-4">
-                  <div className="text-[10px] text-cyan font-bold uppercase mb-2">FIELD DEVICES</div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL DEVICES</div><div className="text-xl font-extrabold text-cyan">{r.devices.length}</div></div>
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">AREA GROUPS</div><div className="text-xl font-extrabold text-cyan">{(r.areas||[]).length}</div></div>
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">COMM DONE</div><div className="text-xl font-extrabold text-green">{r.devices.filter(function(d){return d.comm_cable}).length}</div></div>
-                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERM DONE</div><div className="text-xl font-extrabold text-green">{r.devices.filter(function(d){return d.termination}).length}</div></div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[10px] text-cyan font-bold uppercase">FIELD DEVICES — CLICK TO INCLUDE/EXCLUDE</div>
+                    <div className="flex gap-2">
+                      <button onClick={function(){var ex={};r.devices.forEach(function(d){ex['device:'+d.id]=true});setImportExclusions(Object.assign({},importExclusions,ex))}} className="text-[9px] text-orange hover:text-white transition">DESELECT ALL</button>
+                      <button onClick={function(){var ex=Object.assign({},importExclusions);r.devices.forEach(function(d){delete ex['device:'+d.id]});setImportExclusions(ex)}} className="text-[9px] text-teal hover:text-white transition">SELECT ALL</button>
+                    </div>
                   </div>
-                  <div className="max-h-28 overflow-y-auto bg-navy rounded-lg p-2">
-                    <table className="w-full text-[10px]"><tbody>
-                    {(r.areas||[]).map(function(a){return <tr key={a.id} className="border-b border-border/20"><td className="py-0.5 px-2 text-white uppercase">{a.name}</td><td className="text-center py-0.5 px-2 text-cyan">{a.device_ids.length} DEVICES</td></tr>})}
-                    </tbody></table>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">DEVICES</div><div className="text-xl font-extrabold text-cyan">{r.devices.filter(function(d){return !importExclusions['device:'+d.id]}).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">AREA GROUPS</div><div className="text-xl font-extrabold text-cyan">{(r.areas||[]).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">COMM DONE</div><div className="text-xl font-extrabold text-green">{r.devices.filter(function(d){return d.comm_cable && !importExclusions['device:'+d.id]}).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EXCLUDED</div><div className="text-xl font-extrabold text-orange">{r.devices.filter(function(d){return importExclusions['device:'+d.id]}).length}</div></div>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto bg-navy rounded-lg p-2">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
+                    {r.devices.map(function(d){
+                      var excluded = importExclusions['device:'+d.id]
+                      return <button key={d.id} onClick={function(){toggleExclude('device:'+d.id)}} className={'text-left px-2 py-1 rounded text-[10px] transition ' + (excluded ? 'bg-red/10 text-dgray line-through opacity-50' : 'bg-teal/10 text-white')}>
+                        {d.tag || d.id}
+                      </button>
+                    })}
+                    </div>
                   </div>
                 </div>
               )}
@@ -512,7 +659,9 @@ export default function App() {
 
           <div className="flex gap-3 mt-4">
             {dt !== DOC_TYPES.UNKNOWN && (
-              <button onClick={confirmImport} className="px-6 py-2 bg-teal text-white text-xs font-bold rounded-md hover:bg-teal/80 uppercase">CONFIRM IMPORT</button>
+              <button onClick={confirmImport} className="px-6 py-2 bg-teal text-white text-xs font-bold rounded-md hover:bg-teal/80 uppercase">
+                {Object.keys(importExclusions).length > 0 ? 'CONFIRM IMPORT (' + Object.keys(importExclusions).length + ' EXCLUDED)' : 'CONFIRM IMPORT'}
+              </button>
             )}
             <button onClick={cancelImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
           </div>
@@ -564,8 +713,8 @@ export default function App() {
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
-          <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} />} />
-          <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onUndo={handleUndo} canUndo={canUndo} />} />
+          <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
+          <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Placeholder title="Blockers Board" desc="Blocker tracking with escalation" />} />

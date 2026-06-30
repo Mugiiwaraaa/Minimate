@@ -216,7 +216,7 @@ function parseIOList(wb, sheetName, existingPanels, existingEquipMap) {
       continue
     }
 
-    if (c1.indexOf('TOTAL') >= 0 && currentPanel) {
+    if ((c1 === 'TOTAL' || c1.indexOf('TOTAL (') === 0 || c1.indexOf('TOTAL:') === 0) && currentPanel) {
       flushGroup()
       if (currentEquipList.length > 0) {
         equipMap[currentPanelId] = currentEquipList
@@ -252,15 +252,23 @@ function parseIOList(wb, sheetName, existingPanels, existingEquipMap) {
         continue
       }
 
-      if (currentGroup && c1 && c0 === '') {
-        currentGroup.pointRows.push({
-          desc: c1,
-          di: parseInt(row[2]) || 0,
-          do: parseInt(row[3]) || 0,
-          ai: parseInt(row[4]) || 0,
-          ao: parseInt(row[5]) || 0,
-          int: parseInt(row[6]) || 0
-        })
+      if (currentGroup && c0 === '') {
+        var ptDi = parseInt(row[2]) || 0
+        var ptDo = parseInt(row[3]) || 0
+        var ptAi = parseInt(row[4]) || 0
+        var ptAo = parseInt(row[5]) || 0
+        var ptInt = parseInt(row[6]) || 0
+        if (c1 && (ptDi + ptDo + ptAi + ptAo + ptInt) > 0) {
+          currentGroup.pointRows.push({ desc: c1, di: ptDi, do: ptDo, ai: ptAi, ao: ptAo, int: ptInt })
+        } else if (!c1 && (ptDi + ptDo + ptAi + ptAo + ptInt) > 0 && currentGroup.pointRows.length > 0) {
+          // Orphan row with counts but no desc — merge into last point row
+          var lastPt = currentGroup.pointRows[currentGroup.pointRows.length - 1]
+          lastPt.di += ptDi
+          lastPt.do += ptDo
+          lastPt.ai += ptAi
+          lastPt.ao += ptAo
+          lastPt.int += ptInt
+        }
       }
     }
     r++
@@ -610,7 +618,171 @@ function parseFCUSchedule(wb, sheetName, existingAreas) {
 }
 
 // ─── Main entry point ─────────────────────────────────────────────
+// ─── Word/PDF text extraction ─────────────────────────────────────
+function extractWordText(arrayBuffer, cb) {
+  if (!window.mammoth) { cb('MAMMOTH.JS NOT LOADED', null); return }
+  window.mammoth.extractRawText({ arrayBuffer: arrayBuffer }).then(function(result) {
+    cb(null, result.value)
+  }).catch(function(err) { cb(err.message || 'WORD PARSE ERROR', null) })
+}
+
+function extractPDFText(arrayBuffer, cb) {
+  if (!window.pdfjsLib) { cb('PDF.JS NOT LOADED', null); return }
+  var loadTask = window.pdfjsLib.getDocument({ data: arrayBuffer })
+  loadTask.promise.then(function(pdf) {
+    var texts = []
+    var done = 0
+    var total = pdf.numPages
+    function processPage(i) {
+      pdf.getPage(i).then(function(page) {
+        page.getTextContent().then(function(content) {
+          var pageText = content.items.map(function(item) { return item.str }).join(' ')
+          texts[i - 1] = pageText
+          done++
+          if (done === total) { cb(null, texts.join('\n')) }
+        })
+      })
+    }
+    for (var i = 1; i <= total; i++) { processPage(i) }
+    if (total === 0) cb(null, '')
+  }).catch(function(err) { cb(err.message || 'PDF PARSE ERROR', null) })
+}
+
+// Parse plain text extracted from Word/PDF for DDC panel names and basic IO info
+function parseTextForPanels(text, existingPanels) {
+  var lines = text.split(/\n/)
+  var allText = text.toUpperCase()
+  var panels = []
+  var warnings = []
+  var existingByName = {}
+  existingPanels.forEach(function(p) { existingByName[up(p.name)] = p })
+
+  // Find all DDC- panel references
+  var panelPattern = /DDC-[A-Z]+-\d+/gi
+  var found = {}
+  var match
+  while ((match = panelPattern.exec(allText)) !== null) {
+    var name = match[0].toUpperCase()
+    if (!found[name]) found[name] = true
+  }
+
+  // Also look for panel names with location info: DDC-XX-NN (location text)
+  var panelLocPattern = /DDC-[A-Z]+-\d+\s*\(([^)]+)\)/gi
+  var panelLocs = {}
+  while ((match = panelLocPattern.exec(text)) !== null) {
+    var pn = match[0].split('(')[0].trim().toUpperCase()
+    panelLocs[pn] = match[1].trim().toUpperCase()
+  }
+
+  Object.keys(found).forEach(function(name) {
+    if (existingByName[name]) return // Skip existing
+    var floorMatch = name.match(/DDC-([A-Z]+)-/)
+    var floor = floorMatch ? floorMatch[1] : ''
+    panels.push({
+      id: panelSlug(name),
+      name: name,
+      location: panelLocs[name] || '',
+      floor: floor
+    })
+  })
+
+  // Try to extract basic IO point info by looking for IO-related keywords near panel names
+  var ioKeywords = ['DI', 'DO', 'AI', 'AO', 'DIGITAL INPUT', 'DIGITAL OUTPUT', 'ANALOG INPUT', 'ANALOG OUTPUT']
+  var hasIOData = ioKeywords.some(function(kw) { return allText.indexOf(kw) >= 0 })
+  if (hasIOData && panels.length > 0) {
+    warnings.push('IO POINT DATA DETECTED IN TEXT BUT CANNOT BE ACCURATELY PARSED FROM WORD/PDF. IMPORT AN EXCEL IO LIST FOR FULL POINT DATA.')
+  }
+
+  if (panels.length === 0) {
+    // Try to find any useful equipment references
+    var equipPattern = /(?:CAHU|AHU|FCU|VAV|PAU|MAU|ERU|FAHU|HRAHU|SEF|PF)-[A-Z]*-?\d+/gi
+    var equipFound = {}
+    while ((match = equipPattern.exec(allText)) !== null) {
+      equipFound[match[0].toUpperCase()] = true
+    }
+    if (Object.keys(equipFound).length > 0) {
+      warnings.push('FOUND EQUIPMENT REFERENCES: ' + Object.keys(equipFound).slice(0, 10).join(', '))
+      warnings.push('NO DDC PANEL NAMES FOUND. THIS FILE MAY NOT CONTAIN PANEL SCHEDULE DATA.')
+    }
+  }
+
+  return {
+    panels: panels,
+    warnings: warnings,
+    hasIOData: hasIOData
+  }
+}
+
 function smartParse(file, context, cb) {
+  var ext = (file.name || '').split('.').pop().toLowerCase()
+
+  // Handle Word files
+  if (ext === 'docx' || ext === 'doc') {
+    var wordReader = new FileReader()
+    wordReader.onload = function(e) {
+      extractWordText(e.target.result, function(err, text) {
+        if (err) {
+          cb({ docType: DOC_TYPES.UNKNOWN, docLabel: 'WORD DOCUMENT', fileName: file.name, warnings: ['FAILED TO READ WORD FILE: ' + err] })
+          return
+        }
+        var parsed = parseTextForPanels(text, context.panels || [])
+        if (parsed.panels.length > 0) {
+          cb({
+            docType: DOC_TYPES.DDC_TERMINATION,
+            docLabel: 'DDC PANELS (FROM WORD)',
+            fileName: file.name,
+            sheetName: file.name,
+            panelUpdates: [],
+            newPanels: parsed.panels,
+            terminationData: {},
+            termPanelCount: 0,
+            warnings: parsed.warnings,
+            totalSheets: 1,
+            target: 'panels'
+          })
+        } else {
+          cb({ docType: DOC_TYPES.UNKNOWN, docLabel: 'WORD DOCUMENT', fileName: file.name, warnings: parsed.warnings.length > 0 ? parsed.warnings : ['NO DDC PANEL DATA FOUND IN THIS WORD FILE'] })
+        }
+      })
+    }
+    wordReader.readAsArrayBuffer(file)
+    return
+  }
+
+  // Handle PDF files
+  if (ext === 'pdf') {
+    var pdfReader = new FileReader()
+    pdfReader.onload = function(e) {
+      extractPDFText(e.target.result, function(err, text) {
+        if (err) {
+          cb({ docType: DOC_TYPES.UNKNOWN, docLabel: 'PDF DOCUMENT', fileName: file.name, warnings: ['FAILED TO READ PDF FILE: ' + err] })
+          return
+        }
+        var parsed = parseTextForPanels(text, context.panels || [])
+        if (parsed.panels.length > 0) {
+          cb({
+            docType: DOC_TYPES.DDC_TERMINATION,
+            docLabel: 'DDC PANELS (FROM PDF)',
+            fileName: file.name,
+            sheetName: file.name,
+            panelUpdates: [],
+            newPanels: parsed.panels,
+            terminationData: {},
+            termPanelCount: 0,
+            warnings: parsed.warnings,
+            totalSheets: 1,
+            target: 'panels'
+          })
+        } else {
+          cb({ docType: DOC_TYPES.UNKNOWN, docLabel: 'PDF DOCUMENT', fileName: file.name, warnings: parsed.warnings.length > 0 ? parsed.warnings : ['NO DDC PANEL DATA FOUND IN THIS PDF FILE'] })
+        }
+      })
+    }
+    pdfReader.readAsArrayBuffer(file)
+    return
+  }
+
+  // Excel files (original flow)
   var reader = new FileReader()
   reader.onload = function(e) {
     var XLSX = window.XLSX

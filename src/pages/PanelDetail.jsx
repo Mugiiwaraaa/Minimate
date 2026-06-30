@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
 
@@ -22,6 +22,8 @@ export default function PanelDetail(props) {
   var terminationMap = props.terminationMap || {}
   var onUpdatePoint = props.onUpdatePoint
   var onUpdateTermination = props.onUpdateTermination
+  var onDeletePanel = props.onDeletePanel
+  var navigate = useNavigate()
   var params = useParams()
   var panelId = params.panelId
   var panel = panels.find(function(p) { return p.id === panelId })
@@ -437,18 +439,18 @@ export default function PanelDetail(props) {
 
         <div className="bg-card rounded-xl border border-border overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full" style={{borderCollapse:'collapse'}}>
               <thead>
-                <tr className="border-b border-border/50 bg-card2">
-                  <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-16">PIN</th>
-                  <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-16">COM</th>
-                  <th className="text-[10px] font-semibold text-dgray text-left px-2 py-2 w-24">SYSTEM</th>
-                  <th className="text-[10px] font-semibold text-dgray text-left px-2 py-2">POINT DESCRIPTION</th>
-                  <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-24">OBJ INSTANCE</th>
-                  <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-24">CABLE NO</th>
-                  <th className="text-[10px] font-semibold text-dgray text-left px-2 py-2 w-36">CABLE DESC</th>
-                  <th className="text-[10px] font-semibold text-dgray text-left px-2 py-2 w-28">SENSOR/MCC</th>
-                  <th className="text-[10px] font-semibold text-dgray text-center px-1 py-2 w-8"></th>
+                <tr style={{borderBottom:'1px solid rgba(148,163,184,0.25)',background:'rgba(30,41,59,0.7)'}}>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-center px-2 py-2.5 w-16">PIN</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-center px-2 py-2.5 w-16">COM</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-left px-2 py-2.5 w-24">SYSTEM</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-left px-2 py-2.5">POINT DESCRIPTION</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-center px-2 py-2.5 w-24">OBJ INSTANCE</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-center px-2 py-2.5 w-24">CABLE NO</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-left px-2 py-2.5 w-36">CABLE DESC</th>
+                  <th style={{borderRight:'1px solid rgba(148,163,184,0.15)'}} className="text-[10px] font-semibold text-dgray text-left px-2 py-2.5 w-28">SENSOR/MCC</th>
+                  <th className="text-[10px] font-semibold text-dgray text-center px-1 py-2.5 w-8"></th>
                 </tr>
               </thead>
               <tbody>
@@ -459,7 +461,7 @@ export default function PanelDetail(props) {
                   if (isFirst) {
                     var secLabel = pin.sectionLabel
                     sectionHeader = (
-                      <tr key={'sec-'+idx} className="bg-navy/50">
+                      <tr key={'sec-'+idx} style={{borderBottom:'1px solid rgba(148,163,184,0.2)',background:'rgba(15,23,42,0.6)'}}>
                         <td colSpan="9" className="px-3 py-1.5">
                           {editing === 'sec:' + idx ? (
                             <input autoFocus value={editVal}
@@ -483,40 +485,44 @@ export default function PanelDetail(props) {
                     )
                   }
 
+                  // Check if this pin shares GND with neighbors (GND rows get a subtle grouped look)
+                  var isGnd = (pin.pointDescription||'').toUpperCase().indexOf('GND') !== -1 || (pin.pointDescription||'').toUpperCase().indexOf('COMMON') !== -1
+                  var rowBg = isGnd ? 'rgba(100,116,139,0.08)' : 'transparent'
+
                   var pinRow = (
-                    <tr key={idx} className={'border-b border-border/20 ' + (isSpare ? 'opacity-40' : 'hover:bg-teal/4')}>
-                      <td className="text-[10px] text-center px-2 py-1.5 font-bold text-cyan">{pin.pin}</td>
-                      <td className="px-2 py-1">
+                    <tr key={idx} style={{borderBottom:'1px solid rgba(148,163,184,0.12)',background:rowBg}} className={isSpare ? 'opacity-40' : 'hover:bg-teal/4'}>
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="text-[10px] text-center px-2 py-1.5 font-bold text-cyan">{pin.pin}</td>
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.com} onChange={function(e){updatePin(idx,'com',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-white outline-none w-full rounded px-1 py-0.5" />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.system} onChange={function(e){updatePin(idx,'system',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-white outline-none w-full rounded px-1 py-0.5" />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.pointDescription} onChange={function(e){updatePin(idx,'pointDescription',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className={'bg-transparent border border-transparent focus:border-teal text-[10px] outline-none w-full rounded px-1 py-0.5 ' + (isSpare ? 'text-dgray italic' : 'text-white font-medium')} />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.objectInstance} onChange={function(e){updatePin(idx,'objectInstance',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-dgray outline-none w-full rounded px-1 py-0.5 text-center" />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.cableNumber} onChange={function(e){updatePin(idx,'cableNumber',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-cyan outline-none w-full rounded px-1 py-0.5 text-center" />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.cableDescription} onChange={function(e){updatePin(idx,'cableDescription',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-white outline-none w-full rounded px-1 py-0.5" />
                       </td>
-                      <td className="px-2 py-1">
+                      <td style={{borderRight:'1px solid rgba(148,163,184,0.1)'}} className="px-2 py-1">
                         <input value={pin.sensorMCC} onChange={function(e){updatePin(idx,'sensorMCC',e.target.value)}}
                           style={{textTransform:'uppercase'}}
                           className="bg-transparent border border-transparent focus:border-teal text-[10px] text-white outline-none w-full rounded px-1 py-0.5" />
@@ -547,6 +553,7 @@ export default function PanelDetail(props) {
         <Link to="/panels" className="text-dgray hover:text-white text-sm">BACK</Link>
         <span className="text-dgray">/</span>
         <h1 className="text-lg md:text-xl font-bold">{panel.name}</h1>
+        {onDeletePanel && <button onClick={function(){if(confirm('DELETE PANEL '+panel.name+'? THIS WILL REMOVE ALL IO DATA AND TERMINATION DATA.')){onDeletePanel(panelId);navigate('/panels')}}} className="ml-auto text-[10px] text-red/50 hover:text-red border border-red/20 hover:border-red/50 px-2 py-1 rounded transition">DELETE PANEL</button>}
       </div>
       <div className="text-xs text-dgray mb-4 flex flex-wrap gap-x-3 gap-y-1">
         <span>{panel.location}</span>

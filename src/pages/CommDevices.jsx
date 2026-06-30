@@ -92,7 +92,11 @@ export default function CommDevices(props){
     onUpdateAreas(areas.map(function(a){if(a.id===areaId)return Object.assign({},a,{device_ids:a.device_ids.concat([dev.id])});return a}))
     setNewDev({device_type:'FCU THERMOSTAT',tag:'',room_name:'',address:''});setAddDevArea(null)
   }
-  function removeDevice(lid,did){onUpdateLoops(loops.map(function(l){if(l.id===lid)return Object.assign({},l,{devices:l.devices.filter(function(d){return d.id!==did})});return l}))}
+  function removeDevice(lid,did){
+    onUpdateLoops(loops.map(function(l){if(l.id===lid)return Object.assign({},l,{devices:l.devices.filter(function(d){return d.id!==did})});return l}))
+    // Also clean up area group references
+    onUpdateAreas(areas.map(function(a){return Object.assign({},a,{device_ids:a.device_ids.filter(function(i){return i!==did})})}))
+  }
   function handleToggle(lid,did,stage){
     onUpdateLoops(loops.map(function(l){if(l.id!==lid)return l;return Object.assign({},l,{devices:l.devices.map(function(d){
       if(d.id!==did)return d;var nv=!d[stage];var i=loopStages.indexOf(stage);if(nv&&i>0&&!d[loopStages[i-1]])return d
@@ -388,7 +392,12 @@ export default function CommDevices(props){
         </div>)
       })}
       {areas.length===0&&!showAddArea&&(<div className="bg-card rounded-xl border border-border p-8 text-center"><div className="text-dgray text-sm uppercase">NO AREA GROUPS YET.</div><div className="text-[11px] text-dgray mt-1 uppercase">CREATE AREAS TO ORGANIZE DEVICES FOR CLIENT REPORTS.</div></div>)}
-      {unassigned.length>0&&areas.length>0&&(<div className="bg-orange/5 rounded-xl border border-orange/30 p-4 mt-3"><div className="text-xs text-orange font-semibold uppercase">{unassigned.length} DEVICE(S) NOT ASSIGNED TO ANY AREA</div><div className="text-[10px] text-dgray mt-1 uppercase">EXPAND AN AREA GROUP TO ASSIGN THEM.</div></div>)}
+      {unassigned.length>0&&areas.length>0&&(<div className="bg-orange/5 rounded-xl border border-orange/30 p-4 mt-3">
+        <div className="flex items-center justify-between">
+          <div><div className="text-xs text-orange font-semibold uppercase">{unassigned.length} DEVICE(S) NOT ASSIGNED TO ANY AREA</div><div className="text-[10px] text-dgray mt-1 uppercase">EXPAND AN AREA GROUP TO ASSIGN THEM, OR DELETE THEM.</div></div>
+          <button onClick={function(){if(confirm('DELETE ALL '+unassigned.length+' UNASSIGNED DEVICES?')){var uids={};unassigned.forEach(function(d){uids[d.id]=true});onUpdateLoops(loops.map(function(l){return Object.assign({},l,{devices:l.devices.filter(function(d){return !uids[d.id]})})}));}}} className="px-3 py-1.5 bg-red/20 text-red text-[10px] font-semibold rounded hover:bg-red/30 uppercase whitespace-nowrap ml-3">DELETE ALL</button>
+        </div>
+      </div>)}
       {dragDev&&dragDev.type==='area'&&(<div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-cyan/20 text-cyan text-xs px-4 py-2 rounded-lg border border-cyan z-50 uppercase">DRAG DEVICE TO ANOTHER AREA</div>)}
     </div>)
   }

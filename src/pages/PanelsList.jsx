@@ -31,6 +31,7 @@ function getProgress(panel, equipmentMap) {
 export default function PanelsList(props) {
   var panels = props.panels
   var equipmentMap = props.equipmentMap
+  var onDeletePanel = props.onDeletePanel
   var filterState = useState('all')
   var filter = filterState[0]
   var setFilter = filterState[1]
@@ -110,11 +111,14 @@ export default function PanelsList(props) {
             <Link
               to={'/panels/' + panel.id}
               key={panel.id}
-              className="bg-card rounded-xl p-3.5 border border-border hover:border-teal transition cursor-pointer group"
+              className="bg-card rounded-xl p-3.5 border border-border hover:border-teal transition cursor-pointer group relative"
             >
               <div className="flex justify-between items-center mb-1.5">
                 <span className="text-sm font-bold group-hover:text-cyan transition">{panel.name}</span>
-                <StatusBadge status={st.status} label={st.label} />
+                <div className="flex items-center gap-1.5">
+                  <StatusBadge status={st.status} label={st.label} />
+                  {onDeletePanel && <button onClick={function(e){e.preventDefault();e.stopPropagation();if(confirm('DELETE PANEL '+panel.name+'? THIS WILL REMOVE ALL IO DATA AND TERMINATION DATA.')){onDeletePanel(panel.id)}}} className="text-[9px] text-red/30 hover:text-red transition" title="DELETE PANEL">X</button>}
+                </div>
               </div>
               <div className="text-[11px] text-dgray mb-2">
                 {panel.location}

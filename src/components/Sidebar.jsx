@@ -104,7 +104,7 @@ export default function Sidebar(props) {
             <label className="flex items-center gap-2 px-3 py-2 bg-orange/10 border border-orange/30 rounded-lg hover:bg-orange/20 transition cursor-pointer group">
               <span className="text-sm">+</span>
               <span className="text-[11px] text-orange font-semibold uppercase">IMPORT EXCEL</span>
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} className="hidden"/>
+              <input type="file" accept=".xlsx,.xls,.csv,.docx,.doc,.pdf" onChange={handleImport} className="hidden"/>
             </label>
           </div>
           {!props.isDemo && props.onSwitchProject && (
