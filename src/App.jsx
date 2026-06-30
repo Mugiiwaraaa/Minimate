@@ -9,6 +9,7 @@ import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave } from './lib/supabaseDb'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
+import { parseDrawings } from './lib/drawingParser'
 
 function Placeholder(props) {
   return (
@@ -55,6 +56,11 @@ export default function App() {
   var ipLoading = useState(false)
   var importLoading = ipLoading[0]
   var setImportLoading = ipLoading[1]
+
+  // Drawing import state
+  var drawState = useState(null) // null | {step, pdfFile, photoFile, progress, result, error}
+  var drawingImport = drawState[0]
+  var setDrawingImport = drawState[1]
 
   // Save indicator
   var saveState = useState('idle') // idle | saving | saved | error
@@ -431,6 +437,305 @@ export default function App() {
     })
   }
 
+  // ─── Drawing Import Handlers ────────────────────────────
+  function handleDrawingImport() {
+    setDrawingImport({ step: 'select', pdfFile: null, photoFile: null, progress: [], result: null, error: null })
+  }
+
+  function handleDrawingPdf(e) {
+    var file = e.target.files[0]
+    if (!file) return
+    setDrawingImport(function(prev) { return Object.assign({}, prev, { pdfFile: file }) })
+    e.target.value = ''
+  }
+
+  function handleDrawingPhoto(e) {
+    var file = e.target.files[0]
+    if (!file) return
+    setDrawingImport(function(prev) { return Object.assign({}, prev, { photoFile: file }) })
+    e.target.value = ''
+  }
+
+  function startDrawingAnalysis() {
+    if (!drawingImport || !drawingImport.pdfFile || !drawingImport.photoFile) return
+    var apiKey = localStorage.getItem('minimate_gemini_key') || ''
+    if (!apiKey) {
+      setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'apikey' }) })
+      return
+    }
+    setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'processing', progress: ['Starting...'] }) })
+
+    parseDrawings(drawingImport.pdfFile, drawingImport.photoFile, apiKey, function(msg) {
+      setDrawingImport(function(prev) {
+        return Object.assign({}, prev, { progress: prev.progress.concat([msg]) })
+      })
+    }).then(function(result) {
+      setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'preview', result: result }) })
+    }).catch(function(err) {
+      setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'error', error: err.message }) })
+    })
+  }
+
+  function saveGeminiKey(key) {
+    localStorage.setItem('minimate_gemini_key', key)
+    setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'select' }) })
+  }
+
+  function confirmDrawingImport() {
+    if (!drawingImport || !drawingImport.result) return
+    pushUndo()
+
+    var result = drawingImport.result
+    var drawExcl = importExclusions
+    var newLoops = loops.slice()
+
+    // Create loops from the drawing analysis
+    result.loops.forEach(function(loop) {
+      if (drawExcl['dloop:' + loop.loopId]) return // excluded
+
+      var loopDevices = loop.devices.filter(function(d) {
+        return !drawExcl['ddev:' + d.tag]
+      }).map(function(d) {
+        return {
+          id: (d.tag || '').toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          tag: d.tag || '',
+          type: d.tag.indexOf('FCU') >= 0 ? 'FCU' : d.tag.indexOf('VAV') >= 0 ? 'VAV' : 'DEVICE',
+          room: d.room || '',
+          thermostat: d.thermostat || '',
+          comm_cable: false,
+          address_set: false,
+          int_test: false,
+          commissioned: false
+        }
+      })
+
+      if (loopDevices.length === 0) return
+
+      var loopId = 'loop-dwg-' + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
+      newLoops.push({
+        id: loopId,
+        name: loop.loopId,
+        protocol: 'MODBUS RTU',
+        gateway: '',
+        ddc_ref: loop.ddcPanel || '',
+        floor: result.floorLabel || '',
+        zone: '',
+        color: loop.color || '',
+        source: 'drawing',
+        devices: loopDevices
+      })
+    })
+
+    // Add unmatched devices to UNASSIGNED loop
+    var unmatchedDevs = (result.unmatchedDevices || []).filter(function(d) {
+      return !drawExcl['ddev:' + d.tag]
+    })
+    if (unmatchedDevs.length > 0) {
+      var ul = newLoops.find(function(l) { return l.id === 'loop-unassigned' })
+      if (!ul) {
+        ul = { id: 'loop-unassigned', name: 'UNASSIGNED', protocol: 'MODBUS RTU', gateway: '', ddc_ref: '', floor: '', zone: '', devices: [] }
+        newLoops.push(ul)
+      }
+      newLoops = newLoops.map(function(l) {
+        if (l.id !== 'loop-unassigned') return l
+        return Object.assign({}, l, {
+          devices: l.devices.concat(unmatchedDevs.map(function(d) {
+            return {
+              id: (d.tag || '').toLowerCase().replace(/[^a-z0-9]/g, '-'),
+              tag: d.tag || '',
+              type: d.tag.indexOf('FCU') >= 0 ? 'FCU' : 'DEVICE',
+              room: '',
+              thermostat: d.thermostat || '',
+              comm_cable: false,
+              address_set: false,
+              int_test: false,
+              commissioned: false
+            }
+          }))
+        })
+      })
+    }
+
+    setLoops(newLoops)
+    setDrawingImport(null)
+    setImportExclusions({})
+  }
+
+  function cancelDrawingImport() {
+    setDrawingImport(null)
+    setImportExclusions({})
+  }
+
+  // ─── Drawing Import Modal Renderer ─────────────────────
+  function renderDrawingModal() {
+    if (!drawingImport) return null
+    var di = drawingImport
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-3 md:p-6" onClick={cancelDrawingImport}>
+        <div className="bg-card rounded-2xl border-2 border-teal p-4 md:p-6 max-w-2xl w-full max-h-[85vh] overflow-y-auto" onClick={function(e){e.stopPropagation()}}>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold uppercase text-teal">DRAWING IMPORT</h3>
+            <span className="text-[10px] text-dgray uppercase">SHOP DRAWING ANALYSIS</span>
+          </div>
+
+          {di.step === 'apikey' && (
+            <div>
+              <div className="bg-orange/10 border border-orange/30 rounded-lg p-4 mb-4">
+                <div className="text-xs text-orange font-bold uppercase mb-2">GEMINI API KEY REQUIRED</div>
+                <div className="text-[10px] text-dgray mb-3">GET YOUR FREE KEY FROM AISTUDIO.GOOGLE.COM/APIKEY</div>
+                <input id="gemini-key-input" type="text" placeholder="PASTE YOUR GEMINI API KEY HERE" className="w-full bg-navy border border-border rounded px-3 py-2 text-xs text-white uppercase placeholder:text-dgray/50" />
+              </div>
+              <div className="flex gap-3">
+                <button onClick={function(){var inp=document.getElementById('gemini-key-input');if(inp&&inp.value.trim()){saveGeminiKey(inp.value.trim())}}} className="px-6 py-2 bg-teal text-white text-xs font-bold rounded-md hover:bg-teal/80 uppercase">SAVE KEY</button>
+                <button onClick={cancelDrawingImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
+              </div>
+            </div>
+          )}
+
+          {di.step === 'select' && (
+            <div>
+              <div className="text-[10px] text-dgray uppercase mb-4">SELECT BOTH FILES FOR THIS FLOOR</div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className={'rounded-xl border-2 border-dashed p-4 text-center transition ' + (di.pdfFile ? 'border-teal bg-teal/5' : 'border-border hover:border-teal/50')}>
+                  <div className="text-2xl mb-2">{di.pdfFile ? '✓' : '📐'}</div>
+                  <div className="text-[11px] font-bold uppercase mb-1 text-white">{di.pdfFile ? di.pdfFile.name : 'DIGITAL PDF DRAWING'}</div>
+                  <div className="text-[9px] text-dgray uppercase mb-3">{di.pdfFile ? (di.pdfFile.size/1024/1024).toFixed(1) + ' MB' : 'CAD FILE — DEVICE TAGS, ROOMS, AREAS'}</div>
+                  <label className="inline-block px-4 py-1.5 bg-teal/20 text-teal text-[10px] font-bold rounded cursor-pointer hover:bg-teal/30 uppercase transition">
+                    {di.pdfFile ? 'CHANGE' : 'SELECT PDF'}
+                    <input type="file" accept=".pdf" onChange={handleDrawingPdf} className="hidden"/>
+                  </label>
+                </div>
+
+                <div className={'rounded-xl border-2 border-dashed p-4 text-center transition ' + (di.photoFile ? 'border-orange bg-orange/5' : 'border-border hover:border-orange/50')}>
+                  <div className="text-2xl mb-2">{di.photoFile ? '✓' : '📸'}</div>
+                  <div className="text-[11px] font-bold uppercase mb-1 text-white">{di.photoFile ? di.photoFile.name : 'HIGHLIGHTED PHOTO'}</div>
+                  <div className="text-[9px] text-dgray uppercase mb-3">{di.photoFile ? (di.photoFile.size/1024/1024).toFixed(1) + ' MB' : 'SUPERVISOR MARKED-UP — LOOP ROUTING'}</div>
+                  <label className="inline-block px-4 py-1.5 bg-orange/20 text-orange text-[10px] font-bold rounded cursor-pointer hover:bg-orange/30 uppercase transition">
+                    {di.photoFile ? 'CHANGE' : 'SELECT PHOTO'}
+                    <input type="file" accept="image/*" onChange={handleDrawingPhoto} className="hidden"/>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button onClick={startDrawingAnalysis} disabled={!di.pdfFile || !di.photoFile} className={'px-6 py-2 text-xs font-bold rounded-md uppercase transition ' + (di.pdfFile && di.photoFile ? 'bg-teal text-white hover:bg-teal/80' : 'bg-card2 text-dgray cursor-not-allowed')}>
+                  ANALYZE DRAWINGS
+                </button>
+                <button onClick={cancelDrawingImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
+              </div>
+              {localStorage.getItem('minimate_gemini_key') && (
+                <div className="mt-3 text-[9px] text-dgray uppercase">GEMINI KEY: ...{localStorage.getItem('minimate_gemini_key').slice(-6)} <button onClick={function(){setDrawingImport(function(p){return Object.assign({},p,{step:'apikey'})})}} className="text-orange hover:text-white ml-2">CHANGE KEY</button></div>
+              )}
+            </div>
+          )}
+
+          {di.step === 'processing' && (
+            <div>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-6 h-6 border-2 border-teal border-t-transparent rounded-full animate-spin"></div>
+                <div className="text-xs text-white uppercase font-bold">ANALYZING DRAWINGS...</div>
+              </div>
+              <div className="bg-navy rounded-lg p-3 max-h-48 overflow-y-auto">
+                {di.progress.map(function(msg, i) {
+                  return <div key={i} className="text-[10px] text-dgray uppercase py-0.5">{i === di.progress.length - 1 ? <span className="text-teal">{msg}</span> : msg}</div>
+                })}
+              </div>
+            </div>
+          )}
+
+          {di.step === 'error' && (
+            <div>
+              <div className="bg-red/10 border border-red/30 rounded-lg p-4 mb-4">
+                <div className="text-xs text-red font-bold uppercase mb-1">ANALYSIS FAILED</div>
+                <div className="text-[10px] text-dgray">{di.error}</div>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={function(){setDrawingImport(function(p){return Object.assign({},p,{step:'select',error:null})})}} className="px-6 py-2 bg-teal text-white text-xs font-bold rounded-md hover:bg-teal/80 uppercase">TRY AGAIN</button>
+                <button onClick={cancelDrawingImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
+              </div>
+            </div>
+          )}
+
+          {di.step === 'preview' && di.result && (
+            <div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">LOOPS</div><div className="text-2xl font-extrabold text-teal">{di.result.loops.length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">MATCHED DEVICES</div><div className="text-2xl font-extrabold text-cyan">{di.result.loops.reduce(function(s,l){return s+l.deviceCount},0)}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">UNMATCHED</div><div className="text-2xl font-extrabold text-orange">{(di.result.unmatchedDevices||[]).length}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">PDF WORDS OCR</div><div className="text-2xl font-extrabold text-dgray">{di.result.pdfStats.totalWords}</div></div>
+              </div>
+
+              {di.result.floorLabel && (
+                <div className="text-[10px] text-teal uppercase font-bold mb-3">FLOOR: {di.result.floorLabel}</div>
+              )}
+
+              <div className="text-[10px] text-dgray uppercase mb-2">LOOPS — CLICK TO INCLUDE/EXCLUDE</div>
+              <div className="max-h-60 overflow-y-auto bg-navy rounded-lg p-3 mb-4">
+                {di.result.loops.map(function(loop) {
+                  var loopExcl = importExclusions['dloop:' + loop.loopId]
+                  return (
+                    <div key={loop.loopId} className={'mb-3 rounded-lg p-3 border transition ' + (loopExcl ? 'border-dgray/20 opacity-40' : 'border-teal/30 bg-teal/5')}>
+                      <div className="flex items-center justify-between mb-2 cursor-pointer" onClick={function(){toggleExclude('dloop:'+loop.loopId)}}>
+                        <div className="flex items-center gap-2">
+                          <span className={'inline-block w-3 h-3 rounded border ' + (loopExcl ? 'border-dgray bg-transparent' : 'border-teal bg-teal')} style={{lineHeight:'12px',fontSize:'8px',color:'white'}}>{loopExcl ? '' : '✓'}</span>
+                          <span className={'text-xs font-bold uppercase ' + (loopExcl ? 'text-dgray line-through' : 'text-white')}>{loop.loopId}</span>
+                          {loop.color && <span className="text-[9px] text-dgray uppercase">({loop.color})</span>}
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {loop.ddcPanel && <span className="text-[9px] text-cyan uppercase">{loop.ddcPanel}</span>}
+                          <span className="text-[10px] text-dgray">{loop.deviceCount} DEVICES</span>
+                        </div>
+                      </div>
+                      {!loopExcl && (
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
+                          {loop.devices.map(function(d) {
+                            var devExcl = importExclusions['ddev:' + d.tag]
+                            return (
+                              <button key={d.tag} onClick={function(){toggleExclude('ddev:'+d.tag)}} className={'text-left px-2 py-1 rounded text-[10px] transition ' + (devExcl ? 'bg-red/10 text-dgray line-through opacity-50' : 'bg-card/50 text-white')}>
+                                <div>{d.tag}</div>
+                                {d.room && <div className="text-[8px] text-dgray truncate">{d.room}</div>}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {(di.result.unmatchedDevices||[]).length > 0 && (
+                <div className="mb-4">
+                  <div className="text-[10px] text-orange uppercase font-bold mb-2">UNMATCHED PDF DEVICES (WILL GO TO UNASSIGNED)</div>
+                  <div className="grid grid-cols-3 md:grid-cols-4 gap-1">
+                    {di.result.unmatchedDevices.map(function(d) {
+                      var devExcl = importExclusions['ddev:' + d.tag]
+                      return (
+                        <button key={d.tag} onClick={function(){toggleExclude('ddev:'+d.tag)}} className={'text-left px-2 py-1 rounded text-[9px] transition ' + (devExcl ? 'bg-red/10 text-dgray line-through opacity-50' : 'bg-orange/10 text-orange')}>
+                          {d.tag}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={confirmDrawingImport} className="px-6 py-2 bg-teal text-white text-xs font-bold rounded-md hover:bg-teal/80 uppercase">
+                  {Object.keys(importExclusions).length > 0 ? 'CONFIRM IMPORT (' + Object.keys(importExclusions).length + ' EXCLUDED)' : 'CONFIRM IMPORT'}
+                </button>
+                <button onClick={function(){setDrawingImport(function(p){return Object.assign({},p,{step:'select',result:null})})}} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">BACK</button>
+                <button onClick={cancelDrawingImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // ─── Import Preview Modal Renderer ──────────────────────
   function renderImportModal() {
     if (!importPreview) return null
@@ -691,7 +996,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-navy text-white">
-      <Sidebar projectName={projectName} onImportFile={handleImportFile} onSwitchProject={handleSwitchProject} isDemo={isDemo} />
+      <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} isDemo={isDemo} />
       {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
 
       {/* Save status indicator */}
@@ -710,6 +1015,7 @@ export default function App() {
         </div>
       )}
       {renderImportModal()}
+      {renderDrawingModal()}
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
