@@ -234,25 +234,58 @@ function extractDevicesFromOCR(words) {
    3.  GEMINI VISION — HIGHLIGHTED PHOTO ANALYSIS
    ════════════════════════════════════════════════════════ */
 
-function fileToBase64(file) {
+function compressImage(file, maxDim, quality) {
+  maxDim = maxDim || 2048
+  quality = quality || 0.7
   return new Promise(function(resolve, reject) {
     var reader = new FileReader()
     reader.onload = function() {
-      var base64 = reader.result.split(',')[1]
-      resolve(base64)
+      var img = new Image()
+      img.onload = function() {
+        var w = img.width
+        var h = img.height
+        // Scale down if larger than maxDim
+        if (w > maxDim || h > maxDim) {
+          var ratio = Math.min(maxDim / w, maxDim / h)
+          w = Math.round(w * ratio)
+          h = Math.round(h * ratio)
+        }
+        var canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        var ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, w, h)
+        var dataUrl = canvas.toDataURL('image/jpeg', quality)
+        var base64 = dataUrl.split(',')[1]
+        var sizeKB = Math.round(base64.length * 0.75 / 1024)
+        resolve({ base64: base64, mimeType: 'image/jpeg', width: w, height: h, sizeKB: sizeKB })
+      }
+      img.onerror = function() { reject(new Error('Failed to load image')) }
+      img.src = reader.result
     }
     reader.onerror = function() { reject(new Error('Failed to read image file')) }
     reader.readAsDataURL(file)
   })
 }
 
+function callGemini(apiKey, body, model) {
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
 function analyzeHighlightedDrawing(imageFile, apiKey, onProgress) {
   if (!apiKey) return Promise.reject(new Error('Gemini API key required'))
 
-  if (onProgress) onProgress('Preparing highlighted drawing for Gemini...')
+  if (onProgress) onProgress('Compressing image for Gemini...')
 
-  return fileToBase64(imageFile).then(function(base64) {
-    var mimeType = imageFile.type || 'image/jpeg'
+  return compressImage(imageFile, 2048, 0.7).then(function(compressed) {
+    if (onProgress) onProgress('Compressed to ' + compressed.width + 'x' + compressed.height + ' (' + compressed.sizeKB + ' KB)')
+    var mimeType = compressed.mimeType
+    var base64 = compressed.base64
 
     var prompt = [
       'You are analyzing a BMS (Building Management System) highlighted shop drawing from a site supervisor.',
@@ -301,20 +334,32 @@ function analyzeHighlightedDrawing(imageFile, apiKey, onProgress) {
 
     if (onProgress) onProgress('Sending to Gemini Vision API...')
 
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + apiKey
+    var models = ['gemini-2.0-flash', 'gemini-1.5-flash']
 
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }).then(function(resp) {
-      if (!resp.ok) {
-        return resp.text().then(function(errText) {
-          throw new Error('Gemini API error (' + resp.status + '): ' + errText)
-        })
-      }
-      return resp.json()
-    }).then(function(data) {
+    function tryModel(idx) {
+      if (idx >= models.length) return Promise.reject(new Error('All Gemini models failed — try again in a few minutes'))
+      var model = models[idx]
+      if (onProgress && idx > 0) onProgress('Retrying with ' + model + '...')
+
+      return callGemini(apiKey, body, model).then(function(resp) {
+        if (resp.status === 429 && idx < models.length - 1) {
+          if (onProgress) onProgress(model + ' rate-limited, trying next model...')
+          return tryModel(idx + 1)
+        }
+        if (!resp.ok) {
+          return resp.text().then(function(errText) {
+            if (idx < models.length - 1) {
+              if (onProgress) onProgress(model + ' failed, trying next model...')
+              return tryModel(idx + 1)
+            }
+            throw new Error('Gemini API error (' + resp.status + '): ' + errText)
+          })
+        }
+        return resp.json()
+      })
+    }
+
+    return tryModel(0).then(function(data) {
       if (onProgress) onProgress('Gemini response received — parsing...')
 
       // Extract JSON from response
