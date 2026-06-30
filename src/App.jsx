@@ -664,7 +664,7 @@ export default function App() {
                 <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">LOOPS</div><div className="text-2xl font-extrabold text-teal">{di.result.loops.length}</div></div>
                 <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">MATCHED DEVICES</div><div className="text-2xl font-extrabold text-cyan">{di.result.loops.reduce(function(s,l){return s+l.deviceCount},0)}</div></div>
                 <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">UNMATCHED</div><div className="text-2xl font-extrabold text-orange">{(di.result.unmatchedDevices||[]).length}</div></div>
-                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">PDF WORDS OCR</div><div className="text-2xl font-extrabold text-dgray">{di.result.pdfStats.totalWords}</div></div>
+                <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">PDF DEVICES</div><div className="text-2xl font-extrabold text-dgray">{di.result.pdfStats.totalDevices}</div></div>
               </div>
 
               {di.result.floorLabel && (
