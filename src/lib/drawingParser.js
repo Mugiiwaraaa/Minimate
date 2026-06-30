@@ -334,7 +334,7 @@ function analyzeHighlightedDrawing(imageFile, apiKey, onProgress) {
 
     if (onProgress) onProgress('Sending to Gemini Vision API...')
 
-    var models = ['gemini-2.0-flash', 'gemini-1.5-flash']
+    var models = ['gemini-2.5-flash', 'gemini-2.0-flash-001', 'gemini-1.5-flash']
 
     function tryModel(idx) {
       if (idx >= models.length) return Promise.reject(new Error('All Gemini models failed — try again in a few minutes'))
