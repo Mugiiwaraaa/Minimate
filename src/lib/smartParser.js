@@ -1,11 +1,14 @@
-// Minimate Smart Parser v0.1
-// Auto-detects: FCU Schedule, VAV Schedule, IO List, DDC Termination Sheet
+// Minimate Smart Parser v0.2
+// Multi-sheet aware: scans each sheet independently, merges results
+// Detects: DDC Panel Schedule, FCU/VAV Tracker, IO List, DDC Termination (per-panel pins)
 
 var DOC_TYPES = {
   FCU_SCHEDULE: 'FCU_SCHEDULE',
   VAV_SCHEDULE: 'VAV_SCHEDULE',
   IO_LIST: 'IO_LIST',
   DDC_TERMINATION: 'DDC_TERMINATION',
+  DDC_PANEL_SCHEDULE: 'DDC_PANEL_SCHEDULE',
+  COMBINED: 'COMBINED',
   UNKNOWN: 'UNKNOWN'
 }
 
@@ -14,69 +17,84 @@ DOC_LABELS[DOC_TYPES.FCU_SCHEDULE] = 'FCU SCHEDULE'
 DOC_LABELS[DOC_TYPES.VAV_SCHEDULE] = 'VAV SCHEDULE'
 DOC_LABELS[DOC_TYPES.IO_LIST] = 'IO LIST'
 DOC_LABELS[DOC_TYPES.DDC_TERMINATION] = 'DDC TERMINATION SHEET'
+DOC_LABELS[DOC_TYPES.DDC_PANEL_SCHEDULE] = 'DDC PANEL SCHEDULE'
+DOC_LABELS[DOC_TYPES.COMBINED] = 'COMBINED IMPORT'
 DOC_LABELS[DOC_TYPES.UNKNOWN] = 'UNKNOWN DOCUMENT'
 
 var _idCounters = { panel: 200, eq: 300, pt: 400, area: 500, dev: 1000 }
 function gid(prefix) { return prefix + '-' + (_idCounters[prefix]++) }
 
-// Generate slug ID from panel name: "DDC-GF-01" → "ddc_gf_01"
 function panelSlug(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
 }
 
 function up(v) { return (v || '').toUpperCase().trim() }
 
-// ─── Auto-detection ───────────────────────────────────────────────
-function detectDocType(wb) {
-  var names = wb.SheetNames.map(function(n) { return n.toUpperCase() })
-  var allHeaders = []
-  names.forEach(function(name, si) {
-    var ws = wb.Sheets[wb.SheetNames[si]]
-    var rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
-    for (var r = 0; r < Math.min(rows.length, 15); r++) {
-      for (var c = 0; c < Math.min((rows[r] || []).length, 20); c++) {
-        allHeaders.push(String(rows[r][c] || '').toUpperCase().trim())
-      }
+// Strip non-ASCII characters (handles Arabic diacriticals in sheet names)
+function cleanStr(s) { return (s || '').replace(/[^\x00-\x7F]/g, '').trim() }
+
+// ─── Per-sheet type detection ─────────────────────────────────────
+function detectSheetType(wb, sheetName) {
+  var ws = wb.Sheets[sheetName]
+  if (!ws) return 'SKIP'
+  var rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+  if (!rows || rows.length < 2) return 'SKIP'
+
+  // Collect headers from first 15 rows
+  var headers = []
+  for (var r = 0; r < Math.min(rows.length, 15); r++) {
+    for (var c = 0; c < Math.min((rows[r] || []).length, 30); c++) {
+      headers.push(up(String(rows[r][c] || '')))
     }
+  }
+  var joined = headers.join(' ')
+  var nameUp = up(cleanStr(sheetName))
+
+  // Score each type
+  var scores = { DDC_PANEL_SCHEDULE: 0, FCU_SCHEDULE: 0, VAV_SCHEDULE: 0, IO_LIST: 0, DDC_TERM_DETAIL: 0 }
+
+  // ── DDC Panel Schedule (overview sheet with panel names, locations, zones)
+  if (joined.indexOf('DDC PANEL SCHEDULE') >= 0) scores.DDC_PANEL_SCHEDULE += 8
+  if (joined.indexOf('PANEL NAME') >= 0) scores.DDC_PANEL_SCHEDULE += 5
+  if (joined.indexOf('CABLE PULLING') >= 0 && joined.indexOf('PANEL TERMINATION') >= 0) scores.DDC_PANEL_SCHEDULE += 4
+  if (joined.indexOf('DDC INSTALLATION') >= 0) scores.DDC_PANEL_SCHEDULE += 3
+  if (joined.indexOf('MOUNTING') >= 0 && joined.indexOf('CANOPY') >= 0) scores.DDC_PANEL_SCHEDULE += 2
+  if (nameUp.indexOf('BMS') >= 0 || nameUp.indexOf('DDC') >= 0) scores.DDC_PANEL_SCHEDULE += 2
+
+  // ── FCU Tracker
+  if (nameUp.indexOf('FCU') >= 0 || nameUp.indexOf('TRACKER') >= 0) scores.FCU_SCHEDULE += 5
+  if (joined.indexOf('FCU QTY') >= 0 || joined.indexOf('FCU QUANTITY') >= 0) scores.FCU_SCHEDULE += 6
+  if (joined.indexOf('COMMUNICATION LOOP') >= 0 || joined.indexOf('COMM LOOP') >= 0) scores.FCU_SCHEDULE += 4
+  if (joined.indexOf('CONTROL CABLE') >= 0 && joined.indexOf('TERMINATION') >= 0) scores.FCU_SCHEDULE += 3
+  if (joined.indexOf('BALANCE CL') >= 0 || joined.indexOf('BALANCE CC') >= 0) scores.FCU_SCHEDULE += 4
+  if (joined.indexOf('GROUND FLOOR') >= 0 && joined.indexOf('ZONE') >= 0 && joined.indexOf('PART') >= 0) scores.FCU_SCHEDULE += 3
+  if (joined.indexOf('FAN COIL') >= 0) scores.FCU_SCHEDULE += 3
+
+  // ── VAV Schedule
+  if (nameUp.indexOf('VAV') >= 0) scores.VAV_SCHEDULE += 6
+  if (joined.indexOf('VAV') >= 0 && joined.indexOf('QTY') >= 0) scores.VAV_SCHEDULE += 5
+
+  // ── IO List
+  if (joined.indexOf('IO LIST') >= 0 || joined.indexOf('I/O LIST') >= 0 || joined.indexOf('IO POINT') >= 0) scores.IO_LIST += 7
+  if (joined.indexOf('IO SCHEDULE') >= 0 || joined.indexOf('I/O SCHEDULE') >= 0 || joined.indexOf('POINT SCHEDULE') >= 0) scores.IO_LIST += 7
+  if (joined.indexOf('LOCATION OF EQUIPMENT') >= 0) scores.IO_LIST += 5
+  if (joined.indexOf('DIGITAL INPUT') >= 0 || joined.indexOf('ANALOG') >= 0) scores.IO_LIST += 3
+  if (joined.indexOf('DI-HARDWARE') >= 0 || joined.indexOf('DO-HARDWARE') >= 0) scores.IO_LIST += 5
+  if (joined.indexOf('REQUIRED POINTS') >= 0) scores.IO_LIST += 4
+
+  // ── DDC per-panel termination detail (sheet named like DDC-GF-01)
+  if (nameUp.indexOf('DDC-') >= 0) scores.DDC_TERM_DETAIL += 6
+  if (joined.indexOf('UNIVERSAL OUTPUT') >= 0 || joined.indexOf('UNIVERSAL INPUT') >= 0) scores.DDC_TERM_DETAIL += 5
+  if (joined.indexOf('CONTROLLER') >= 0 && (joined.indexOf('ME52') >= 0 || joined.indexOf('BACNET') >= 0)) scores.DDC_TERM_DETAIL += 3
+
+  // Pick the winner — minimum threshold of 5
+  var best = 'SKIP'
+  var bestScore = 4
+  Object.keys(scores).forEach(function(k) {
+    if (scores[k] > bestScore) { bestScore = scores[k]; best = k }
   })
-  var joined = allHeaders.join(' ')
-  var scores = {}
-  scores[DOC_TYPES.FCU_SCHEDULE] = 0
-  scores[DOC_TYPES.VAV_SCHEDULE] = 0
-  scores[DOC_TYPES.IO_LIST] = 0
-  scores[DOC_TYPES.DDC_TERMINATION] = 0
 
-  // FCU
-  if (joined.indexOf('FCU') >= 0) scores[DOC_TYPES.FCU_SCHEDULE] += 5
-  if (joined.indexOf('FAN COIL') >= 0) scores[DOC_TYPES.FCU_SCHEDULE] += 3
-  if (names.some(function(n) { return n.indexOf('FCU') >= 0 || n.indexOf('TRACKER') >= 0 })) scores[DOC_TYPES.FCU_SCHEDULE] += 4
-
-  // VAV
-  if (joined.indexOf('VAV') >= 0) scores[DOC_TYPES.VAV_SCHEDULE] += 5
-  if (names.some(function(n) { return n.indexOf('VAV') >= 0 })) scores[DOC_TYPES.VAV_SCHEDULE] += 4
-
-  // IO List
-  if (joined.indexOf('IO LIST') >= 0 || joined.indexOf('I/O LIST') >= 0 || joined.indexOf('IO POINT') >= 0) scores[DOC_TYPES.IO_LIST] += 6
-  if (joined.indexOf('IO SCHEDULE') >= 0 || joined.indexOf('I/O SCHEDULE') >= 0 || joined.indexOf('POINT SCHEDULE') >= 0) scores[DOC_TYPES.IO_LIST] += 6
-  if (joined.indexOf('LOCATION OF EQUIPMENT') >= 0) scores[DOC_TYPES.IO_LIST] += 5
-  if (joined.indexOf('DIGITAL INPUT') >= 0 || joined.indexOf('ANALOG') >= 0) scores[DOC_TYPES.IO_LIST] += 3
-  if (joined.indexOf('DI-HARDWARE') >= 0 || joined.indexOf('DO-HARDWARE') >= 0) scores[DOC_TYPES.IO_LIST] += 5
-  if (joined.indexOf('REQUIRED POINTS') >= 0) scores[DOC_TYPES.IO_LIST] += 4
-
-  // DDC Termination
-  if (joined.indexOf('DDC PANEL SCHEDULE') >= 0) scores[DOC_TYPES.DDC_TERMINATION] += 6
-  if (joined.indexOf('PANEL ASSEMBLED') >= 0 || joined.indexOf('ENCLOSURE INSTALLED') >= 0) scores[DOC_TYPES.DDC_TERMINATION] += 5
-  if (joined.indexOf('CABLE PULLING') >= 0 && joined.indexOf('PANEL TERMINATION') >= 0) scores[DOC_TYPES.DDC_TERMINATION] += 6
-  if (names.some(function(n) { return n.indexOf('DDC SCHEDULE') >= 0 })) scores[DOC_TYPES.DDC_TERMINATION] += 4
-  if (joined.indexOf('UNIVERSAL OUTPUT') >= 0 || joined.indexOf('UNIVERSAL INPUT') >= 0) scores[DOC_TYPES.DDC_TERMINATION] += 4
-  if (names.filter(function(n) { return n.indexOf('DDC-') >= 0 }).length >= 3) scores[DOC_TYPES.DDC_TERMINATION] += 5
-
-  var best = DOC_TYPES.UNKNOWN
-  var bestScore = 3
-  Object.keys(scores).forEach(function(type) {
-    if (scores[type] > bestScore) { bestScore = scores[type]; best = type }
-  })
-  return { type: best, scores: scores, label: DOC_LABELS[best] }
+  return best
 }
 
 // ─── Parse equipment IDs like "CAHU-4,5,6" → ["CAHU-4","CAHU-5","CAHU-6"] ──
@@ -88,20 +106,16 @@ function parseEquipTags(idStr, qty) {
   }
   var parts = idStr.split(',').map(function(s) { return s.trim() })
   if (parts.length === 0) return [idStr]
-  // First part has the full tag e.g. "CAHU-4"
   var first = parts[0]
-  // Find prefix: everything up to the last numeric portion
   var prefixMatch = first.match(/^(.*?[\-\/\s])(\d+.*)$/)
   if (!prefixMatch) {
-    // No numeric suffix pattern, treat each as fully specified
     return parts.filter(function(p) { return p.length > 0 })
   }
-  var prefix = prefixMatch[1] // e.g. "CAHU-"
+  var prefix = prefixMatch[1]
   var tags = [first]
   for (var i = 1; i < parts.length; i++) {
     var p = parts[i].trim()
     if (!p) continue
-    // If it looks like just a number or short suffix, prepend prefix
     if (/^\d+/.test(p) && p.indexOf('-') < 0 && p.length < first.length) {
       tags.push(prefix + p)
     } else {
@@ -112,13 +126,7 @@ function parseEquipTags(idStr, qty) {
 }
 
 // ─── IO List Parser ──────────────────────────────────────────────
-function parseIOList(wb, existingPanels, existingEquipMap) {
-  // Find the right sheet - prefer "As per Site" over "Approved"
-  var sheetName = wb.SheetNames[0]
-  wb.SheetNames.forEach(function(n) {
-    var u = n.toUpperCase()
-    if (u.indexOf('SITE') >= 0 || u.indexOf('LATEST') >= 0 || u.indexOf('REVISED') >= 0) sheetName = n
-  })
+function parseIOList(wb, sheetName, existingPanels, existingEquipMap) {
   var ws = wb.Sheets[sheetName]
   var rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
@@ -128,15 +136,13 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
   var skipped = []
   var updated = []
 
-  // Build lookup of existing panels by name
   var existingByName = {}
   existingPanels.forEach(function(p) { existingByName[up(p.name)] = p })
 
   var currentPanel = null
   var currentPanelId = null
   var currentEquipList = []
-  // Temp group: collects points before splitting by tag
-  var currentGroup = null  // {name, qty, idsStr, pointRows:[{desc,di,do,ai,ao,int}]}
+  var currentGroup = null
   var r = 0
 
   function flushGroup() {
@@ -176,15 +182,12 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
     var c0 = up(String(row[0] || ''))
     var c1 = up(String(row[1] || ''))
 
-    // Detect DDC panel header: col2 starts with "DDC-"
     if (c1.indexOf('DDC-') === 0) {
-      // Flush previous group and save panel
       flushGroup()
       if (currentPanel && currentEquipList.length > 0) {
         equipMap[currentPanelId] = currentEquipList
       }
 
-      // Parse panel name and location from "DDC-GF-01 (ELECTRICAL ROOM Z4PT3)"
       var panelStr = c1
       var panelName = panelStr
       var panelLocation = ''
@@ -194,11 +197,9 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
         panelLocation = panelStr.substring(parenIdx + 1).replace(/\)$/, '').trim()
       }
 
-      // Extract floor from panel name (DDC-GF-01 -> GF)
       var floorMatch = panelName.match(/DDC-([A-Z]+)-/)
       var panelFloor = floorMatch ? floorMatch[1] : ''
 
-      // Check if panel already exists
       var existing = existingByName[panelName]
       if (existing) {
         currentPanelId = existing.id
@@ -206,12 +207,7 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
         updated.push(panelName)
       } else {
         currentPanelId = panelSlug(panelName)
-        currentPanel = {
-          id: currentPanelId,
-          name: panelName,
-          location: panelLocation,
-          floor: panelFloor
-        }
+        currentPanel = { id: currentPanelId, name: panelName, location: panelLocation, floor: panelFloor }
         panels.push(currentPanel)
       }
       currentEquipList = []
@@ -220,7 +216,6 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
       continue
     }
 
-    // Detect TOTAL row (end of panel section)
     if (c1.indexOf('TOTAL') >= 0 && currentPanel) {
       flushGroup()
       if (currentEquipList.length > 0) {
@@ -233,18 +228,13 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
       continue
     }
 
-    // Skip header rows
     if (c0 === 'QTY' || c1 === 'LOCATION OF EQUIPMENT' || c1 === 'START FROM HERE') { r++; continue }
 
-    // Inside a panel section
     if (currentPanel) {
       var qty = parseInt(c0)
-      // Equipment group header: has numeric qty in col0 and name in col1
       if (qty > 0 && c1 && c1.indexOf('DI-') < 0 && c1.indexOf('DO-') < 0) {
-        // Flush previous group
         flushGroup()
         currentGroup = { name: c1, qty: qty, idsStr: '', pointRows: [] }
-        // Next row might have equipment IDs (e.g. "CAHU-4,5,6")
         if (r + 1 < rows.length) {
           var nextRow = rows[r + 1]
           var nc0 = String(nextRow[0] || '').trim()
@@ -255,14 +245,13 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
           var nc6 = parseInt(nextRow[5]) || 0
           if (!nc0 && nc1 && nc3 === 0 && nc4 === 0 && nc5 === 0 && nc6 === 0 && nc1.indexOf('TOTAL') < 0) {
             currentGroup.idsStr = nc1
-            r++ // skip the IDs row
+            r++
           }
         }
         r++
         continue
       }
 
-      // IO point row: description in col1, counts in col2(DI), col3(DO), col4(AI), col5(AO), col6(INT)
       if (currentGroup && c1 && c0 === '') {
         currentGroup.pointRows.push({
           desc: c1,
@@ -274,17 +263,14 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
         })
       }
     }
-
     r++
   }
 
-  // Handle last panel if file doesn't end with TOTAL
   flushGroup()
   if (currentPanel && currentEquipList.length > 0) {
     equipMap[currentPanelId] = currentEquipList
   }
 
-  // Count stats
   var totalPoints = 0
   var totalEquipment = 0
   Object.keys(equipMap).forEach(function(pid) {
@@ -309,80 +295,81 @@ function parseIOList(wb, existingPanels, existingEquipMap) {
   }
 }
 
-// ─── DDC Termination Sheet Parser ────────────────────────────────
-function parseDDCTermination(wb, existingPanels) {
-  // First sheet = DDC Schedule overview with panel progress
-  var schedSheet = null
-  wb.SheetNames.forEach(function(n) {
-    if (n.toUpperCase().indexOf('SCHEDULE') >= 0 || n.toUpperCase().indexOf('DDC SCHEDULE') >= 0) schedSheet = n
-  })
-  if (!schedSheet) schedSheet = wb.SheetNames[0]
-
-  var ws = wb.Sheets[schedSheet]
+// ─── DDC Panel Schedule Parser (overview with panel names) ───────
+function parseDDCPanelSchedule(wb, sheetName, existingPanels) {
+  var ws = wb.Sheets[sheetName]
   var rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
   var panelUpdates = []
   var warnings = []
   var newPanels = []
 
-  // Build lookup
   var existingByName = {}
   existingPanels.forEach(function(p) { existingByName[up(p.name)] = p })
 
-  // Find header row to map columns
+  // Find header row — scan for PANEL NAME column
   var headerRow = -1
   var colMap = {}
-  for (var r = 0; r < Math.min(rows.length, 10); r++) {
+  for (var r = 0; r < Math.min(rows.length, 15); r++) {
     var row = rows[r]
     for (var c = 0; c < (row || []).length; c++) {
       var v = up(String(row[c] || ''))
       if (v === 'PANEL NAME' || v === 'PANEL') { colMap.name = c; headerRow = r }
       if (v === 'LOCATION') colMap.location = c
-      if (v === 'LEVEL') colMap.level = c
+      if (v === 'LEVEL' || v === 'FLOOR') colMap.level = c
       if (v === 'ZONE') colMap.zone = c
       if (v === 'PART') colMap.part = c
+      if (v.indexOf('SR') >= 0 && v.indexOf('NO') >= 0) colMap.srno = c
       if (v.indexOf('ENCLOSURE') >= 0) colMap.enclosure = c
       if (v.indexOf('ASSEMBLED') >= 0) colMap.assembled = c
       if (v === 'REMARKS') colMap.remarks = c
       if (v.indexOf('DDC INSTALLATION') >= 0 || v.indexOf('DDC INST') >= 0) colMap.ddcInstall = c
       if (v.indexOf('CABLE PULL') >= 0) colMap.cablePull = c
-      if (v.indexOf('PANEL TERMINATION') >= 0 || v.indexOf('TERMINATION') >= 0) colMap.termination = c
+      if (v.indexOf('PANEL TERMINATION') >= 0) colMap.termination = c
       if (v.indexOf('INSPECTION') >= 0) colMap.inspection = c
-      if (v.indexOf('NO. OF IO') >= 0 || v.indexOf('NO OF IO') >= 0 || v === 'IO') colMap.ioCount = c
       if (v.indexOf('MOUNTING') >= 0) colMap.mounting = c
       if (v.indexOf('CANOPY') >= 0) colMap.canopy = c
-      if (v.indexOf('PANEL SIZE') >= 0 || v.indexOf('SIZE') >= 0) colMap.size = c
+      if (v.indexOf('PANEL SIZE') >= 0 || (v === 'SIZE' && colMap.name === undefined)) colMap.size = c
     }
     if (headerRow >= 0) break
   }
 
   if (headerRow < 0 || colMap.name === undefined) {
-    warnings.push('COULD NOT FIND PANEL NAME COLUMN IN SCHEDULE SHEET')
-    return {
-      docType: DOC_TYPES.DDC_TERMINATION,
-      docLabel: 'DDC TERMINATION SHEET',
-      sheetName: schedSheet,
-      panelUpdates: [],
-      newPanels: [],
-      warnings: warnings,
-      target: 'panels'
+    // Fallback: try to find DDC- panel names in any column
+    for (var r2 = 0; r2 < rows.length; r2++) {
+      var row2 = rows[r2]
+      for (var c2 = 0; c2 < (row2 || []).length; c2++) {
+        var v2 = up(String(row2[c2] || ''))
+        if (v2.indexOf('DDC-') === 0 && v2.length < 20) {
+          colMap.name = c2
+          headerRow = r2 - 1
+          break
+        }
+      }
+      if (colMap.name !== undefined) break
+    }
+    if (colMap.name === undefined) {
+      warnings.push('COULD NOT FIND PANEL NAME COLUMN IN SHEET "' + sheetName + '"')
+      return { newPanels: [], panelUpdates: [], warnings: warnings }
     }
   }
 
   function isCheck(v) {
     var s = String(v || '').trim()
-    return s === '✔️' || s === '✔' || s === '✓' || s === 'YES' || s === 'DONE' || s === 'Y' || s === '1' || s === 'TRUE' || s === 'X' || s === 'x'
+    return s === '✔️' || s === '✔' || s === '✓' || s === 'YES' || s === 'DONE' || s === 'Y' || s === '1' || s === 'TRUE' || s === 'X' || s === 'x' || s.indexOf('✔') >= 0
   }
 
   var currentLevel = ''
-  for (var r2 = headerRow + 1; r2 < rows.length; r2++) {
-    var dr = rows[r2]
+  for (var r3 = headerRow + 1; r3 < rows.length; r3++) {
+    var dr = rows[r3]
     var pName = up(String(dr[colMap.name] || ''))
     if (!pName || pName.indexOf('DDC-') < 0) continue
 
     // Carry forward level for merged cells
-    var lvl = up(String(dr[colMap.level] || ''))
-    if (lvl) currentLevel = lvl
+    if (colMap.level !== undefined) {
+      var lvl = up(String(dr[colMap.level] || ''))
+      if (lvl) currentLevel = lvl
+    }
 
     var pLocation = colMap.location !== undefined ? up(String(dr[colMap.location] || '')) : ''
     var pZone = colMap.zone !== undefined ? up(String(dr[colMap.zone] || '')) : ''
@@ -401,6 +388,11 @@ function parseDDCTermination(wb, existingPanels) {
       inspection: colMap.inspection !== undefined ? isCheck(dr[colMap.inspection]) : false
     }
 
+    // Extract floor from panel name if not from column
+    var floorFromName = ''
+    var fm = pName.match(/DDC-([A-Z]+)-/)
+    if (fm) floorFromName = fm[1]
+
     var existing = existingByName[pName]
     if (existing) {
       panelUpdates.push({
@@ -417,11 +409,7 @@ function parseDDCTermination(wb, existingPanels) {
         canopy: pCanopy
       })
     } else {
-      // Create new panel
-      var floorFromName = ''
-      var fm = pName.match(/DDC-([A-Z]+)-/)
-      if (fm) floorFromName = fm[1]
-      var newPanel = {
+      newPanels.push({
         id: panelSlug(pName),
         name: pName,
         location: pLocation,
@@ -433,43 +421,35 @@ function parseDDCTermination(wb, existingPanels) {
         canopy: pCanopy,
         progress: progress,
         remarks: pRemarks
-      }
-      newPanels.push(newPanel)
+      })
     }
   }
 
-  // ─── Parse per-panel sheets for pin-level termination data ───
+  return { newPanels: newPanels, panelUpdates: panelUpdates, warnings: warnings }
+}
+
+// ─── DDC Termination Sheet Parser (per-panel pin detail) ─────────
+function parseDDCTerminationSheets(wb, sheetNames, allPanelIds) {
   var terminationData = {}
-  // Build full panel ID lookup (existing + new)
-  var allPanelIds = {}
-  existingPanels.forEach(function(p) { allPanelIds[up(p.name)] = p.id })
-  newPanels.forEach(function(p) { allPanelIds[up(p.name)] = p.id })
+  var warnings = []
 
-  wb.SheetNames.forEach(function(sn) {
-    if (sn === schedSheet) return  // skip overview sheet
-    var sheetUp = up(sn)
-    if (sheetUp.indexOf('DDC-') < 0) return  // only parse DDC-named sheets
-
+  sheetNames.forEach(function(sn) {
     var pws = wb.Sheets[sn]
     var prows = window.XLSX.utils.sheet_to_json(pws, { header: 1, defval: '' })
     if (prows.length < 5) return
 
-    // Row 1: panel name, Row 2: metadata, Row 3: controller model
     var sheetPanelName = up(String(prows[0][0] || sn))
-    // Clean panel name - might have extra text
     var pnMatch = sheetPanelName.match(/(DDC-[A-Z]+-\d+)/)
     if (pnMatch) sheetPanelName = pnMatch[1]
 
     var panelId = allPanelIds[sheetPanelName]
     if (!panelId) {
-      // Try matching sheet name directly
-      var snMatch = sheetUp.match(/(DDC-[A-Z]+-\d+)/)
+      var snMatch = up(cleanStr(sn)).match(/(DDC-[A-Z]+-\d+)/)
       if (snMatch) panelId = allPanelIds[snMatch[1]]
     }
     if (!panelId) { warnings.push('COULD NOT MATCH SHEET "' + sn + '" TO A PANEL'); return }
 
-    // Try to detect controller model from first few rows
-    var controllerModel = 'ME521'  // default
+    var controllerModel = 'ME521'
     for (var cr = 0; cr < Math.min(prows.length, 5); cr++) {
       var cRow = prows[cr]
       for (var cc = 0; cc < (cRow || []).length; cc++) {
@@ -479,11 +459,6 @@ function parseDDCTermination(wb, existingPanels) {
       }
     }
 
-    // Parse pin rows - look for UNIVERSAL OUTPUT and UNIVERSAL INPUT sections
-    // COLUMN MAP (col A is always empty in K&P termination sheets):
-    //   B(1)=PIN name / module header   C(2)=COM   D(3)=System / section header
-    //   E(4)=Point Description   F(5)=Object Instance   G(6)=Cable Number
-    //   H(7)=Cable Description   I(8)=Sensor/MCC
     var pins = []
     var currentSection = ''
     var currentSectionLabel = ''
@@ -492,24 +467,20 @@ function parseDDCTermination(wb, existingPanels) {
 
     for (var pr = 0; pr < prows.length; pr++) {
       var prow = prows[pr]
-      var colB = up(String(prow[1] || ''))  // PIN name or module header
-      var colD = up(String(prow[3] || ''))  // section header or system name
+      var colB = up(String(prow[1] || ''))
+      var colD = up(String(prow[3] || ''))
 
-      // Detect module headers in column B: "Module-FBM-16I (1)", "Module-FBM-8I8O (2)"
       if (colB.indexOf('MODULE') >= 0 && colB.indexOf('FBM') >= 0) {
         var slotMatch = colB.match(/\((\d+)\)/)
         currentModuleSlot = slotMatch ? parseInt(slotMatch[1]) : (currentModuleSlot + 1)
-        // Detect module type
         if (colB.indexOf('16I') >= 0 || colB.indexOf('16UI') >= 0) {
           detectedModules.push({ slot: currentModuleSlot, type: 'FB16UI' })
         } else if (colB.indexOf('8I8O') >= 0) {
           detectedModules.push({ slot: currentModuleSlot, type: 'FB8I8O' })
         }
-        // Section will be set by the next header row
         continue
       }
 
-      // Detect section headers - check column D first (e.g. "UNIVERSAL OUTPUT"), also column B
       var sectionSource = colD || colB
       if (sectionSource.indexOf('UNIVERSAL OUTPUT') >= 0 || (sectionSource.indexOf('OUTPUT') >= 0 && sectionSource.indexOf('MODULE') < 0 && sectionSource.indexOf('PIN') < 0)) {
         if (currentModuleSlot > 0) {
@@ -532,20 +503,15 @@ function parseDDCTermination(wb, existingPanels) {
         continue
       }
 
-      // Skip header/label rows (PIN header, empty rows, metadata rows)
       if (colB === 'PIN' || colB === 'COM' || colB === '') continue
       if (colB.indexOf('CONTROLLER') >= 0 || colB.indexOf('BMS') >= 0 || colB.indexOf('BACNET') >= 0 || colB.indexOf('IP') >= 0) continue
 
-      // Pin row detection: UO1-UO8, UI3-UI10, DO1-DO8, DI1-DI8, etc.
       if (currentSection && (colB.indexOf('UO') >= 0 || colB.indexOf('UI') >= 0 || colB.indexOf('DO') >= 0 || colB.indexOf('DI') >= 0)) {
         var pinName = colB
-        // For module pins, prefix with module slot if not already prefixed
         if (currentSection.indexOf('M') === 0 && pinName.indexOf('M') < 0) {
           pinName = currentSection.split('-')[0] + '-' + pinName
         }
-
         var pdesc = up(String(prow[4] || ''))
-
         pins.push({
           section: currentSection.indexOf('M') === 0 ? currentSection.split('-')[0] : 'CONTROLLER',
           sectionLabel: currentSectionLabel,
@@ -573,29 +539,11 @@ function parseDDCTermination(wb, existingPanels) {
     }
   })
 
-  var termPanelCount = Object.keys(terminationData).length
-
-  return {
-    docType: DOC_TYPES.DDC_TERMINATION,
-    docLabel: 'DDC TERMINATION SHEET',
-    sheetName: schedSheet,
-    panelUpdates: panelUpdates,
-    newPanels: newPanels,
-    terminationData: terminationData,
-    termPanelCount: termPanelCount,
-    warnings: warnings,
-    totalSheets: wb.SheetNames.length,
-    target: 'panels'
-  }
+  return { terminationData: terminationData, warnings: warnings }
 }
 
 // ─── FCU Schedule Parser ─────────────────────────────────────────
-function parseFCUSchedule(wb, existingAreas) {
-  var sheetName = null
-  wb.SheetNames.forEach(function(n) {
-    if (n.toUpperCase().indexOf('FCU') >= 0 || n.toUpperCase().indexOf('TRACKER') >= 0) sheetName = n
-  })
-  if (!sheetName) sheetName = wb.SheetNames[wb.SheetNames.length - 1]
+function parseFCUSchedule(wb, sheetName, existingAreas) {
   var ws = wb.Sheets[sheetName]
   var rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
 
@@ -661,19 +609,6 @@ function parseFCUSchedule(wb, existingAreas) {
     devices: devices, areas: areaList, skipped: skipped, warnings: warnings, target: 'field-devices' }
 }
 
-// ─── VAV Schedule Parser (same structure as FCU) ─────────────────
-function parseVAVSchedule(wb, existingAreas) {
-  var result = parseFCUSchedule(wb, existingAreas)
-  // Rebrand as VAV
-  result.docType = DOC_TYPES.VAV_SCHEDULE
-  result.docLabel = 'VAV SCHEDULE'
-  result.devices.forEach(function(d) {
-    d.device_type = 'VAV CONTROLLER'
-    d.tag = d.tag.replace('FCU-', 'VAV-')
-  })
-  return result
-}
-
 // ─── Main entry point ─────────────────────────────────────────────
 function smartParse(file, context, cb) {
   var reader = new FileReader()
@@ -681,23 +616,186 @@ function smartParse(file, context, cb) {
     var XLSX = window.XLSX
     if (!XLSX) { alert('SHEETJS NOT LOADED'); return }
     var wb = XLSX.read(e.target.result, { type: 'array' })
-    var detection = detectDocType(wb)
+
+    // Step 1: Classify each sheet
+    var sheetTypes = {}
+    var typeLists = { DDC_PANEL_SCHEDULE: [], FCU_SCHEDULE: [], VAV_SCHEDULE: [], IO_LIST: [], DDC_TERM_DETAIL: [] }
+    wb.SheetNames.forEach(function(sn) {
+      var t = detectSheetType(wb, sn)
+      sheetTypes[sn] = t
+      if (typeLists[t]) typeLists[t].push(sn)
+    })
+
+    // Step 2: Parse each type found
+    var panelResult = null
+    var fcuResult = null
+    var ioResult = null
+    var termResult = null
+    var allWarnings = []
+    var foundTypes = []
+
+    // ── DDC Panel Schedule sheets
+    if (typeLists.DDC_PANEL_SCHEDULE.length > 0) {
+      panelResult = parseDDCPanelSchedule(wb, typeLists.DDC_PANEL_SCHEDULE[0], context.panels || [])
+      if (panelResult.newPanels.length > 0 || panelResult.panelUpdates.length > 0) {
+        foundTypes.push('DDC_PANEL_SCHEDULE')
+      }
+      allWarnings = allWarnings.concat(panelResult.warnings)
+    }
+
+    // ── IO List sheets
+    if (typeLists.IO_LIST.length > 0) {
+      // Prefer "As per Site" or "Latest" or "Revised" variant
+      var ioSheet = typeLists.IO_LIST[0]
+      typeLists.IO_LIST.forEach(function(n) {
+        var u = n.toUpperCase()
+        if (u.indexOf('SITE') >= 0 || u.indexOf('LATEST') >= 0 || u.indexOf('REVISED') >= 0) ioSheet = n
+      })
+      ioResult = parseIOList(wb, ioSheet, context.panels || [], context.equipmentMap || {})
+      if (ioResult.panels.length > 0 || Object.keys(ioResult.equipMap).length > 0) {
+        foundTypes.push('IO_LIST')
+      }
+      allWarnings = allWarnings.concat(ioResult.warnings)
+    }
+
+    // ── FCU/VAV Tracker sheets
+    if (typeLists.FCU_SCHEDULE.length > 0) {
+      fcuResult = parseFCUSchedule(wb, typeLists.FCU_SCHEDULE[0], context.areas || [])
+      if (fcuResult.devices.length > 0) {
+        foundTypes.push('FCU_SCHEDULE')
+      }
+      allWarnings = allWarnings.concat(fcuResult.warnings)
+    } else if (typeLists.VAV_SCHEDULE.length > 0) {
+      fcuResult = parseFCUSchedule(wb, typeLists.VAV_SCHEDULE[0], context.areas || [])
+      fcuResult.docType = DOC_TYPES.VAV_SCHEDULE
+      fcuResult.docLabel = 'VAV SCHEDULE'
+      fcuResult.devices.forEach(function(d) {
+        d.device_type = 'VAV CONTROLLER'
+        d.tag = d.tag.replace('FCU-', 'VAV-')
+      })
+      if (fcuResult.devices.length > 0) {
+        foundTypes.push('VAV_SCHEDULE')
+      }
+      allWarnings = allWarnings.concat(fcuResult.warnings)
+    }
+
+    // ── DDC per-panel termination detail sheets
+    if (typeLists.DDC_TERM_DETAIL.length > 0) {
+      // Build panel ID lookup from existing + newly parsed panels
+      var allPanelIds = {}
+      ;(context.panels || []).forEach(function(p) { allPanelIds[up(p.name)] = p.id })
+      if (panelResult) {
+        panelResult.newPanels.forEach(function(p) { allPanelIds[up(p.name)] = p.id })
+      }
+      if (ioResult) {
+        ioResult.panels.forEach(function(p) { allPanelIds[up(p.name)] = p.id })
+      }
+      termResult = parseDDCTerminationSheets(wb, typeLists.DDC_TERM_DETAIL, allPanelIds)
+      if (Object.keys(termResult.terminationData).length > 0) {
+        foundTypes.push('DDC_TERMINATION')
+      }
+      allWarnings = allWarnings.concat(termResult.warnings)
+    }
+
+    // Step 3: Build result
     var result = null
 
-    if (detection.type === DOC_TYPES.FCU_SCHEDULE) {
-      result = parseFCUSchedule(wb, context.areas || [])
-    } else if (detection.type === DOC_TYPES.VAV_SCHEDULE) {
-      result = parseVAVSchedule(wb, context.areas || [])
-    } else if (detection.type === DOC_TYPES.IO_LIST) {
-      result = parseIOList(wb, context.panels || [], context.equipmentMap || {})
-    } else if (detection.type === DOC_TYPES.DDC_TERMINATION) {
-      result = parseDDCTermination(wb, context.panels || [])
+    if (foundTypes.length === 0) {
+      // Nothing useful found
+      result = {
+        docType: DOC_TYPES.UNKNOWN,
+        docLabel: 'UNKNOWN DOCUMENT',
+        sheetName: wb.SheetNames[0],
+        sheetNames: wb.SheetNames,
+        warnings: allWarnings.length > 0 ? allWarnings : ['COULD NOT DETECT ANY USEFUL DATA. SHEETS: ' + wb.SheetNames.join(', ')]
+      }
+    } else if (foundTypes.length === 1) {
+      // Single type — return in the original format for backward compatibility
+      var ft = foundTypes[0]
+      if (ft === 'DDC_PANEL_SCHEDULE') {
+        result = {
+          docType: DOC_TYPES.DDC_TERMINATION,
+          docLabel: 'DDC PANEL SCHEDULE',
+          sheetName: typeLists.DDC_PANEL_SCHEDULE[0],
+          panelUpdates: panelResult.panelUpdates,
+          newPanels: panelResult.newPanels,
+          terminationData: termResult ? termResult.terminationData : {},
+          termPanelCount: termResult ? Object.keys(termResult.terminationData).length : 0,
+          warnings: allWarnings,
+          totalSheets: wb.SheetNames.length,
+          target: 'panels'
+        }
+      } else if (ft === 'IO_LIST') {
+        result = ioResult
+        result.warnings = allWarnings
+      } else if (ft === 'FCU_SCHEDULE' || ft === 'VAV_SCHEDULE') {
+        result = fcuResult
+        result.warnings = allWarnings
+      } else if (ft === 'DDC_TERMINATION') {
+        result = {
+          docType: DOC_TYPES.DDC_TERMINATION,
+          docLabel: 'DDC TERMINATION SHEET',
+          sheetName: wb.SheetNames[0],
+          panelUpdates: [],
+          newPanels: [],
+          terminationData: termResult.terminationData,
+          termPanelCount: Object.keys(termResult.terminationData).length,
+          warnings: allWarnings,
+          totalSheets: wb.SheetNames.length,
+          target: 'panels'
+        }
+      }
     } else {
-      result = { docType: DOC_TYPES.UNKNOWN, docLabel: 'UNKNOWN DOCUMENT', sheetName: wb.SheetNames[0],
-        sheetNames: wb.SheetNames, warnings: ['COULD NOT DETECT DOCUMENT TYPE. SHEETS: ' + wb.SheetNames.join(', ')] }
+      // Multiple types found — COMBINED result
+      result = {
+        docType: DOC_TYPES.COMBINED,
+        docLabel: 'COMBINED IMPORT',
+        sheetName: wb.SheetNames[0],
+        foundTypes: foundTypes,
+        warnings: allWarnings,
+        totalSheets: wb.SheetNames.length,
+        // Panel data (from DDC panel schedule or IO list)
+        newPanels: [],
+        panelUpdates: [],
+        panels: [],
+        equipMap: {},
+        totalPoints: 0,
+        totalEquipment: 0,
+        // Termination data
+        terminationData: {},
+        termPanelCount: 0,
+        // Field device data
+        devices: [],
+        areas: [],
+        target: 'combined'
+      }
+
+      if (panelResult) {
+        result.newPanels = panelResult.newPanels
+        result.panelUpdates = panelResult.panelUpdates
+      }
+      if (ioResult) {
+        result.panels = ioResult.panels
+        result.equipMap = ioResult.equipMap
+        result.totalPoints = ioResult.totalPoints
+        result.totalEquipment = ioResult.totalEquipment
+        // If IO list also created panels and we have no panel schedule panels, use those
+        if (result.newPanels.length === 0 && ioResult.panels.length > 0) {
+          result.newPanels = ioResult.panels
+        }
+      }
+      if (termResult) {
+        result.terminationData = termResult.terminationData
+        result.termPanelCount = Object.keys(termResult.terminationData).length
+      }
+      if (fcuResult) {
+        result.devices = fcuResult.devices
+        result.areas = fcuResult.areas
+      }
     }
+
     result.fileName = file.name
-    result.detection = detection
+    result.detection = { sheetTypes: sheetTypes, foundTypes: foundTypes }
     cb(result)
   }
   reader.readAsArrayBuffer(file)

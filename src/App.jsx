@@ -266,42 +266,81 @@ export default function App() {
     }
 
     if (dt === DOC_TYPES.DDC_TERMINATION) {
-      if (importPreview.newPanels && importPreview.newPanels.length > 0) {
-        setPanels(panels.concat(importPreview.newPanels.map(function(p) {
-          return {id: p.id, name: p.name, location: p.location, floor: p.floor}
-        })))
-      }
-      if (importPreview.panelUpdates && importPreview.panelUpdates.length > 0) {
-        setPanels(function(prev) {
-          return prev.map(function(p) {
-            var upd = importPreview.panelUpdates.find(function(u) { return u.panelId === p.id })
-            if (!upd) return p
-            return Object.assign({}, p, {
-              location: upd.location || p.location,
-              floor: upd.floor || p.floor,
-              zone: upd.zone,
-              part: upd.part,
-              progress: upd.progress,
-              remarks: upd.remarks,
-              size: upd.size,
-              mounting: upd.mounting,
-              canopy: upd.canopy
-            })
-          })
+      applyPanelData(importPreview)
+    }
+
+    if (dt === DOC_TYPES.COMBINED) {
+      // Apply panel data (new panels + updates + termination)
+      applyPanelData(importPreview)
+
+      // Apply IO list data
+      if (importPreview.equipMap && Object.keys(importPreview.equipMap).length > 0) {
+        var newEq2 = Object.assign({}, equipmentMap)
+        Object.keys(importPreview.equipMap).forEach(function(pid) {
+          newEq2[pid] = importPreview.equipMap[pid]
         })
+        setEquipmentMap(newEq2)
       }
-      if (importPreview.terminationData) {
-        setTerminationMap(function(prev) {
-          var next = Object.assign({}, prev)
-          Object.keys(importPreview.terminationData).forEach(function(pid) {
-            next[pid] = importPreview.terminationData[pid]
-          })
-          return next
+
+      // Apply field device data
+      if (importPreview.devices && importPreview.devices.length > 0) {
+        var ul2 = loops.find(function(l) { return l.id === 'loop-unassigned' })
+        var newLoops2 = loops.slice()
+        if (!ul2) {
+          ul2 = {id:'loop-unassigned', name:'UNASSIGNED', protocol:'MODBUS RTU', gateway:'', ddc_ref:'', floor:'', zone:'', devices:[]}
+          newLoops2.push(ul2)
+        }
+        newLoops2 = newLoops2.map(function(l) {
+          if (l.id !== 'loop-unassigned') return l
+          return Object.assign({}, l, {devices: l.devices.concat(importPreview.devices)})
         })
+        setLoops(newLoops2)
+        if (importPreview.areas) {
+          setAreaGroups(areaGroups.concat(importPreview.areas))
+        }
       }
     }
 
     setImportPreview(null)
+  }
+
+  // Helper: apply panel schedule / termination data from import result
+  function applyPanelData(importData) {
+    if (importData.newPanels && importData.newPanels.length > 0) {
+      setPanels(function(prev) {
+        return prev.concat(importData.newPanels.map(function(p) {
+          return {id: p.id, name: p.name, location: p.location, floor: p.floor}
+        }))
+      })
+    }
+    if (importData.panelUpdates && importData.panelUpdates.length > 0) {
+      setPanels(function(prev) {
+        return prev.map(function(p) {
+          var upd = importData.panelUpdates.find(function(u) { return u.panelId === p.id })
+          if (!upd) return p
+          return Object.assign({}, p, {
+            location: upd.location || p.location,
+            floor: upd.floor || p.floor,
+            zone: upd.zone,
+            part: upd.part,
+            progress: upd.progress,
+            remarks: upd.remarks,
+            size: upd.size,
+            mounting: upd.mounting,
+            canopy: upd.canopy
+          })
+        })
+      })
+    }
+    if (importData.terminationData && Object.keys(importData.terminationData).length > 0) {
+      setTerminationMap(function(prev) {
+        var next = Object.assign({}, prev)
+        Object.keys(importData.terminationData).forEach(function(pid) {
+          next[pid] = importData.terminationData[pid]
+        })
+        return next
+      })
+    }
   }
 
   function cancelImport() {
@@ -398,6 +437,61 @@ export default function App() {
                     <td className="text-center py-1 px-2">{u.progress.inspection?<span className="text-green">✓</span>:<span className="text-dgray">-</span>}</td>
                   </tr>})}
                   </tbody></table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {dt === DOC_TYPES.COMBINED && (
+            <div>
+              <div className="text-[10px] text-teal font-bold uppercase mb-3">FOUND MULTIPLE DATA TYPES IN THIS FILE</div>
+
+              {/* Panel section */}
+              {((r.newPanels && r.newPanels.length > 0) || (r.panelUpdates && r.panelUpdates.length > 0)) && (
+                <div className="mb-4">
+                  <div className="text-[10px] text-cyan font-bold uppercase mb-2">DDC PANELS</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">NEW PANELS</div><div className="text-xl font-extrabold text-cyan">{(r.newPanels||[]).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">UPDATED</div><div className="text-xl font-extrabold text-green">{(r.panelUpdates||[]).length}</div></div>
+                    {r.termPanelCount > 0 && <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERM SHEETS</div><div className="text-xl font-extrabold text-teal">{r.termPanelCount}</div></div>}
+                    {r.totalPoints > 0 && <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">IO POINTS</div><div className="text-xl font-extrabold text-cyan">{r.totalPoints}</div></div>}
+                  </div>
+                  {(r.newPanels||[]).length > 0 && (
+                    <div className="max-h-28 overflow-y-auto bg-navy rounded-lg p-2">
+                      <table className="w-full text-[10px]"><tbody>
+                      {r.newPanels.map(function(p){return <tr key={p.id} className="border-b border-border/20"><td className="py-0.5 px-2 text-white uppercase">{p.name}</td><td className="py-0.5 px-2 text-dgray uppercase">{p.location}</td><td className="py-0.5 px-2 text-dgray uppercase">{p.floor}</td></tr>})}
+                      </tbody></table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* IO List section */}
+              {r.totalEquipment > 0 && (
+                <div className="mb-4">
+                  <div className="text-[10px] text-cyan font-bold uppercase mb-2">IO LIST</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">EQUIPMENT GROUPS</div><div className="text-xl font-extrabold text-cyan">{r.totalEquipment}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">IO POINTS</div><div className="text-xl font-extrabold text-cyan">{r.totalPoints}</div></div>
+                  </div>
+                </div>
+              )}
+
+              {/* Field devices section */}
+              {(r.devices||[]).length > 0 && (
+                <div className="mb-4">
+                  <div className="text-[10px] text-cyan font-bold uppercase mb-2">FIELD DEVICES</div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TOTAL DEVICES</div><div className="text-xl font-extrabold text-cyan">{r.devices.length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">AREA GROUPS</div><div className="text-xl font-extrabold text-cyan">{(r.areas||[]).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">COMM DONE</div><div className="text-xl font-extrabold text-green">{r.devices.filter(function(d){return d.comm_cable}).length}</div></div>
+                    <div className="bg-card2 rounded-lg p-3"><div className="text-[10px] text-dgray uppercase">TERM DONE</div><div className="text-xl font-extrabold text-green">{r.devices.filter(function(d){return d.termination}).length}</div></div>
+                  </div>
+                  <div className="max-h-28 overflow-y-auto bg-navy rounded-lg p-2">
+                    <table className="w-full text-[10px]"><tbody>
+                    {(r.areas||[]).map(function(a){return <tr key={a.id} className="border-b border-border/20"><td className="py-0.5 px-2 text-white uppercase">{a.name}</td><td className="text-center py-0.5 px-2 text-cyan">{a.device_ids.length} DEVICES</td></tr>})}
+                    </tbody></table>
+                  </div>
                 </div>
               )}
             </div>
