@@ -184,13 +184,33 @@ function callGeminiRaw(apiKey, body, onProgress) {
   }
 
   return tryModel(0).then(function(data) {
+    // Debug: log full response structure
+    console.log('[DRAWING] Full API response keys:', Object.keys(data))
+    if (onProgress) onProgress('DEBUG: response keys=' + Object.keys(data).join(','))
+
+    if (data.candidates) {
+      console.log('[DRAWING] Candidates count:', data.candidates.length)
+      if (onProgress) onProgress('DEBUG: ' + data.candidates.length + ' candidate(s)')
+    } else {
+      console.log('[DRAWING] NO candidates in response!', JSON.stringify(data).substring(0, 500))
+      if (onProgress) onProgress('DEBUG: NO candidates! resp=' + JSON.stringify(data).substring(0, 200))
+    }
+
     // Extract text from response
     var text = ''
     if (data.candidates && data.candidates[0] && data.candidates[0].content) {
       var parts = data.candidates[0].content.parts || []
       parts.forEach(function(p) { if (p.text) text += p.text })
     }
-    console.log('[DRAWING] Gemini raw response:', text.substring(0, 500))
+    console.log('[DRAWING] Gemini text length:', text.length)
+    console.log('[DRAWING] Gemini raw (first 1000):', text.substring(0, 1000))
+    if (onProgress) onProgress('DEBUG: text length=' + text.length + ' chars')
+    if (text.length > 0 && onProgress) onProgress('DEBUG: first 150 chars=' + text.substring(0, 150))
+
+    if (text.length === 0) {
+      if (onProgress) onProgress('DEBUG: EMPTY response from Gemini!')
+      return { parse_error: 'empty_response', raw_data: data }
+    }
 
     // Extract JSON
     var jsonStr = text
@@ -200,10 +220,12 @@ function callGeminiRaw(apiKey, body, onProgress) {
 
     try {
       var parsed = JSON.parse(jsonStr)
-      console.log('[DRAWING] Parsed result:', JSON.stringify(parsed).substring(0, 500))
+      console.log('[DRAWING] Parsed keys:', Object.keys(parsed))
+      if (onProgress) onProgress('DEBUG: parsed OK, keys=' + Object.keys(parsed).join(','))
       return parsed
     } catch (e) {
-      console.error('[DRAWING] JSON parse failed. Full text:', text)
+      console.error('[DRAWING] JSON parse failed:', e.message, 'Text:', text)
+      if (onProgress) onProgress('DEBUG: JSON parse FAILED: ' + e.message)
       return { raw_text: text, parse_error: e.message }
     }
   })
