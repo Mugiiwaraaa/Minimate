@@ -1,9 +1,84 @@
-/* ─── drawingParser.js ─── Shop Drawing Import Engine v3 ─── */
+/* --- drawingParser.js --- Shop Drawing Import Engine v4 --- */
 /* Gemini File API for large PDFs + Vision API for highlighted photo */
+/* v4: responseMimeType fix, key normalization, stack-based repair, anti-hallucination */
 
-/* ════════════════════════════════════════════════════════
+/* ================================================================
+   0.  UTILITIES
+   ================================================================ */
+
+function normalizeKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(function(item) { return normalizeKeys(item) })
+  if (obj && typeof obj === 'object') {
+    var result = {}
+    Object.keys(obj).forEach(function(k) {
+      result[k.toLowerCase()] = normalizeKeys(obj[k])
+    })
+    return result
+  }
+  return obj
+}
+
+function repairJSON(str) {
+  var s = str.trim()
+
+  // Strip trailing incomplete elements
+  s = s.replace(/,\s*"[^"]*$/, '')                     // ,"incomplete...
+  s = s.replace(/,\s*"[^"]*"\s*:\s*"[^"]*$/, '')       // ,"key":"incom...
+  s = s.replace(/,\s*"[^"]*"\s*:\s*\{[^}]*$/, '')      // ,"key":{incom...
+  s = s.replace(/,\s*"[^"]*"\s*:\s*\[[^\]]*$/, '')     // ,"key":[incom...
+  s = s.replace(/,\s*\{[^}]*$/, '')                     // ,{incomplete obj
+  s = s.replace(/,\s*"[^"]*"$/, '')                     // ,"incomplete"
+  s = s.replace(/,\s*$/, '')                            // trailing comma
+
+  // Use a STACK to track nesting order (fixes ]}} vs }]} issue)
+  var stack = []
+  var inString = false
+  var escaped = false
+  for (var i = 0; i < s.length; i++) {
+    var ch = s[i]
+    if (escaped) { escaped = false; continue }
+    if (ch === '\\' && inString) { escaped = true; continue }
+    if (ch === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (ch === '{') stack.push('}')
+    else if (ch === '[') stack.push(']')
+    else if (ch === '}' || ch === ']') {
+      if (stack.length > 0) stack.pop()
+    }
+  }
+
+  // Close in correct reverse nesting order
+  while (stack.length > 0) {
+    s += stack.pop()
+  }
+
+  return s
+}
+
+function extractJSON(text) {
+  // Step 1: Strip markdown code fences if present
+  var clean = text
+  if (clean.indexOf('```') >= 0) {
+    clean = clean.replace(/^[^{]*```(?:json)?\s*/i, '')
+    clean = clean.replace(/\s*```\s*$/, '')
+  }
+
+  // Step 2: Find the outermost JSON object
+  var firstBrace = clean.indexOf('{')
+  if (firstBrace < 0) return null
+
+  var lastBrace = clean.lastIndexOf('}')
+  if (lastBrace > firstBrace) {
+    return clean.substring(firstBrace, lastBrace + 1)
+  }
+
+  // No closing brace — return from first brace to end (truncated)
+  return clean.substring(firstBrace)
+}
+
+/* ================================================================
    1.  IMAGE COMPRESSION HELPER
-   ════════════════════════════════════════════════════════ */
+   ================================================================ */
 
 function compressImage(file, maxDim, quality) {
   maxDim = maxDim || 2048
@@ -38,9 +113,9 @@ function compressImage(file, maxDim, quality) {
   })
 }
 
-/* ════════════════════════════════════════════════════════
+/* ================================================================
    2.  GEMINI FILE UPLOAD API (for large PDFs)
-   ════════════════════════════════════════════════════════ */
+   ================================================================ */
 
 function uploadToGemini(file, apiKey, onProgress) {
   if (onProgress) onProgress('Uploading PDF to Gemini (' + Math.round(file.size/1024/1024) + ' MB)...')
@@ -50,13 +125,8 @@ function uploadToGemini(file, apiKey, onProgress) {
     reader.onload = function() {
       var arrayBuffer = reader.result
 
-      // Step 1: Start resumable upload
       var startUrl = 'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + apiKey
-      var metadata = {
-        file: {
-          display_name: file.name || 'drawing.pdf'
-        }
-      }
+      var metadata = { file: { display_name: file.name || 'drawing.pdf' } }
 
       fetch(startUrl, {
         method: 'POST',
@@ -74,10 +144,8 @@ function uploadToGemini(file, apiKey, onProgress) {
         }
         var uploadUrl = startResp.headers.get('X-Goog-Upload-URL')
         if (!uploadUrl) throw new Error('No upload URL returned')
-
         if (onProgress) onProgress('Uploading PDF data...')
 
-        // Step 2: Upload the actual bytes
         return fetch(uploadUrl, {
           method: 'PUT',
           headers: {
@@ -98,21 +166,18 @@ function uploadToGemini(file, apiKey, onProgress) {
         if (!fileUri) throw new Error('No file URI in upload response')
         if (onProgress) onProgress('PDF uploaded successfully')
 
-        // Step 3: Wait for file processing
         function checkState() {
           var name = fileInfo.file.name
           return fetch('https://generativelanguage.googleapis.com/v1beta/' + name + '?key=' + apiKey)
             .then(function(r) { return r.json() })
             .then(function(info) {
               console.log('[DRAWING] File state:', info.state)
-              if (info.state === 'ACTIVE') {
-                return fileUri
-              } else if (info.state === 'PROCESSING') {
+              if (info.state === 'ACTIVE') return fileUri
+              if (info.state === 'PROCESSING') {
                 if (onProgress) onProgress('PDF processing on Gemini servers...')
                 return new Promise(function(res) { setTimeout(res, 2000) }).then(checkState)
-              } else {
-                throw new Error('File processing failed: ' + info.state)
               }
+              throw new Error('File processing failed: ' + info.state)
             })
         }
         return checkState()
@@ -123,9 +188,9 @@ function uploadToGemini(file, apiKey, onProgress) {
   })
 }
 
-/* ════════════════════════════════════════════════════════
-   3.  GEMINI API WITH MODEL FALLBACK
-   ════════════════════════════════════════════════════════ */
+/* ================================================================
+   3.  GEMINI API WITH MODEL FALLBACK + RETRY
+   ================================================================ */
 
 var MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro']
 
@@ -137,7 +202,11 @@ function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
         { file_data: { mime_type: fileMime, file_uri: fileUri } }
       ]
     }],
-    generationConfig: { temperature: 0.1 }
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      maxOutputTokens: 65536
+    }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
@@ -150,7 +219,11 @@ function callGeminiWithImage(apiKey, prompt, imageBase64, imageMime, onProgress)
         { inline_data: { mime_type: imageMime, data: imageBase64 } }
       ]
     }],
-    generationConfig: { temperature: 0.1 }
+    generationConfig: {
+      temperature: 0.0,
+      responseMimeType: 'application/json',
+      maxOutputTokens: 65536
+    }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
@@ -166,14 +239,14 @@ function callGeminiRaw(apiKey, body, onProgress) {
     }).then(function(resp) {
       if (resp.status === 503 && attempt < 3) {
         var wait = (attempt + 1) * 3
-        if (onProgress) onProgress('Server busy — retrying in ' + wait + 's (attempt ' + (attempt + 1) + '/3)...')
+        if (onProgress) onProgress('Server busy - retrying in ' + wait + 's (attempt ' + (attempt + 1) + '/3)...')
         return new Promise(function(res) { setTimeout(res, wait * 1000) }).then(function() {
           return tryCall(model, attempt + 1)
         })
       }
       if (resp.status === 429 && attempt < 3) {
         var w2 = (attempt + 1) * 5
-        if (onProgress) onProgress('Rate limited — retrying in ' + w2 + 's...')
+        if (onProgress) onProgress('Rate limited - retrying in ' + w2 + 's...')
         return new Promise(function(res) { setTimeout(res, w2 * 1000) }).then(function() {
           return tryCall(model, attempt + 1)
         })
@@ -203,17 +276,7 @@ function callGeminiRaw(apiKey, body, onProgress) {
   }
 
   return tryModel(0).then(function(data) {
-    // Debug: log full response structure
-    console.log('[DRAWING] Full API response keys:', Object.keys(data))
-    if (onProgress) onProgress('DEBUG: response keys=' + Object.keys(data).join(','))
-
-    if (data.candidates) {
-      console.log('[DRAWING] Candidates count:', data.candidates.length)
-      if (onProgress) onProgress('DEBUG: ' + data.candidates.length + ' candidate(s)')
-    } else {
-      console.log('[DRAWING] NO candidates in response!', JSON.stringify(data).substring(0, 500))
-      if (onProgress) onProgress('DEBUG: NO candidates! resp=' + JSON.stringify(data).substring(0, 200))
-    }
+    console.log('[DRAWING] Response keys:', Object.keys(data))
 
     // Extract text from response
     var text = ''
@@ -221,102 +284,92 @@ function callGeminiRaw(apiKey, body, onProgress) {
       var parts = data.candidates[0].content.parts || []
       parts.forEach(function(p) { if (p.text) text += p.text })
     }
-    console.log('[DRAWING] Gemini text length:', text.length)
-    console.log('[DRAWING] Gemini raw (first 1000):', text.substring(0, 1000))
-    if (onProgress) onProgress('DEBUG: text length=' + text.length + ' chars')
-    if (text.length > 0 && onProgress) onProgress('DEBUG: first 150 chars=' + text.substring(0, 150))
+    console.log('[DRAWING] Text length:', text.length)
+    console.log('[DRAWING] First 500 chars:', text.substring(0, 500))
 
     if (text.length === 0) {
-      if (onProgress) onProgress('DEBUG: EMPTY response from Gemini!')
+      if (onProgress) onProgress('Empty response from Gemini')
       return { parse_error: 'empty_response', raw_data: data }
     }
 
-    // Extract JSON — always use brace extraction (most reliable)
-    var firstBrace = text.indexOf('{')
-    var lastBrace = text.lastIndexOf('}')
-    var jsonStr = ''
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-      jsonStr = text.substring(firstBrace, lastBrace + 1)
-    } else {
-      jsonStr = text.trim()
+    // Extract JSON using robust multi-step extraction
+    var jsonStr = extractJSON(text)
+    if (!jsonStr) {
+      if (onProgress) onProgress('No JSON object found in response')
+      return { parse_error: 'no_json_found', raw_text: text.substring(0, 500) }
     }
 
+    console.log('[DRAWING] Extracted JSON length:', jsonStr.length)
+
+    // Try parsing directly first
     try {
       var parsed = JSON.parse(jsonStr)
-      console.log('[DRAWING] Parsed keys:', Object.keys(parsed))
-      if (onProgress) onProgress('DEBUG: parsed OK, keys=' + Object.keys(parsed).join(','))
-      return parsed
+      console.log('[DRAWING] Parsed OK, keys:', Object.keys(parsed))
+      if (onProgress) onProgress('Parsed OK: ' + Object.keys(parsed).join(', '))
+      return normalizeKeys(parsed)
     } catch (e) {
-      console.error('[DRAWING] JSON parse failed:', e.message, 'Text:', text)
-      if (onProgress) onProgress('DEBUG: JSON parse FAILED: ' + e.message)
-      return { raw_text: text, parse_error: e.message }
+      console.warn('[DRAWING] Parse failed, repairing truncated JSON...')
+      if (onProgress) onProgress('Repairing truncated response...')
+
+      var repaired = repairJSON(jsonStr)
+      try {
+        var parsed2 = JSON.parse(repaired)
+        console.log('[DRAWING] Repair succeeded, keys:', Object.keys(parsed2))
+        if (onProgress) onProgress('Repaired OK: ' + Object.keys(parsed2).join(', '))
+        return normalizeKeys(parsed2)
+      } catch (e2) {
+        console.error('[DRAWING] Repair failed:', e2.message)
+        console.error('[DRAWING] Repaired tail:', repaired.substring(repaired.length - 200))
+        if (onProgress) onProgress('JSON repair failed - response too truncated')
+        return { parse_error: e.message, raw_text: text.substring(0, 500) }
+      }
     }
   })
 }
 
-/* ════════════════════════════════════════════════════════
-   4.  PROMPTS
-   ════════════════════════════════════════════════════════ */
+/* ================================================================
+   4.  PROMPTS — compact, anti-hallucination
+   ================================================================ */
 
 var PDF_PROMPT = [
-  'You are analyzing a BMS (Building Management System) shop drawing / floor plan.',
-  'This is a CAD/engineering drawing showing FCU units, thermostats, conduit routing, and room layouts.',
+  'Analyze this BMS shop drawing / floor plan CAD image.',
+  'Extract ONLY what you can actually see. Do NOT invent or extrapolate sequential tag numbers.',
   '',
-  'Extract ALL of the following and return as JSON:',
+  'Return JSON with:',
+  '- devices: array of {tag, thermostat, room} for each FCU/VAV/AHU visible',
+  '- rooms: array of room name strings',
+  '- ddc_panels: array of DDC panel IDs',
+  '- loop_labels: array of any loop references',
+  '- floor: floor name if visible',
   '',
-  '1. DEVICES: Every FCU, VAV, AHU, PAU, ERU tag visible (e.g. "FCU-20-45", "VAV-12-03")',
-  '   - Include the associated thermostat if shown (e.g. "FCU-20-45.TR")',
-  '2. ROOMS: Every room name/label visible (e.g. "CLASSROOM SF01", "OFFICE 201")',
-  '3. DDC PANELS: Any DDC panel references (e.g. "DDC-FF-02")',
-  '4. LOOP LABELS: Any loop references like "LOOP-01", "FCU BMS/MBTP LOOP-07"',
-  '5. FLOOR: The floor name if visible',
+  'IMPORTANT: ONLY include device tags you can READ in the drawing. Do NOT generate sequential numbers.',
+  'Keep room names exactly as shown.',
   '',
-  'For each device, note which room it appears to be in or nearest to.',
-  '',
-  'Return ONLY valid JSON:',
-  '{',
-  '  "devices": [{"tag":"FCU-20-45","thermostat":"TR-20-45","room":"CLASSROOM SF01"}],',
-  '  "rooms": ["CLASSROOM SF01","OFFICE 201"],',
-  '  "ddc_panels": ["DDC-FF-02"],',
-  '  "loop_labels": ["LOOP-07"],',
-  '  "floor": "SECOND FLOOR"',
-  '}'
+  'Example: {"devices":[{"tag":"FCU-20-45","thermostat":"TR-20-45","room":"OFFICE 201"}],"rooms":["OFFICE 201"],"ddc_panels":["DDC-FF-02"],"loop_labels":["LOOP-07"],"floor":"SECOND FLOOR"}'
 ].join('\n')
 
 var PHOTO_PROMPT = [
-  'You are analyzing a highlighted BMS shop drawing photo from a site supervisor.',
-  'The supervisor has marked up this drawing with colored highlights showing actual as-built loop routing.',
-  'Each colored path = one communication loop connecting devices to a DDC panel.',
+  'Analyze this highlighted BMS shop drawing photo. A supervisor marked colored paths showing communication loop routing.',
   '',
-  'Extract ALL of the following and return as JSON:',
+  'CRITICAL RULES:',
+  '- ONLY report device tags you can ACTUALLY READ in the image.',
+  '- Do NOT generate sequential tag numbers. If you see FCU-20-01 and FCU-20-05, do NOT fill in 02/03/04.',
+  '- Each highlighted color path = one communication loop.',
+  '- A typical loop has 3-15 devices, rarely more than 20.',
   '',
-  '1. LOOPS: Each colored highlight path is a communication loop.',
-  '   - loop_id: Label if visible (e.g. "LOOP-01") or generate "LOOP-A","LOOP-B"',
-  '   - color: Highlight color (pink, yellow, green, blue, etc.)',
-  '   - ddc_panel: Which DDC panel this loop connects to',
-  '   - devices: List of FCU/VAV tag numbers on this path',
+  'Return JSON:',
+  '- loops: array of {loop_id, color, ddc_panel, devices:[tag strings]}',
+  '- all_devices: flat array of every tag you can read',
+  '- ddc_panels: array of {panel_id, position}',
+  '- annotations: array of {type, near, meaning}',
+  '- floor: floor name if visible',
   '',
-  '2. ALL DEVICE TAGS: Every FCU/VAV number you can read, even partially',
-  '',
-  '3. DDC PANELS visible',
-  '',
-  '4. ANNOTATIONS: Checkmarks, circles, handwritten notes',
-  '',
-  'Try HARD to read device numbers even if partially obscured by highlights.',
-  '',
-  'Return ONLY valid JSON:',
-  '{',
-  '  "loops": [{"loop_id":"LOOP-01","color":"pink","ddc_panel":"DDC-FF-02","devices":["FCU-20-45","FCU-20-46"]}],',
-  '  "all_devices": ["FCU-20-45","FCU-20-46"],',
-  '  "ddc_panels": [{"panel_id":"DDC-FF-02","position":"bottom-right"}],',
-  '  "annotations": [{"type":"checkmark","near":"FCU-20-45","meaning":"done"}],',
-  '  "floor": "SECOND FLOOR"',
-  '}'
+  'Example: {"loops":[{"loop_id":"LOOP-01","color":"pink","ddc_panel":"DDC-FF-02","devices":["FCU-20-45","FCU-20-46"]}],"all_devices":["FCU-20-45","FCU-20-46"],"ddc_panels":[{"panel_id":"DDC-FF-02","position":"bottom-right"}],"annotations":[],"floor":"SECOND FLOOR"}'
 ].join('\n')
 
-/* ════════════════════════════════════════════════════════
+/* ================================================================
    5.  COMBINE PDF + PHOTO RESULTS
-   ════════════════════════════════════════════════════════ */
+   ================================================================ */
 
 function combineResults(pdfResult, photoResult, onProgress) {
   if (onProgress) onProgress('Combining PDF data with photo analysis...')
@@ -324,7 +377,7 @@ function combineResults(pdfResult, photoResult, onProgress) {
   var pdfDevices = pdfResult.devices || []
   var photoLoops = photoResult.loops || []
 
-  // Build lookup: tag → {room, thermostat}
+  // Build lookup: tag -> {room, thermostat}
   var deviceInfo = {}
   pdfDevices.forEach(function(d) {
     var tag = (d.tag || '').toUpperCase().replace(/[^A-Z0-9-]/g, '')
@@ -333,10 +386,16 @@ function combineResults(pdfResult, photoResult, onProgress) {
 
   // Enrich photo loops with PDF info
   var enrichedLoops = photoLoops.map(function(loop) {
-    var loopDevices = (loop.devices || []).map(function(rawTag) {
+    var rawDevices = loop.devices || []
+    // Sanity cap: if a single loop claims 50+ devices, likely hallucinated
+    if (rawDevices.length > 50) {
+      console.warn('[DRAWING] Loop ' + (loop.loop_id||'?') + ' claims ' + rawDevices.length + ' devices - capping at 50')
+      rawDevices = rawDevices.slice(0, 50)
+    }
+
+    var loopDevices = rawDevices.map(function(rawTag) {
       var tag = (rawTag || '').toUpperCase().replace(/[^A-Z0-9-]/g, '')
       var info = deviceInfo[tag] || {}
-      // Fuzzy match
       if (!info.room) {
         Object.keys(deviceInfo).forEach(function(k) {
           if (k.indexOf(tag) >= 0 || tag.indexOf(k) >= 0) info = deviceInfo[k]
@@ -345,9 +404,9 @@ function combineResults(pdfResult, photoResult, onProgress) {
       return { tag: tag, room: info.room || '', thermostat: info.thermostat || '' }
     })
     return {
-      loopId: loop.loop_id || 'LOOP-?',
+      loopId: loop.loop_id || loop.loopid || 'LOOP-?',
       color: loop.color || '',
-      ddcPanel: loop.ddc_panel || '',
+      ddcPanel: loop.ddc_panel || loop.ddcpanel || '',
       devices: loopDevices,
       deviceCount: loopDevices.length
     }
@@ -378,40 +437,35 @@ function combineResults(pdfResult, photoResult, onProgress) {
   }
 }
 
-/* ════════════════════════════════════════════════════════
-   6.  MAIN ENTRY — ORCHESTRATOR
-   ════════════════════════════════════════════════════════ */
+/* ================================================================
+   6.  MAIN ENTRY
+   ================================================================ */
 
 function parseDrawings(pdfFile, photoFile, apiKey, onProgress) {
   var progress = onProgress || function() {}
   progress('Starting Drawing Import...')
 
-  // Step 1: Upload PDF to Gemini File API
   return uploadToGemini(pdfFile, apiKey, progress)
     .then(function(fileUri) {
-      // Step 2: Compress photo
       progress('Compressing highlighted photo...')
       return compressImage(photoFile, 3000, 0.85).then(function(photoImg) {
         progress('Photo: ' + photoImg.width + 'x' + photoImg.height + ' (' + photoImg.sizeKB + ' KB)')
 
-        // Step 3: Analyze PDF via Gemini (using uploaded file)
-        progress('Analyzing PDF with Gemini Vision...')
+        progress('Analyzing PDF with Gemini...')
         return callGeminiWithFile(apiKey, PDF_PROMPT, fileUri, 'application/pdf', progress)
           .then(function(pdfResult) {
             var dc = (pdfResult.devices||[]).length
             var rc = (pdfResult.rooms||[]).length
             progress('PDF: ' + dc + ' devices, ' + rc + ' rooms found')
 
-            // Step 4: Analyze highlighted photo via Gemini
-            progress('Analyzing highlighted photo with Gemini Vision...')
+            progress('Analyzing highlighted photo with Gemini...')
             return callGeminiWithImage(apiKey, PHOTO_PROMPT, photoImg.base64, photoImg.mimeType, progress)
               .then(function(photoResult) {
                 var lc = (photoResult.loops||[]).length
                 progress('Photo: ' + lc + ' loops found')
 
-                // Step 5: Combine
                 var combined = combineResults(pdfResult, photoResult, progress)
-                progress('Drawing import analysis complete!')
+                progress('Drawing import complete!')
                 return combined
               })
           })
@@ -419,8 +473,8 @@ function parseDrawings(pdfFile, photoFile, apiKey, onProgress) {
     })
 }
 
-/* ════════════════════════════════════════════════════════
+/* ================================================================
    7.  EXPORTS
-   ════════════════════════════════════════════════════════ */
+   ================================================================ */
 
 export { parseDrawings, uploadToGemini, compressImage, callGeminiWithFile, callGeminiWithImage, combineResults }
