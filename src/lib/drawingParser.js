@@ -127,7 +127,7 @@ function uploadToGemini(file, apiKey, onProgress) {
    3.  GEMINI API WITH MODEL FALLBACK
    ════════════════════════════════════════════════════════ */
 
-var MODELS = ['gemini-2.5-flash']
+var MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro']
 
 function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
   var body = {
@@ -156,11 +156,7 @@ function callGeminiWithImage(apiKey, prompt, imageBase64, imageMime, onProgress)
 }
 
 function callGeminiRaw(apiKey, body, onProgress) {
-  function tryModel(idx) {
-    if (idx >= MODELS.length) return Promise.reject(new Error('All Gemini models failed'))
-    var model = MODELS[idx]
-    if (idx > 0 && onProgress) onProgress('Trying ' + model + '...')
-
+  function tryCall(model, attempt) {
     var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + apiKey
 
     return fetch(url, {
@@ -168,18 +164,41 @@ function callGeminiRaw(apiKey, body, onProgress) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     }).then(function(resp) {
+      if (resp.status === 503 && attempt < 3) {
+        var wait = (attempt + 1) * 3
+        if (onProgress) onProgress('Server busy — retrying in ' + wait + 's (attempt ' + (attempt + 1) + '/3)...')
+        return new Promise(function(res) { setTimeout(res, wait * 1000) }).then(function() {
+          return tryCall(model, attempt + 1)
+        })
+      }
+      if (resp.status === 429 && attempt < 3) {
+        var w2 = (attempt + 1) * 5
+        if (onProgress) onProgress('Rate limited — retrying in ' + w2 + 's...')
+        return new Promise(function(res) { setTimeout(res, w2 * 1000) }).then(function() {
+          return tryCall(model, attempt + 1)
+        })
+      }
       if (!resp.ok) {
         return resp.text().then(function(errText) {
-          console.warn('[DRAWING] ' + model + ' failed (' + resp.status + '):', errText.substring(0, 200))
-          if (idx < MODELS.length - 1) {
-            if (onProgress) onProgress(model + ' failed (' + resp.status + '), trying next...')
-            return tryModel(idx + 1)
-          }
           throw new Error('Gemini API error (' + resp.status + '): ' + errText.substring(0, 300))
         })
       }
-      if (onProgress && idx > 0) onProgress(model + ' succeeded')
       return resp.json()
+    })
+  }
+
+  function tryModel(idx) {
+    if (idx >= MODELS.length) return Promise.reject(new Error('All Gemini models failed'))
+    var model = MODELS[idx]
+    if (idx > 0 && onProgress) onProgress('Trying ' + model + '...')
+
+    return tryCall(model, 0).catch(function(err) {
+      console.warn('[DRAWING] ' + model + ' failed:', err.message.substring(0, 200))
+      if (idx < MODELS.length - 1) {
+        if (onProgress) onProgress(model + ' failed, trying next...')
+        return tryModel(idx + 1)
+      }
+      throw err
     })
   }
 
