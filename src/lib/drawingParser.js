@@ -137,7 +137,7 @@ function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
         { file_data: { mime_type: fileMime, file_uri: fileUri } }
       ]
     }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
@@ -150,7 +150,7 @@ function callGeminiWithImage(apiKey, prompt, imageBase64, imageMime, onProgress)
         { inline_data: { mime_type: imageMime, data: imageBase64 } }
       ]
     }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
@@ -212,23 +212,15 @@ function callGeminiRaw(apiKey, body, onProgress) {
       return { parse_error: 'empty_response', raw_data: data }
     }
 
-    // Extract JSON — strip markdown code fences, handle various formats
-    var jsonStr = text
-    // Try multiple fence patterns
-    var jsonMatch = text.match(/```json\s*([\s\S]*?)```/) ||
-                    text.match(/```\s*([\s\S]*?)```/) ||
-                    text.match(/`json\s*([\s\S]*?)`/)
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1]
+    // Extract JSON — always use brace extraction (most reliable)
+    var firstBrace = text.indexOf('{')
+    var lastBrace = text.lastIndexOf('}')
+    var jsonStr = ''
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      jsonStr = text.substring(firstBrace, lastBrace + 1)
     } else {
-      // No fences — find first { to last }
-      var firstBrace = text.indexOf('{')
-      var lastBrace = text.lastIndexOf('}')
-      if (firstBrace >= 0 && lastBrace > firstBrace) {
-        jsonStr = text.substring(firstBrace, lastBrace + 1)
-      }
+      jsonStr = text.trim()
     }
-    jsonStr = jsonStr.trim()
 
     try {
       var parsed = JSON.parse(jsonStr)
