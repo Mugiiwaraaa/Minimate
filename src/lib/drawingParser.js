@@ -1,6 +1,5 @@
-/* --- drawingParser.js --- Shop Drawing Import Engine v4 --- */
-/* Gemini File API for large PDFs + Vision API for highlighted photo */
-/* v4: responseMimeType fix, key normalization, stack-based repair, anti-hallucination */
+/* --- drawingParser.js --- Shop Drawing Import Engine v5 --- */
+/* Spatial correlation: follow colored paths, find numbered markers, cross-reference PDF */
 
 /* ================================================================
    0.  UTILITIES
@@ -21,58 +20,74 @@ function normalizeKeys(obj) {
 function repairJSON(str) {
   var s = str.trim()
 
-  // Strip trailing incomplete elements
-  s = s.replace(/,\s*"[^"]*$/, '')                     // ,"incomplete...
-  s = s.replace(/,\s*"[^"]*"\s*:\s*"[^"]*$/, '')       // ,"key":"incom...
-  s = s.replace(/,\s*"[^"]*"\s*:\s*\{[^}]*$/, '')      // ,"key":{incom...
-  s = s.replace(/,\s*"[^"]*"\s*:\s*\[[^\]]*$/, '')     // ,"key":[incom...
-  s = s.replace(/,\s*\{[^}]*$/, '')                     // ,{incomplete obj
-  s = s.replace(/,\s*"[^"]*"$/, '')                     // ,"incomplete"
-  s = s.replace(/,\s*$/, '')                            // trailing comma
+  /* Walk the string tracking nesting and find the position after the last
+     COMPLETE value (closing bracket/brace or comma between elements).
+     Then truncate there and close any remaining open brackets in correct order. */
 
-  // Use a STACK to track nesting order (fixes ]}} vs }]} issue)
   var stack = []
   var inString = false
   var escaped = false
+  var lastSafePos = 0   // position AFTER last complete value
+
   for (var i = 0; i < s.length; i++) {
     var ch = s[i]
     if (escaped) { escaped = false; continue }
     if (ch === '\\' && inString) { escaped = true; continue }
     if (ch === '"') { inString = !inString; continue }
     if (inString) continue
-    if (ch === '{') stack.push('}')
-    else if (ch === '[') stack.push(']')
-    else if (ch === '}' || ch === ']') {
+
+    if (ch === '{') {
+      stack.push('}')
+    } else if (ch === '[') {
+      stack.push(']')
+    } else if (ch === '}' || ch === ']') {
       if (stack.length > 0) stack.pop()
+      lastSafePos = i + 1     // after a closing bracket = complete
+    } else if (ch === ',') {
+      lastSafePos = i         // just before comma = element before it is complete
     }
   }
 
-  // Close in correct reverse nesting order
-  while (stack.length > 0) {
-    s += stack.pop()
+  // If we're mid-value (string not closed, or trailing incomplete element),
+  // truncate to last safe position
+  if (lastSafePos > 0 && lastSafePos < s.length) {
+    s = s.substring(0, lastSafePos)
   }
+
+  // Remove trailing comma if present
+  s = s.replace(/,\s*$/, '')
+
+  // Re-scan to get accurate stack after truncation
+  stack = []
+  inString = false
+  escaped = false
+  for (var j = 0; j < s.length; j++) {
+    var c = s[j]
+    if (escaped) { escaped = false; continue }
+    if (c === '\\' && inString) { escaped = true; continue }
+    if (c === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (c === '{') stack.push('}')
+    else if (c === '[') stack.push(']')
+    else if (c === '}' || c === ']') { if (stack.length > 0) stack.pop() }
+  }
+
+  // Close in correct reverse nesting order
+  while (stack.length > 0) { s += stack.pop() }
 
   return s
 }
 
 function extractJSON(text) {
-  // Step 1: Strip markdown code fences if present
   var clean = text
   if (clean.indexOf('```') >= 0) {
     clean = clean.replace(/^[^{]*```(?:json)?\s*/i, '')
     clean = clean.replace(/\s*```\s*$/, '')
   }
-
-  // Step 2: Find the outermost JSON object
   var firstBrace = clean.indexOf('{')
   if (firstBrace < 0) return null
-
   var lastBrace = clean.lastIndexOf('}')
-  if (lastBrace > firstBrace) {
-    return clean.substring(firstBrace, lastBrace + 1)
-  }
-
-  // No closing brace — return from first brace to end (truncated)
+  if (lastBrace > firstBrace) return clean.substring(firstBrace, lastBrace + 1)
   return clean.substring(firstBrace)
 }
 
@@ -124,7 +139,6 @@ function uploadToGemini(file, apiKey, onProgress) {
     var reader = new FileReader()
     reader.onload = function() {
       var arrayBuffer = reader.result
-
       var startUrl = 'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + apiKey
       var metadata = { file: { display_name: file.name || 'drawing.pdf' } }
 
@@ -278,7 +292,6 @@ function callGeminiRaw(apiKey, body, onProgress) {
   return tryModel(0).then(function(data) {
     console.log('[DRAWING] Response keys:', Object.keys(data))
 
-    // Extract text from response
     var text = ''
     if (data.candidates && data.candidates[0] && data.candidates[0].content) {
       var parts = data.candidates[0].content.parts || []
@@ -292,7 +305,6 @@ function callGeminiRaw(apiKey, body, onProgress) {
       return { parse_error: 'empty_response', raw_data: data }
     }
 
-    // Extract JSON using robust multi-step extraction
     var jsonStr = extractJSON(text)
     if (!jsonStr) {
       if (onProgress) onProgress('No JSON object found in response')
@@ -301,14 +313,13 @@ function callGeminiRaw(apiKey, body, onProgress) {
 
     console.log('[DRAWING] Extracted JSON length:', jsonStr.length)
 
-    // Try parsing directly first
     try {
       var parsed = JSON.parse(jsonStr)
       console.log('[DRAWING] Parsed OK, keys:', Object.keys(parsed))
       if (onProgress) onProgress('Parsed OK: ' + Object.keys(parsed).join(', '))
       return normalizeKeys(parsed)
     } catch (e) {
-      console.warn('[DRAWING] Parse failed, repairing truncated JSON...')
+      console.warn('[DRAWING] Parse failed, repairing...')
       if (onProgress) onProgress('Repairing truncated response...')
 
       var repaired = repairJSON(jsonStr)
@@ -328,47 +339,63 @@ function callGeminiRaw(apiKey, body, onProgress) {
 }
 
 /* ================================================================
-   4.  PROMPTS — compact, anti-hallucination
+   4.  PROMPTS — FCU-ROOM MAPPING + LOOP GROUPING
    ================================================================ */
 
 var PDF_PROMPT = [
-  'Analyze this BMS shop drawing / floor plan CAD image.',
-  'Extract ONLY what you can actually see. Do NOT invent or extrapolate sequential tag numbers.',
+  'You are analyzing a BMS (Building Management System) CAD shop drawing.',
   '',
-  'Return JSON with:',
-  '- devices: array of {tag, thermostat, room} for each FCU/VAV/AHU visible',
-  '- rooms: array of room name strings',
-  '- ddc_panels: array of DDC panel IDs',
-  '- loop_labels: array of any loop references',
-  '- floor: floor name if visible',
+  'PRIMARY GOAL: Read every FCU device tag and identify which room it serves.',
   '',
-  'IMPORTANT: ONLY include device tags you can READ in the drawing. Do NOT generate sequential numbers.',
-  'Keep room names exactly as shown.',
+  'How to find devices:',
+  '- FCU tags appear in small labeled boxes (often yellow/highlighted), e.g. "FCU-28-02"',
+  '- Below or near each FCU box is a thermostat tag, e.g. "FCU-28-02-TR"',
+  '- Additional info may include AIR FLOW and B.O.U values — ignore these',
+  '- Near each device is a ROOM LABEL BOX showing the room name and number, e.g. "LOBBY SF-078"',
   '',
-  'Example: {"devices":[{"tag":"FCU-20-45","thermostat":"TR-20-45","room":"OFFICE 201"}],"rooms":["OFFICE 201"],"ddc_panels":["DDC-FF-02"],"loop_labels":["LOOP-07"],"floor":"SECOND FLOOR"}'
+  'For each device, record:',
+  '- tag: the exact FCU/VAV/AHU tag as printed',
+  '- thermostat: the thermostat tag (often ends in -TR)',
+  '- room: the room name from the nearest labeled room box',
+  '',
+  'Also extract: ddc_panels, loop_labels (e.g. "LOOP-06"), floor name.',
+  '',
+  'RULES:',
+  '- ONLY include tags you can READ. Do NOT invent or extrapolate sequential numbers.',
+  '- Room names come from labeled boxes (e.g. "LOBBY SF-078", "HEALTH NEEDLES LIFE SKILLS COOKING"), NOT made-up names like "OFFICE 201".',
+  '- If you cannot read a tag clearly, skip it.',
+  '',
+  '{"devices":[{"tag":"FCU-28-02","thermostat":"FCU-28-02-TR","room":"LOBBY SF-078"}],"rooms":["LOBBY SF-078"],"ddc_panels":["DDC-FF-04"],"loop_labels":["LOOP-06"],"floor":"SECOND FLOOR"}'
 ].join('\n')
 
 var PHOTO_PROMPT = [
-  'Analyze this highlighted BMS shop drawing photo. A supervisor marked colored paths showing communication loop routing.',
+  'You are analyzing a HIGHLIGHTED BMS shop drawing photo from a site supervisor.',
+  'The supervisor has drawn highlighted paths showing how communication cable loops are routed between FCU devices.',
+  '',
+  'UNDERSTANDING THE DRAWING:',
+  '- Highlighted paths (often yellow, but could be any color) trace the physical cable routing for communication loops',
+  '- A LOOP is a continuous highlighted path connecting multiple FCU devices to a DDC panel',
+  '- The supervisor may use the SAME color for ALL loops. What separates loops is PATH CONTINUITY — two separate highlighted paths that do not connect are two different loops.',
+  '- Along each path, the supervisor has written CIRCLED NUMBERS (1, 2, 3...) in red/dark ink next to each FCU device. These numbers show the device sequence on that loop.',
+  '- A single loop typically has between 1 and 32 devices.',
+  '',
+  'YOUR TASK:',
+  '1. Trace each continuous highlighted path. Each separate path = one loop.',
+  '2. Along each path, find the circled sequence numbers (1, 2, 3...).',
+  '3. At each numbered position, try to read the FCU tag printed on the drawing (e.g. "FCU-28-02").',
+  '4. If you cannot read the FCU tag at a position, report "MARKER-N" where N is the circled number.',
+  '5. Look for DDC panel labels — these are where loops originate/terminate.',
   '',
   'CRITICAL RULES:',
-  '- ONLY report device tags you can ACTUALLY READ in the image.',
-  '- Do NOT generate sequential tag numbers. If you see FCU-20-01 and FCU-20-05, do NOT fill in 02/03/04.',
-  '- Each highlighted color path = one communication loop.',
-  '- A typical loop has 3-15 devices, rarely more than 20.',
+  '- ONLY report FCU tags you can ACTUALLY READ. Do NOT generate sequential numbers.',
+  '- If you see circled numbers 1 through 22 but can only read 8 FCU tags, report 8 readable tags and the rest as MARKER-N.',
+  '- Maximum 32 devices per loop.',
   '',
-  'Return JSON:',
-  '- loops: array of {loop_id, color, ddc_panel, devices:[tag strings]}',
-  '- all_devices: flat array of every tag you can read',
-  '- ddc_panels: array of {panel_id, position}',
-  '- annotations: array of {type, near, meaning}',
-  '- floor: floor name if visible',
-  '',
-  'Example: {"loops":[{"loop_id":"LOOP-01","color":"pink","ddc_panel":"DDC-FF-02","devices":["FCU-20-45","FCU-20-46"]}],"all_devices":["FCU-20-45","FCU-20-46"],"ddc_panels":[{"panel_id":"DDC-FF-02","position":"bottom-right"}],"annotations":[],"floor":"SECOND FLOOR"}'
+  '{"loops":[{"loop_id":"LOOP-01","color":"yellow","ddc_panel":"DDC-FF-04","devices":["FCU-28-02","FCU-28-03","MARKER-3","FCU-28-05"]}],"ddc_panels":["DDC-FF-04"],"annotations":[],"floor":"SECOND FLOOR"}'
 ].join('\n')
 
 /* ================================================================
-   5.  COMBINE PDF + PHOTO RESULTS
+   5.  COMBINE PDF + PHOTO RESULTS (spatial matching)
    ================================================================ */
 
 function combineResults(pdfResult, photoResult, onProgress) {
@@ -377,32 +404,40 @@ function combineResults(pdfResult, photoResult, onProgress) {
   var pdfDevices = pdfResult.devices || []
   var photoLoops = photoResult.loops || []
 
-  // Build lookup: tag -> {room, thermostat}
+  // Build lookup: tag -> {room, thermostat, pos}
   var deviceInfo = {}
   pdfDevices.forEach(function(d) {
     var tag = (d.tag || '').toUpperCase().replace(/[^A-Z0-9-]/g, '')
-    if (tag) deviceInfo[tag] = { room: d.room || '', thermostat: d.thermostat || '' }
+    if (tag) deviceInfo[tag] = {
+      room: d.room || '',
+      thermostat: d.thermostat || ''
+    }
   })
 
   // Enrich photo loops with PDF info
   var enrichedLoops = photoLoops.map(function(loop) {
     var rawDevices = loop.devices || []
-    // Sanity cap: if a single loop claims 50+ devices, likely hallucinated
-    if (rawDevices.length > 50) {
-      console.warn('[DRAWING] Loop ' + (loop.loop_id||'?') + ' claims ' + rawDevices.length + ' devices - capping at 50')
-      rawDevices = rawDevices.slice(0, 50)
+
+    // Cap at 32 per loop (BMS physical limit)
+    if (rawDevices.length > 32) {
+      console.warn('[DRAWING] Loop ' + (loop.loop_id||'?') + ' has ' + rawDevices.length + ' devices - capping at 32')
+      rawDevices = rawDevices.slice(0, 32)
     }
 
     var loopDevices = rawDevices.map(function(rawTag) {
       var tag = (rawTag || '').toUpperCase().replace(/[^A-Z0-9-]/g, '')
       var info = deviceInfo[tag] || {}
-      if (!info.room) {
+
+      // Fuzzy match if no exact match and not a MARKER placeholder
+      if (!info.room && tag.indexOf('MARKER') < 0) {
         Object.keys(deviceInfo).forEach(function(k) {
           if (k.indexOf(tag) >= 0 || tag.indexOf(k) >= 0) info = deviceInfo[k]
         })
       }
+
       return { tag: tag, room: info.room || '', thermostat: info.thermostat || '' }
     })
+
     return {
       loopId: loop.loop_id || loop.loopid || 'LOOP-?',
       color: loop.color || '',
@@ -419,7 +454,11 @@ function combineResults(pdfResult, photoResult, onProgress) {
     var tag = (d.tag || '').toUpperCase().replace(/[^A-Z0-9-]/g, '')
     return tag && !matchedTags[tag] && /^(FCU|VAV|AHU|PAU|ERU)/i.test(tag)
   }).map(function(d) {
-    return { tag: (d.tag||'').toUpperCase().replace(/[^A-Z0-9-]/g,''), room: d.room||'', thermostat: d.thermostat||'' }
+    return {
+      tag: (d.tag||'').toUpperCase().replace(/[^A-Z0-9-]/g,''),
+      room: d.room||'',
+      thermostat: d.thermostat||''
+    }
   })
 
   var totalMatched = enrichedLoops.reduce(function(s,l){return s+l.deviceCount},0)
