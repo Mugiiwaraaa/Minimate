@@ -127,7 +127,7 @@ function uploadToGemini(file, apiKey, onProgress) {
    3.  GEMINI API WITH MODEL FALLBACK
    ════════════════════════════════════════════════════════ */
 
-var MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-001', 'gemini-1.5-flash']
+var MODELS = ['gemini-2.5-flash-preview-05-20', 'gemini-2.0-flash-001']
 
 function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
   var body = {
@@ -137,7 +137,7 @@ function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
         { file_data: { mime_type: fileMime, file_uri: fileUri } }
       ]
     }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
+    generationConfig: { temperature: 0.1 }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
@@ -150,7 +150,7 @@ function callGeminiWithImage(apiKey, prompt, imageBase64, imageMime, onProgress)
         { inline_data: { mime_type: imageMime, data: imageBase64 } }
       ]
     }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 65536 }
+    generationConfig: { temperature: 0.1 }
   }
   return callGeminiRaw(apiKey, body, onProgress)
 }
