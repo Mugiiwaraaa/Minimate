@@ -127,7 +127,7 @@ function uploadToGemini(file, apiKey, onProgress) {
    3.  GEMINI API WITH MODEL FALLBACK
    ════════════════════════════════════════════════════════ */
 
-var MODELS = ['gemini-2.5-flash-preview-05-20', 'gemini-2.0-flash-001']
+var MODELS = ['gemini-2.5-flash']
 
 function callGeminiWithFile(apiKey, prompt, fileUri, fileMime, onProgress) {
   var body = {
