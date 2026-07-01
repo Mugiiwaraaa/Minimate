@@ -212,10 +212,22 @@ function callGeminiRaw(apiKey, body, onProgress) {
       return { parse_error: 'empty_response', raw_data: data }
     }
 
-    // Extract JSON
+    // Extract JSON — strip markdown code fences, handle various formats
     var jsonStr = text
-    var jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (jsonMatch) jsonStr = jsonMatch[1]
+    // Try multiple fence patterns
+    var jsonMatch = text.match(/```json\s*([\s\S]*?)```/) ||
+                    text.match(/```\s*([\s\S]*?)```/) ||
+                    text.match(/`json\s*([\s\S]*?)`/)
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1]
+    } else {
+      // No fences — find first { to last }
+      var firstBrace = text.indexOf('{')
+      var lastBrace = text.lastIndexOf('}')
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        jsonStr = text.substring(firstBrace, lastBrace + 1)
+      }
+    }
     jsonStr = jsonStr.trim()
 
     try {
