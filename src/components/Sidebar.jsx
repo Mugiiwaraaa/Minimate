@@ -111,7 +111,7 @@ export default function Sidebar(props) {
             <div className="px-4 pb-3">
               <button onClick={function(){if(props.onImportDrawing)props.onImportDrawing();setIsOpen(false)}} className="w-full flex items-center gap-2 px-3 py-2 bg-teal/10 border border-teal/30 rounded-lg hover:bg-teal/20 transition cursor-pointer">
                 <span className="text-sm">📐</span>
-                <span className="text-[11px] text-teal font-semibold uppercase">IMPORT DRAWING</span>
+                <span className="text-[11px] text-teal font-semibold uppercase">IMPORT DRAWINGS</span>
               </button>
             </div>
           )}

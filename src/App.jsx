@@ -1,15 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
+import TraceStudio from './components/TraceStudio'
 import Dashboard from './pages/Dashboard'
 import PanelsList from './pages/PanelsList'
 import PanelDetail from './pages/PanelDetail'
 import CommDevices from './pages/CommDevices'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
-import { loadProject, saveProjectData, flushPendingSave } from './lib/supabaseDb'
+import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion } from './lib/supabaseDb'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
-import { parseDrawings } from './lib/drawingParser'
+import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
 function Placeholder(props) {
   return (
@@ -18,6 +19,35 @@ function Placeholder(props) {
       <p className="text-sm">{props.desc}</p>
     </div>
   )
+}
+
+// ─── Canonical loop device factory ─────────────────────────
+// SINGLE source of truth for the device shape. Matches what
+// CommDevices.jsx reads/writes: device_type, room_name, address,
+// the 6 commissioning stages, remarks.
+var deviceIdCounter = 0
+function makeLoopDevice(tag, room, thermostat) {
+  var t = (tag || '').toUpperCase().trim()
+  var device_type = 'DEVICE'
+  if (t.indexOf('FCU') >= 0) device_type = 'FCU THERMOSTAT'
+  else if (t.indexOf('VAV') >= 0) device_type = 'VAV'
+  else if (t.indexOf('AHU') >= 0) device_type = 'AHU'
+  deviceIdCounter++
+  return {
+    id: 'dev-' + Date.now() + '-' + deviceIdCounter,
+    device_type: device_type,
+    tag: t,
+    room_name: (room || '').toUpperCase().trim(),
+    thermostat: (thermostat || '').toUpperCase().trim(),
+    address: '',
+    comm_cable: false,
+    control_cable: false,
+    continuity: false,
+    termination: false,
+    device_installed: false,
+    address_set: false,
+    remarks: ''
+  }
 }
 
 export default function App() {
@@ -45,6 +75,9 @@ export default function App() {
   var termState = useState({})
   var terminationMap = termState[0]
   var setTerminationMap = termState[1]
+  var drawingsState = useState([]) // drawing records: pins + traces (files cached in IndexedDB)
+  var drawings = drawingsState[0]
+  var setDrawings = drawingsState[1]
 
   // Import preview modal state
   var ipState = useState(null)
@@ -57,8 +90,8 @@ export default function App() {
   var importLoading = ipLoading[0]
   var setImportLoading = ipLoading[1]
 
-  // Drawing import state
-  var drawState = useState(null) // null | {step, pdfFile, photoFile, progress, result, error}
+  // Drawing import state (unified: any mix of files)
+  var drawState = useState(null) // null | {step, files:[{id,file,kind}], progress, result, error}
   var drawingImport = drawState[0]
   var setDrawingImport = drawState[1]
 
@@ -66,6 +99,16 @@ export default function App() {
   var saveState = useState('idle') // idle | saving | saved | error
   var saveStatus = saveState[0]
   var setSaveStatus = saveState[1]
+
+  // Multi-user save conflict (another user saved this project first)
+  var conflictState = useState(false)
+  var saveConflict = conflictState[0]
+  var setSaveConflict = conflictState[1]
+
+  // Trace Studio (in-app loop tracing on a drawing)
+  var traceFileState = useState(null) // null | File
+  var traceFile = traceFileState[0]
+  var setTraceFile = traceFileState[1]
 
   // Undo system
   var undoRef = useRef([])
@@ -84,7 +127,8 @@ export default function App() {
       equipmentMap: equipmentMap,
       terminationMap: terminationMap,
       loops: loops,
-      areaGroups: areaGroups
+      areaGroups: areaGroups,
+      drawings: drawings
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -92,7 +136,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, loops, areaGroups])
+  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings])
 
   // Flush save before page unload
   useEffect(function() {
@@ -100,6 +144,35 @@ export default function App() {
     window.addEventListener('beforeunload', onBeforeUnload)
     return function() { window.removeEventListener('beforeunload', onBeforeUnload) }
   }, [])
+
+  // ─── Save conflict handling (another user saved first) ─────
+  useEffect(function() {
+    onSaveConflict(function() {
+      setSaveConflict(true)
+      setSaveStatus('error')
+    })
+    return function() { onSaveConflict(null) }
+  }, [])
+
+  function reloadFromServer() {
+    if (!activeProject || !activeProject.id || isDemo) { setSaveConflict(false); return }
+    initialLoadDone.current = false
+    loadProject(activeProject.id, function(err, fullProject) {
+      setSaveConflict(false)
+      if (err || !fullProject) { console.error('[MINIMATE] Reload error:', err); initialLoadDone.current = true; return }
+      var data = fullProject.data || {}
+      setPanels(data.panels || [])
+      setEquipmentMap(data.equipmentMap || {})
+      setTerminationMap(data.terminationMap || {})
+      setLoops(data.loops || [])
+      setAreaGroups(data.areaGroups || [])
+      setDrawings(data.drawings || [])
+      setActiveProject(fullProject)
+      setLoadedVersion(fullProject.version || 0)
+      undoRef.current = []
+      setTimeout(function() { initialLoadDone.current = true }, 500)
+    })
+  }
 
   // ─── Project Selection Handler ─────────────────────────────
   function handleSelectProject(project) {
@@ -125,7 +198,9 @@ export default function App() {
       setTerminationMap(data.terminationMap || {})
       setLoops(data.loops || [])
       setAreaGroups(data.areaGroups || [])
+      setDrawings(data.drawings || [])
       setActiveProject(fullProject || project)
+      setLoadedVersion((fullProject && fullProject.version) || 0)
       // Allow auto-save after state is populated
       setTimeout(function() { initialLoadDone.current = true }, 500)
     })
@@ -140,6 +215,7 @@ export default function App() {
     setTerminationMap({})
     setLoops([])
     setAreaGroups([])
+    setDrawings([])
     undoRef.current = []
   }
 
@@ -437,27 +513,92 @@ export default function App() {
     })
   }
 
-  // ─── Drawing Import Handlers ────────────────────────────
+  // ─── Unified Drawing Import Handlers ────────────────────
+  var importFileIdRef = useRef(0)
+
   function handleDrawingImport() {
-    setDrawingImport({ step: 'select', pdfFile: null, photoFile: null, progress: [], result: null, error: null })
+    setDrawingImport({ step: 'select', files: [], progress: [], result: null, error: null })
   }
 
-  function handleDrawingPdf(e) {
-    var file = e.target.files[0]
-    if (!file) return
-    setDrawingImport(function(prev) { return Object.assign({}, prev, { pdfFile: file }) })
+  function handleDrawingFiles(e) {
+    var picked = Array.prototype.slice.call(e.target.files || [])
     e.target.value = ''
+    if (picked.length === 0) return
+
+    var newItems = picked.map(function(file) {
+      importFileIdRef.current++
+      return { id: 'if-' + importFileIdRef.current, file: file, kind: isPdf(file) ? null : FILE_KINDS.MARKED_PHOTO }
+    })
+
+    setDrawingImport(function(prev) {
+      if (!prev) return prev
+      var files = prev.files.concat(newItems)
+      // 2+ images in the session -> treat images as ONE ordered loop sequence.
+      // User can cycle any image back to MARKED PHOTO (standalone sheet).
+      var imgs = files.filter(function(it) { return !isPdf(it.file) })
+      if (imgs.length >= 2) {
+        files = files.map(function(it) {
+          if (!isPdf(it.file) && it.kind === FILE_KINDS.MARKED_PHOTO) {
+            return Object.assign({}, it, { kind: FILE_KINDS.PHOTO_SEQUENCE })
+          }
+          return it
+        })
+      }
+      return Object.assign({}, prev, { files: files })
+    })
+
+    // Classify PDFs async (text layer check), then fill in kind
+    newItems.forEach(function(item) {
+      if (!isPdf(item.file)) return
+      classifyFile(item.file).then(function(kind) {
+        setDrawingImport(function(prev) {
+          if (!prev) return prev
+          return Object.assign({}, prev, {
+            files: prev.files.map(function(it) {
+              return (it.id === item.id && it.kind === null) ? Object.assign({}, it, { kind: kind }) : it
+            })
+          })
+        })
+      })
+    })
   }
 
-  function handleDrawingPhoto(e) {
-    var file = e.target.files[0]
-    if (!file) return
-    setDrawingImport(function(prev) { return Object.assign({}, prev, { photoFile: file }) })
-    e.target.value = ''
+  function cycleFileKind(itemId) {
+    setDrawingImport(function(prev) {
+      if (!prev) return prev
+      return Object.assign({}, prev, {
+        files: prev.files.map(function(it) {
+          if (it.id !== itemId || it.kind === null) return it
+          var cycle = isPdf(it.file) ? PDF_KIND_CYCLE : IMAGE_KIND_CYCLE
+          var next = cycle[(cycle.indexOf(it.kind) + 1) % cycle.length]
+          return Object.assign({}, it, { kind: next })
+        })
+      })
+    })
+  }
+
+  function removeImportFile(itemId) {
+    setDrawingImport(function(prev) {
+      if (!prev) return prev
+      return Object.assign({}, prev, { files: prev.files.filter(function(it) { return it.id !== itemId }) })
+    })
+  }
+
+  function moveImportFile(itemId, dir) {
+    setDrawingImport(function(prev) {
+      if (!prev) return prev
+      var files = prev.files.slice()
+      var idx = files.findIndex(function(it) { return it.id === itemId })
+      var to = idx + dir
+      if (idx < 0 || to < 0 || to >= files.length) return prev
+      var tmp = files[idx]; files[idx] = files[to]; files[to] = tmp
+      return Object.assign({}, prev, { files: files })
+    })
   }
 
   function startDrawingAnalysis() {
-    if (!drawingImport || !drawingImport.pdfFile || !drawingImport.photoFile) return
+    if (!drawingImport || drawingImport.files.length === 0) return
+    if (drawingImport.files.some(function(it) { return it.kind === null })) return // still classifying
     var apiKey = localStorage.getItem('minimate_gemini_key') || ''
     if (!apiKey) {
       setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'apikey' }) })
@@ -465,7 +606,8 @@ export default function App() {
     }
     setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'processing', progress: ['Starting...'] }) })
 
-    parseDrawings(drawingImport.pdfFile, drawingImport.photoFile, apiKey, function(msg) {
+    var items = drawingImport.files.map(function(it) { return { file: it.file, kind: it.kind } })
+    runImportSession(items, apiKey, function(msg) {
       setDrawingImport(function(prev) {
         return Object.assign({}, prev, { progress: prev.progress.concat([msg]) })
       })
@@ -479,6 +621,26 @@ export default function App() {
   function saveGeminiKey(key) {
     localStorage.setItem('minimate_gemini_key', key)
     setDrawingImport(function(prev) { return Object.assign({}, prev, { step: 'select' }) })
+  }
+
+  // ─── Trace Studio Handlers ──────────────────────────────
+  function openTraceStudio(file) {
+    setDrawingImport(null)
+    setImportExclusions({})
+    setTraceFile(file)
+  }
+
+  function handleTraceCancel() {
+    setTraceFile(null)
+  }
+
+  function handleTraceComplete(result, drawingRecord) {
+    setTraceFile(null)
+    // Persist the drawing record (pins + traces; file is cached in IndexedDB)
+    setDrawings(function(prev) { return prev.concat([drawingRecord]) })
+    // Hand off to the SAME preview/confirm flow as AI import
+    setImportExclusions({})
+    setDrawingImport({ step: 'preview', files: [], progress: [], result: result, error: null })
   }
 
   function confirmDrawingImport() {
@@ -496,17 +658,9 @@ export default function App() {
       var loopDevices = loop.devices.filter(function(d) {
         return !drawExcl['ddev:' + d.tag]
       }).map(function(d) {
-        return {
-          id: (d.tag || '').toLowerCase().replace(/[^a-z0-9]/g, '-'),
-          tag: d.tag || '',
-          type: d.tag.indexOf('FCU') >= 0 ? 'FCU' : d.tag.indexOf('VAV') >= 0 ? 'VAV' : 'DEVICE',
-          room: d.room || '',
-          thermostat: d.thermostat || '',
-          comm_cable: false,
-          address_set: false,
-          int_test: false,
-          commissioned: false
-        }
+        // Canonical device shape — fixes blank type/room + broken progress
+        // for drawing-imported devices (old shape used type/room/int_test)
+        return makeLoopDevice(d.tag, d.room, d.thermostat)
       })
 
       if (loopDevices.length === 0) return
@@ -540,17 +694,7 @@ export default function App() {
         if (l.id !== 'loop-unassigned') return l
         return Object.assign({}, l, {
           devices: l.devices.concat(unmatchedDevs.map(function(d) {
-            return {
-              id: (d.tag || '').toLowerCase().replace(/[^a-z0-9]/g, '-'),
-              tag: d.tag || '',
-              type: d.tag.indexOf('FCU') >= 0 ? 'FCU' : 'DEVICE',
-              room: '',
-              thermostat: d.thermostat || '',
-              comm_cable: false,
-              address_set: false,
-              int_test: false,
-              commissioned: false
-            }
+            return makeLoopDevice(d.tag, d.room, d.thermostat)
           }))
         })
       })
@@ -595,33 +739,59 @@ export default function App() {
 
           {di.step === 'select' && (
             <div>
-              <div className="text-[10px] text-dgray uppercase mb-4">SELECT BOTH FILES FOR THIS FLOOR</div>
+              <div className="text-[10px] text-dgray uppercase mb-3">ADD ANY MIX: CAD PDF, SCANNED MARKED DRAWING, MARKED PHOTOS, OR ZOOMED LOOP PHOTOS (IN ORDER)</div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div className={'rounded-xl border-2 border-dashed p-4 text-center transition ' + (di.pdfFile ? 'border-teal bg-teal/5' : 'border-border hover:border-teal/50')}>
-                  <div className="text-2xl mb-2">{di.pdfFile ? '✓' : '📐'}</div>
-                  <div className="text-[11px] font-bold uppercase mb-1 text-white">{di.pdfFile ? di.pdfFile.name : 'DIGITAL PDF DRAWING'}</div>
-                  <div className="text-[9px] text-dgray uppercase mb-3">{di.pdfFile ? (di.pdfFile.size/1024/1024).toFixed(1) + ' MB' : 'CAD FILE — DEVICE TAGS, ROOMS, AREAS'}</div>
-                  <label className="inline-block px-4 py-1.5 bg-teal/20 text-teal text-[10px] font-bold rounded cursor-pointer hover:bg-teal/30 uppercase transition">
-                    {di.pdfFile ? 'CHANGE' : 'SELECT PDF'}
-                    <input type="file" accept=".pdf" onChange={handleDrawingPdf} className="hidden"/>
-                  </label>
-                </div>
+              <label className="block rounded-xl border-2 border-dashed border-border hover:border-teal/50 p-5 text-center transition cursor-pointer mb-3">
+                <div className="text-2xl mb-1">📥</div>
+                <div className="text-[11px] font-bold uppercase text-white mb-1">ADD FILES</div>
+                <div className="text-[9px] text-dgray uppercase">PDF OR IMAGES — SELECT MULTIPLE AT ONCE</div>
+                <input type="file" accept=".pdf,image/*" multiple onChange={handleDrawingFiles} className="hidden"/>
+              </label>
 
-                <div className={'rounded-xl border-2 border-dashed p-4 text-center transition ' + (di.photoFile ? 'border-orange bg-orange/5' : 'border-border hover:border-orange/50')}>
-                  <div className="text-2xl mb-2">{di.photoFile ? '✓' : '📸'}</div>
-                  <div className="text-[11px] font-bold uppercase mb-1 text-white">{di.photoFile ? di.photoFile.name : 'HIGHLIGHTED PHOTO'}</div>
-                  <div className="text-[9px] text-dgray uppercase mb-3">{di.photoFile ? (di.photoFile.size/1024/1024).toFixed(1) + ' MB' : 'SUPERVISOR MARKED-UP — LOOP ROUTING'}</div>
-                  <label className="inline-block px-4 py-1.5 bg-orange/20 text-orange text-[10px] font-bold rounded cursor-pointer hover:bg-orange/30 uppercase transition">
-                    {di.photoFile ? 'CHANGE' : 'SELECT PHOTO'}
-                    <input type="file" accept="image/*" onChange={handleDrawingPhoto} className="hidden"/>
-                  </label>
+              {di.files.length > 0 && (
+                <div className="bg-navy rounded-lg p-2 mb-3 max-h-56 overflow-y-auto">
+                  {di.files.map(function(it, idx) {
+                    var kindColor = it.kind === 'CAD_PDF' ? 'bg-teal/20 text-teal' : it.kind === 'MARKED_SCAN' ? 'bg-orange/20 text-orange' : it.kind === 'PHOTO_SEQUENCE' ? 'bg-purple/20 text-purple' : 'bg-cyan/20 text-cyan'
+                    var isSeq = it.kind === 'PHOTO_SEQUENCE'
+                    return (
+                      <div key={it.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-card/50">
+                        <span className="text-sm">{isPdf(it.file) ? '📐' : '📸'}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[10px] text-white uppercase truncate">{isSeq ? (idx + 1) + '. ' : ''}{it.file.name}</div>
+                          <div className="text-[8px] text-dgray uppercase">{(it.file.size/1024/1024).toFixed(1)} MB</div>
+                        </div>
+                        {it.kind === null ? (
+                          <span className="text-[8px] px-2 py-0.5 rounded bg-card2 text-dgray uppercase animate-pulse">DETECTING...</span>
+                        ) : (
+                          <button onClick={function(){cycleFileKind(it.id)}} title="CLICK TO CHANGE TYPE" className={'text-[8px] px-2 py-0.5 rounded uppercase font-bold transition hover:opacity-70 ' + kindColor}>
+                            {KIND_LABELS[it.kind]}
+                          </button>
+                        )}
+                        {isPdf(it.file) && (
+                          <button onClick={function(){openTraceStudio(it.file)}} title="OPEN THE DRAWING AND TRACE LOOPS YOURSELF" className="text-[8px] px-2 py-0.5 rounded uppercase font-bold bg-green/20 text-green hover:bg-green/30 transition">
+                            ✏️ TRACE
+                          </button>
+                        )}
+                        {isSeq && (
+                          <span className="flex gap-0.5">
+                            <button onClick={function(){moveImportFile(it.id, -1)}} className="text-[10px] text-dgray hover:text-white px-1">↑</button>
+                            <button onClick={function(){moveImportFile(it.id, 1)}} className="text-[10px] text-dgray hover:text-white px-1">↓</button>
+                          </span>
+                        )}
+                        <button onClick={function(){removeImportFile(it.id)}} className="text-[10px] text-dgray hover:text-red px-1">✕</button>
+                      </div>
+                    )
+                  })}
                 </div>
-              </div>
+              )}
+
+              {di.files.some(function(it){return it.kind === 'PHOTO_SEQUENCE'}) && (
+                <div className="text-[9px] text-purple uppercase mb-3">LOOP PHOTO SEQ: ALL SEQUENCE PHOTOS FORM ONE LOOP — ORDER THEM ALONG THE PATH WITH ↑↓</div>
+              )}
 
               <div className="flex gap-3">
-                <button onClick={startDrawingAnalysis} disabled={!di.pdfFile || !di.photoFile} className={'px-6 py-2 text-xs font-bold rounded-md uppercase transition ' + (di.pdfFile && di.photoFile ? 'bg-teal text-white hover:bg-teal/80' : 'bg-card2 text-dgray cursor-not-allowed')}>
-                  ANALYZE DRAWINGS
+                <button onClick={startDrawingAnalysis} disabled={di.files.length === 0 || di.files.some(function(it){return it.kind === null})} className={'px-6 py-2 text-xs font-bold rounded-md uppercase transition ' + (di.files.length > 0 && !di.files.some(function(it){return it.kind === null}) ? 'bg-teal text-white hover:bg-teal/80' : 'bg-card2 text-dgray cursor-not-allowed')}>
+                  ANALYZE {di.files.length > 0 ? di.files.length + ' FILE' + (di.files.length > 1 ? 'S' : '') : 'DRAWINGS'}
                 </button>
                 <button onClick={cancelDrawingImport} className="px-6 py-2 bg-card2 text-dgray text-xs rounded-md hover:text-white uppercase">CANCEL</button>
               </div>
@@ -999,6 +1169,17 @@ export default function App() {
       <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} isDemo={isDemo} />
       {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
 
+      {/* Multi-user save conflict banner */}
+      {saveConflict && (
+        <div className="fixed top-12 md:top-0 left-0 right-0 md:left-[220px] z-[90] bg-red/90 border-b border-red px-4 py-2 flex items-center justify-between gap-3">
+          <div className="text-[11px] text-white font-bold uppercase">PROJECT WAS UPDATED BY ANOTHER USER — YOUR LAST CHANGE WAS NOT SAVED</div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={reloadFromServer} className="px-3 py-1 bg-white text-red text-[10px] font-bold rounded uppercase hover:bg-white/80 transition">RELOAD LATEST</button>
+            <button onClick={function(){setSaveConflict(false)}} className="px-2 py-1 text-white/70 text-[10px] uppercase hover:text-white">DISMISS</button>
+          </div>
+        </div>
+      )}
+
       {/* Save status indicator */}
       {!isDemo && saveStatus !== 'idle' && (
         <div className={'fixed top-14 md:top-3 z-40 text-[10px] uppercase tracking-wider transition-opacity ' + (canUndo ? 'right-14' : 'right-4') + (saveStatus === 'error' ? ' text-red' : saveStatus === 'saving' ? ' text-dgray' : ' text-green')}>
@@ -1016,6 +1197,9 @@ export default function App() {
       )}
       {renderImportModal()}
       {renderDrawingModal()}
+      {traceFile && (
+        <TraceStudio file={traceFile} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
+      )}
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />

@@ -92,11 +92,32 @@ export function saveProjectMeta(projectId, fields, cb) {
     })
 }
 
-// ─── Data Persistence (debounced) ──────────────────────────
+// ─── Data Persistence (debounced, version-locked) ──────────
+//
+// Optimistic concurrency: every save requires the row version we
+// loaded. If another user saved first, our update matches 0 rows
+// and we fire the conflict handler instead of silently overwriting.
+//
+// Requires (run once in Supabase SQL editor):
+//   alter table projects add column if not exists version int not null default 0;
 
 var saveTimer = null
 var pendingData = null
 var pendingProjectId = null
+var localVersion = 0          // version of the row we loaded/last saved
+var versionSupported = true   // false if column missing (migration not run yet)
+var conflictHandler = null
+
+// App registers a callback: called when a save is rejected because
+// another user saved first. Receives the fresh server row.
+export function onSaveConflict(handler) {
+  conflictHandler = handler
+}
+
+// Called by App after loading a project so saves carry the right version
+export function setLoadedVersion(v) {
+  localVersion = (typeof v === 'number' && v >= 0) ? v : 0
+}
 
 export function saveProjectData(projectId, stateObj) {
   if (isDemo || !supabase) return
@@ -116,14 +137,54 @@ function flushSave() {
   pendingProjectId = null
   saveTimer = null
 
+  if (!versionSupported) {
+    // Fallback: version column missing — plain save (old behavior)
+    supabase
+      .from('projects')
+      .update({ data: data })
+      .eq('id', pid)
+      .then(function(res) {
+        if (res.error) console.error('[MINIMATE] Save failed:', res.error.message)
+      })
+    return
+  }
+
+  var attemptVersion = localVersion
   supabase
     .from('projects')
-    .update({ data: data })
+    .update({ data: data, version: attemptVersion + 1 })
     .eq('id', pid)
+    .eq('version', attemptVersion)
+    .select('version')
     .then(function(res) {
       if (res.error) {
+        // 42703 = undefined column: migration not run yet, degrade gracefully
+        if (res.error.code === '42703' || (res.error.message || '').indexOf('version') >= 0) {
+          console.warn('[MINIMATE] version column missing - run migration. Falling back to unversioned saves.')
+          versionSupported = false
+          supabase.from('projects').update({ data: data }).eq('id', pid).then(function(r2) {
+            if (r2.error) console.error('[MINIMATE] Save failed:', r2.error.message)
+          })
+          return
+        }
         console.error('[MINIMATE] Save failed:', res.error.message)
+        return
       }
+      if (res.data && res.data.length > 0) {
+        // Save accepted — we own the new version
+        localVersion = res.data[0].version
+        return
+      }
+      // 0 rows updated ⇒ someone else saved first ⇒ CONFLICT
+      console.warn('[MINIMATE] Save conflict: project changed on server (local v' + attemptVersion + ')')
+      supabase
+        .from('projects')
+        .select('*')
+        .eq('id', pid)
+        .single()
+        .then(function(fresh) {
+          if (conflictHandler) conflictHandler(fresh.error ? null : fresh.data)
+        })
     })
 }
 
