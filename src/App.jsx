@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import PanelsList from './pages/PanelsList'
 import PanelDetail from './pages/PanelDetail'
 import CommDevices from './pages/CommDevices'
+import DrawingsPage from './pages/DrawingsPage'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion } from './lib/supabaseDb'
@@ -26,7 +27,7 @@ function Placeholder(props) {
 // CommDevices.jsx reads/writes: device_type, room_name, address,
 // the 6 commissioning stages, remarks.
 var deviceIdCounter = 0
-function makeLoopDevice(tag, room, thermostat) {
+function makeLoopDevice(tag, room, thermostat, address, serial) {
   var t = (tag || '').toUpperCase().trim()
   var device_type = 'DEVICE'
   if (t.indexOf('FCU') >= 0) device_type = 'FCU THERMOSTAT'
@@ -39,7 +40,8 @@ function makeLoopDevice(tag, room, thermostat) {
     tag: t,
     room_name: (room || '').toUpperCase().trim(),
     thermostat: (thermostat || '').toUpperCase().trim(),
-    address: '',
+    serial: (serial || '').toUpperCase().trim(),
+    address: (address || '').toUpperCase().trim(),
     comm_cable: false,
     control_cable: false,
     continuity: false,
@@ -106,9 +108,9 @@ export default function App() {
   var setSaveConflict = conflictState[1]
 
   // Trace Studio (in-app loop tracing on a drawing)
-  var traceFileState = useState(null) // null | File
-  var traceFile = traceFileState[0]
-  var setTraceFile = traceFileState[1]
+  var traceSessionState = useState(null) // null | { file: File, record: savedDrawing|null }
+  var traceSession = traceSessionState[0]
+  var setTraceSession = traceSessionState[1]
 
   // Undo system
   var undoRef = useRef([])
@@ -627,20 +629,43 @@ export default function App() {
   function openTraceStudio(file) {
     setDrawingImport(null)
     setImportExclusions({})
-    setTraceFile(file)
+    setTraceSession({ file: file, record: null })
+  }
+
+  function handleOpenDrawing(record, file) {
+    setTraceSession({ file: file, record: record })
   }
 
   function handleTraceCancel() {
-    setTraceFile(null)
+    setTraceSession(null)
   }
 
   function handleTraceComplete(result, drawingRecord) {
-    setTraceFile(null)
-    // Persist the drawing record (pins + traces; file is cached in IndexedDB)
-    setDrawings(function(prev) { return prev.concat([drawingRecord]) })
+    setTraceSession(null)
+    // Upsert the drawing record (pins + traces + zones; file cached in IndexedDB)
+    setDrawings(function(prev) {
+      var found = false
+      var next = prev.map(function(d) {
+        if (d.id === drawingRecord.id) { found = true; return drawingRecord }
+        return d
+      })
+      return found ? next : next.concat([drawingRecord])
+    })
     // Hand off to the SAME preview/confirm flow as AI import
     setImportExclusions({})
     setDrawingImport({ step: 'preview', files: [], progress: [], result: result, error: null })
+  }
+
+  function handleUpdateDrawingMeta(id, fields) {
+    setDrawings(function(prev) {
+      return prev.map(function(d) {
+        return d.id === id ? Object.assign({}, d, fields, { updatedAt: new Date().toISOString() }) : d
+      })
+    })
+  }
+
+  function handleDeleteDrawing(id) {
+    setDrawings(function(prev) { return prev.filter(function(d) { return d.id !== id }) })
   }
 
   function confirmDrawingImport() {
@@ -649,23 +674,26 @@ export default function App() {
 
     var result = drawingImport.result
     var drawExcl = importExclusions
-    var newLoops = loops.slice()
 
-    // Create loops from the drawing analysis
+    // Re-trace of a saved drawing REPLACES its previous loops (modifiable unlimited times)
+    var newLoops = loops.filter(function(l) {
+      return !(result.drawingId && l.drawingId === result.drawingId)
+    })
+
+    // Create loops from the drawing analysis / trace
     result.loops.forEach(function(loop) {
       if (drawExcl['dloop:' + loop.loopId]) return // excluded
 
       var loopDevices = loop.devices.filter(function(d) {
         return !drawExcl['ddev:' + d.tag]
       }).map(function(d) {
-        // Canonical device shape — fixes blank type/room + broken progress
-        // for drawing-imported devices (old shape used type/room/int_test)
-        return makeLoopDevice(d.tag, d.room, d.thermostat)
+        // Canonical device shape — single source of truth (makeLoopDevice)
+        return makeLoopDevice(d.tag, d.room, d.thermostat, d.address, d.serial)
       })
 
       if (loopDevices.length === 0) return
 
-      var loopId = 'loop-dwg-' + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
+      var loopId = 'loop-dwg-' + (result.drawingId ? result.drawingId + '-' : '') + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
       newLoops.push({
         id: loopId,
         name: loop.loopId,
@@ -676,9 +704,34 @@ export default function App() {
         zone: '',
         color: loop.color || '',
         source: 'drawing',
+        drawingId: result.drawingId || '',
+        cable_remarks: loop.cableRemarks || [],
         devices: loopDevices
       })
     })
+
+    // Zones drawn in Trace Studio -> location view groups (synced on every re-trace)
+    if (result.zoneGroups && result.zoneGroups.length > 0) {
+      var tagToId = {}
+      newLoops.forEach(function(l) {
+        l.devices.forEach(function(d) { if (d.tag && !tagToId[d.tag]) tagToId[d.tag] = d.id })
+      })
+      var newAreas = areaGroups.filter(function(a) {
+        return !(result.drawingId && a.drawingId === result.drawingId)
+      })
+      result.zoneGroups.forEach(function(g) {
+        var ids = g.deviceTags.map(function(t) { return tagToId[(t || '').toUpperCase()] }).filter(function(x) { return x })
+        if (ids.length === 0) return
+        newAreas.push({
+          id: 'area-dwg-' + Date.now() + '-' + g.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          name: (g.name || 'ZONE').toUpperCase(),
+          notes: 'FROM DRAWING' + (result.floorLabel ? ' — ' + result.floorLabel : ''),
+          drawingId: result.drawingId || '',
+          device_ids: ids
+        })
+      })
+      setAreaGroups(newAreas)
+    }
 
     // Add unmatched devices to UNASSIGNED loop
     var unmatchedDevs = (result.unmatchedDevices || []).filter(function(d) {
@@ -767,11 +820,9 @@ export default function App() {
                             {KIND_LABELS[it.kind]}
                           </button>
                         )}
-                        {isPdf(it.file) && (
-                          <button onClick={function(){openTraceStudio(it.file)}} title="OPEN THE DRAWING AND TRACE LOOPS YOURSELF" className="text-[8px] px-2 py-0.5 rounded uppercase font-bold bg-green/20 text-green hover:bg-green/30 transition">
-                            ✏️ TRACE
-                          </button>
-                        )}
+                        <button onClick={function(){openTraceStudio(it.file)}} title="OPEN THE DRAWING AND TRACE LOOPS YOURSELF" className="text-[8px] px-2 py-0.5 rounded uppercase font-bold bg-green/20 text-green hover:bg-green/30 transition">
+                          ✏️ TRACE
+                        </button>
                         {isSeq && (
                           <span className="flex gap-0.5">
                             <button onClick={function(){moveImportFile(it.id, -1)}} className="text-[10px] text-dgray hover:text-white px-1">↑</button>
@@ -1197,8 +1248,8 @@ export default function App() {
       )}
       {renderImportModal()}
       {renderDrawingModal()}
-      {traceFile && (
-        <TraceStudio file={traceFile} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
+      {traceSession && (
+        <TraceStudio file={traceSession.file} record={traceSession.record} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
       )}
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
         <Routes>
@@ -1206,6 +1257,7 @@ export default function App() {
           <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUndo={handleUndo} canUndo={canUndo} />} />
+          <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Placeholder title="Blockers Board" desc="Blocker tracking with escalation" />} />
           <Route path="/reports" element={<Placeholder title="Reports" desc="Auto-generated progress reports" />} />

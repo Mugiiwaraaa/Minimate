@@ -6,6 +6,7 @@ var nav = [
     { to: '/', icon: '\u{1F4CA}', label: 'DASHBOARD' },
     { to: '/panels', icon: '\u{1F532}', label: 'DDC PANELS', badge: null },
     { to: '/field-devices', icon: '\u{1F517}', label: 'FIELD DEVICES' },
+    { to: '/drawings', icon: '\u{1F4D0}', label: 'DRAWINGS' },
     { to: '/tasks', icon: '✅', label: 'TASKS' },
   ]},
   { section: 'PROJECT', items: [
