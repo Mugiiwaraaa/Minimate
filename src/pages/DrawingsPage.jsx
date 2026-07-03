@@ -7,7 +7,8 @@
 import { useState } from 'react'
 import { getFile, hashFile } from '../lib/fileStore'
 
-function up(v) { return (v || '').toUpperCase().trim() }
+/* Uppercase WITHOUT trim so spaces survive while typing */
+function up(v) { return (v || '').toUpperCase() }
 
 export default function DrawingsPage(props) {
   // props: drawings, onOpen(record, file), onUpdateMeta(id, fields), onDelete(id)

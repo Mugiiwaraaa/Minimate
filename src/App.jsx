@@ -7,6 +7,7 @@ import PanelsList from './pages/PanelsList'
 import PanelDetail from './pages/PanelDetail'
 import CommDevices from './pages/CommDevices'
 import DrawingsPage from './pages/DrawingsPage'
+import BlockersPage from './pages/BlockersPage'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion } from './lib/supabaseDb'
@@ -80,6 +81,9 @@ export default function App() {
   var drawingsState = useState([]) // drawing records: pins + traces (files cached in IndexedDB)
   var drawings = drawingsState[0]
   var setDrawings = drawingsState[1]
+  var blockersState = useState([]) // cable issues + manual blockers
+  var blockers = blockersState[0]
+  var setBlockers = blockersState[1]
 
   // Import preview modal state
   var ipState = useState(null)
@@ -130,7 +134,8 @@ export default function App() {
       terminationMap: terminationMap,
       loops: loops,
       areaGroups: areaGroups,
-      drawings: drawings
+      drawings: drawings,
+      blockers: blockers
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -138,7 +143,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings])
+  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings, blockers])
 
   // Flush save before page unload
   useEffect(function() {
@@ -169,6 +174,7 @@ export default function App() {
       setLoops(data.loops || [])
       setAreaGroups(data.areaGroups || [])
       setDrawings(data.drawings || [])
+      setBlockers(data.blockers || [])
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       undoRef.current = []
@@ -201,6 +207,7 @@ export default function App() {
       setLoops(data.loops || [])
       setAreaGroups(data.areaGroups || [])
       setDrawings(data.drawings || [])
+      setBlockers(data.blockers || [])
       setActiveProject(fullProject || project)
       setLoadedVersion((fullProject && fullProject.version) || 0)
       // Allow auto-save after state is populated
@@ -218,6 +225,7 @@ export default function App() {
     setLoops([])
     setAreaGroups([])
     setDrawings([])
+    setBlockers([])
     undoRef.current = []
   }
 
@@ -674,13 +682,27 @@ export default function App() {
 
     var result = drawingImport.result
     var drawExcl = importExclusions
+    var did = result.drawingId || ''
 
-    // Re-trace of a saved drawing REPLACES its previous loops (modifiable unlimited times)
-    var newLoops = loops.filter(function(l) {
-      return !(result.drawingId && l.drawingId === result.drawingId)
+    // Device-level replacement: re-trace of a drawing replaces ONLY devices
+    // and remarks that came from that drawing. A loop can span floors
+    // (traced across multiple drawings) — other floors' devices survive.
+    var newLoops = loops.map(function(l) {
+      if (!did || l.source !== 'drawing') return l
+      var devs = l.devices.filter(function(d) { return d.drawingId !== did })
+      if (devs.length === l.devices.length) return l
+      return Object.assign({}, l, {
+        devices: devs,
+        cable_remarks: (l.cable_remarks || []).filter(function(r) { return r.drawingId !== did })
+      })
+    }).filter(function(l) {
+      if (l.source !== 'drawing') return true
+      // Legacy (pre-v3) loops from this drawing: whole-loop replace
+      if (did && l.drawingId === did && l.devices.length > 0 && l.devices.every(function(d) { return !d.drawingId })) return false
+      return l.devices.length > 0
     })
 
-    // Create loops from the drawing analysis / trace
+    // Create / merge loops from the drawing analysis or trace
     result.loops.forEach(function(loop) {
       if (drawExcl['dloop:' + loop.loopId]) return // excluded
 
@@ -688,12 +710,36 @@ export default function App() {
         return !drawExcl['ddev:' + d.tag]
       }).map(function(d) {
         // Canonical device shape — single source of truth (makeLoopDevice)
-        return makeLoopDevice(d.tag, d.room, d.thermostat, d.address, d.serial)
+        var dev = makeLoopDevice(d.tag, d.room, d.thermostat, d.address, d.serial)
+        dev.floor = result.floorLabel || ''
+        dev.drawingId = did
+        return dev
       })
 
       if (loopDevices.length === 0) return
 
-      var loopId = 'loop-dwg-' + (result.drawingId ? result.drawingId + '-' : '') + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
+      var remarks = (loop.cableRemarks || []).map(function(r) {
+        return { from: r.from, to: r.to, text: r.text, drawingId: did }
+      })
+
+      // MULTI-FLOOR LOOPS: a traced loop with the same name already exists
+      // (from another drawing/floor) — merge devices into it instead of duplicating
+      var existing = newLoops.find(function(l) { return l.source === 'drawing' && l.name === loop.loopId })
+      if (existing) {
+        var have = {}
+        existing.devices.forEach(function(d) { have[d.tag] = true })
+        var added = loopDevices.filter(function(d) { return !have[d.tag] })
+        newLoops = newLoops.map(function(l) {
+          if (l.id !== existing.id) return l
+          return Object.assign({}, l, {
+            devices: l.devices.concat(added),
+            cable_remarks: (l.cable_remarks || []).concat(remarks)
+          })
+        })
+        return
+      }
+
+      var loopId = 'loop-dwg-' + (did ? did + '-' : '') + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
       newLoops.push({
         id: loopId,
         name: loop.loopId,
@@ -704,11 +750,33 @@ export default function App() {
         zone: '',
         color: loop.color || '',
         source: 'drawing',
-        drawingId: result.drawingId || '',
-        cable_remarks: loop.cableRemarks || [],
+        drawingId: did,
+        cable_remarks: remarks,
         devices: loopDevices
       })
     })
+
+    // Cable-issue remarks -> Blockers board (replaced per drawing on re-trace)
+    var newBlockers = blockers.filter(function(b) { return !(did && b.drawingId === did) })
+    result.loops.forEach(function(loop) {
+      if (drawExcl['dloop:' + loop.loopId]) return
+      ;(loop.cableRemarks || []).forEach(function(r) {
+        if (!r.text) return
+        newBlockers.push({
+          id: 'blk-' + Date.now() + '-' + Math.floor(Math.random() * 100000),
+          text: r.text,
+          loop: loop.loopId,
+          from: r.from,
+          to: r.to,
+          floor: result.floorLabel || '',
+          drawingId: did,
+          source: 'TRACE',
+          status: 'open',
+          createdAt: new Date().toISOString()
+        })
+      })
+    })
+    setBlockers(newBlockers)
 
     // Zones drawn in Trace Studio -> location view groups (synced on every re-trace)
     if (result.zoneGroups && result.zoneGroups.length > 0) {
@@ -1259,7 +1327,7 @@ export default function App() {
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
-          <Route path="/blockers" element={<Placeholder title="Blockers Board" desc="Blocker tracking with escalation" />} />
+          <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<Placeholder title="Reports" desc="Auto-generated progress reports" />} />
         </Routes>
       </div>

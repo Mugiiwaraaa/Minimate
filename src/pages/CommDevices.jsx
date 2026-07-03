@@ -229,6 +229,9 @@ export default function CommDevices(props){
       {loops.map(function(loop,li){
         var isExp=expanded===loop.id,dc=loop.devices.length
         var pct=calcWeightedPct(loop.devices),isDT=dragDev&&dragDev.type==='loop'&&dragDev.fromLoopId!==loop.id
+        // Multi-floor loops (traced across drawings) + cable-issue remarks per device
+        var floorSet={};loop.devices.forEach(function(d){if(d.floor)floorSet[d.floor]=true});var floorArr=Object.keys(floorSet)
+        var cbl={};(loop.cable_remarks||[]).forEach(function(r){var t=(r.from||'?')+' → '+(r.to||'?')+': '+r.text;if(r.from)cbl[r.from]=(cbl[r.from]?cbl[r.from]+'\n':'')+t;if(r.to)cbl[r.to]=(cbl[r.to]?cbl[r.to]+'\n':'')+t})
         return (<div key={loop.id} className={'bg-card border border-border/50 overflow-hidden transition '+(isDT?'border-cyan border-2':'')+(li===loops.length-1?' rounded-b-lg':'')}
           onDragOver={function(e){if(dragDev&&dragDev.type==='loop')e.preventDefault()}} onDrop={function(){if(dragDev&&dragDev.type==='loop')dropOnLoop(loop.id)}}>
           <div className="px-4 py-2.5 flex flex-wrap md:grid md:grid-cols-12 gap-2 items-center cursor-pointer hover:bg-card2/50" onClick={function(){setExpanded(isExp?null:loop.id)}}>
@@ -236,7 +239,10 @@ export default function CommDevices(props){
             <div className="hidden md:block md:col-span-1 text-[11px] text-orange">{loop.zone||'-'}</div>
             <div className="hidden md:block md:col-span-2 text-[11px] text-cyan font-medium">{loop.ddc_ref||'-'}</div>
             <div className="hidden md:block md:col-span-2 text-[11px] text-cyan">{loop.gateway||'-'}</div>
-            <div className="flex-1 md:flex-none md:col-span-2 text-sm font-bold uppercase">{loop.name}</div>
+            <div className="flex-1 md:flex-none md:col-span-2 text-sm font-bold uppercase">{loop.name}
+              {(loop.cable_remarks||[]).length>0&&(<span title={(loop.cable_remarks||[]).map(function(r){return (r.from||'?')+' → '+(r.to||'?')+': '+r.text}).join('\n')} className="ml-1.5 text-[9px] font-bold bg-red/20 text-red px-1.5 py-0.5 rounded align-middle">⚠ {(loop.cable_remarks||[]).length}</span>)}
+              {floorArr.length>1&&(<span title={'DEVICES ON: '+floorArr.join(', ')} className="ml-1.5 text-[8px] font-bold bg-orange/20 text-orange px-1.5 py-0.5 rounded align-middle">{floorArr.join('/')}</span>)}
+            </div>
             <div className="md:col-span-1"><span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{loop.protocol}</span></div>
             <div className="md:col-span-1 text-center text-[11px] text-dgray">{dc} DEV</div>
             <div className="md:col-span-2 flex items-center justify-end gap-2">
@@ -280,8 +286,8 @@ export default function CommDevices(props){
                   onDragEnd={function(){setDragDev(null);setDragIdx(null)}}>
                   <td className="text-center px-1 py-1.5 cursor-grab text-dgray text-[10px]">::</td>
                   <td className="text-[10px] px-2 py-1.5 text-purple uppercase">{dev.device_type}</td>
-                  <td className="px-2 py-1.5"><input type="text" value={dev.tag||''} onChange={function(e){handleDeviceField(loop.id,dev.id,'tag',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'tag')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white font-medium outline-none w-24" placeholder="-"/></td>
-                  <td className="px-2 py-1.5"><input type="text" value={dev.room_name} onChange={function(e){handleDeviceField(loop.id,dev.id,'room_name',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'room_name')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white outline-none w-full" placeholder="-"/></td>
+                  <td className="px-2 py-1.5"><div className="flex items-center gap-1">{cbl[dev.tag]&&(<span title={cbl[dev.tag]} className="text-[10px] text-red shrink-0 cursor-help">⚠</span>)}<input type="text" value={dev.tag||''} onChange={function(e){handleDeviceField(loop.id,dev.id,'tag',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'tag')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white font-medium outline-none w-24" placeholder="-"/></div></td>
+                  <td className="px-2 py-1.5"><div className="flex items-center gap-1"><input type="text" value={dev.room_name} onChange={function(e){handleDeviceField(loop.id,dev.id,'room_name',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'room_name')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white outline-none w-full" placeholder="-"/>{dev.floor&&floorArr.length>1&&(<span className="text-[8px] text-orange shrink-0">{dev.floor}</span>)}</div></td>
                   <td className="text-center px-2 py-1.5"><input type="text" value={dev.address} onChange={function(e){handleDeviceField(loop.id,dev.id,'address',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'address')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan text-center outline-none w-10 mx-auto" placeholder="-"/></td>
                   {loopStages.map(function(s){var ch=dev[s],idx=loopStages.indexOf(s),prev=idx===0||dev[loopStages[idx-1]];return <td key={s} className="text-center px-1 py-1.5"><StgBtn checked={ch} prevDone={prev} onClick={function(){handleToggle(loop.id,dev.id,s)}}/></td>})}
                   <td className="px-2 py-1.5 min-w-[140px]"><textarea rows="1" title={dev.remarks||''} value={dev.remarks||''} onChange={function(e){handleDeviceField(loop.id,dev.id,'remarks',e.target.value)}} onBlur={function(e){autoShrink(e);handleDeviceBlur(loop.id,dev.id,'remarks')}} onInput={autoGrow} onFocus={autoGrow} style={{textTransform:'uppercase',resize:'none',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}} className="bg-transparent border border-transparent focus:border-teal text-[10px] text-orange italic outline-none w-full rounded px-1 py-0.5" placeholder="REMARKS..."/></td>

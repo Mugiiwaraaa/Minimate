@@ -11,6 +11,10 @@ import { callGeminiWithImage } from '../lib/geminiClient'
 import { putFile } from '../lib/fileStore'
 
 var LOOP_COLORS = ['#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899']
+var ZONE_COLORS = ['#8B5CF6', '#22D3EE', '#10B981', '#F59E0B', '#EC4899', '#EF4444']
+
+/* Uppercase WITHOUT trim — used while typing so spaces survive keystrokes */
+function upKeep(v) { return (v || '').toUpperCase() }
 
 var tsIdCounter = 0
 function nid(prefix) {
@@ -115,7 +119,11 @@ export default function TraceStudio(props) {
   }) : [])
   var loops = loopsState[0]
   var setLoops = loopsState[1]
-  var zonesState = useState(rec ? (rec.zones || []) : []) // {id,name,x1,y1,x2,y2,page} normalized
+  // Zones: kind 'group' (devices inside form a location group) or 'highlight'
+  // (visual annotation: relocated device, DDC position, etc). shape rect|circle.
+  var zonesState = useState(rec ? (rec.zones || []).map(function(z) {
+    return Object.assign({ kind: 'group', shape: 'rect', color: '#8B5CF6' }, z)
+  }) : [])
   var zones = zonesState[0]
   var setZones = zonesState[1]
   var metaState = useState({
@@ -326,25 +334,41 @@ export default function TraceStudio(props) {
     var H = img.height
     var page = pageRef.current
 
-    // Zones (under strokes)
+    // Zones + highlights (under strokes)
     zonesRef.current.forEach(function(z) {
       if ((z.page || 1) !== page) return
       var x = z.x1 * W
       var y = z.y1 * H
       var w = (z.x2 - z.x1) * W
       var h = (z.y2 - z.y1) * H
-      ctx.fillStyle = 'rgba(139,92,246,0.10)'
-      ctx.fillRect(x, y, w, h)
-      ctx.strokeStyle = '#8B5CF6'
+      var col = z.color || '#8B5CF6'
+      ctx.globalAlpha = 0.07
+      ctx.fillStyle = col
+      if (z.shape === 'circle') {
+        ctx.beginPath()
+        ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
+        ctx.fill()
+      } else {
+        ctx.fillRect(x, y, w, h)
+      }
+      ctx.globalAlpha = 0.85
+      ctx.strokeStyle = col
       ctx.lineWidth = 2 / v.scale
-      ctx.setLineDash([8 / v.scale, 6 / v.scale])
-      ctx.strokeRect(x, y, w, h)
+      ctx.setLineDash(z.kind === 'highlight' ? [3 / v.scale, 4 / v.scale] : [8 / v.scale, 6 / v.scale])
+      if (z.shape === 'circle') {
+        ctx.beginPath()
+        ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
+        ctx.stroke()
+      } else {
+        ctx.strokeRect(x, y, w, h)
+      }
       ctx.setLineDash([])
-      ctx.fillStyle = '#8B5CF6'
+      ctx.fillStyle = col
       ctx.font = 'bold ' + (14 / v.scale) + 'px Inter, sans-serif'
       ctx.textAlign = 'left'
       ctx.textBaseline = 'top'
       ctx.fillText(z.name, x + 6 / v.scale, y + 6 / v.scale)
+      ctx.globalAlpha = 1
     })
 
     // Live zone rectangle
@@ -387,6 +411,31 @@ export default function TraceStudio(props) {
       for (var j = 1; j < cur.length; j++) ctx.lineTo(cur[j].x, cur[j].y)
       ctx.stroke()
     }
+
+    // Cable-issue markers (remarks placed on the drawing)
+    loopsRef.current.forEach(function(loop) {
+      if ((loop.page || 1) !== page) return
+      ;(loop.remarks || []).forEach(function(rm) {
+        if (rm.x == null || rm.y == null) return
+        var mx = rm.x * W
+        var my = rm.y * H
+        var mr = 11 / v.scale
+        ctx.beginPath()
+        ctx.arc(mx, my, mr, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(239,68,68,0.95)'
+        ctx.fill()
+        ctx.lineWidth = 2 / v.scale
+        ctx.strokeStyle = '#0F172A'
+        ctx.stroke()
+        ctx.strokeStyle = '#FFFFFF'
+        ctx.lineWidth = 2.5 / v.scale
+        var k2 = mr * 0.45
+        ctx.beginPath()
+        ctx.moveTo(mx - k2, my - k2); ctx.lineTo(mx + k2, my + k2)
+        ctx.moveTo(mx + k2, my - k2); ctx.lineTo(mx - k2, my + k2)
+        ctx.stroke()
+      })
+    })
 
     // Pin -> loop lookup
     var pinLoop = {}
@@ -610,6 +659,11 @@ export default function TraceStudio(props) {
       return
     }
 
+    if (m === 'mark') {
+      gestureRef.current = { type: 'marktap', pt: pt, moved: false, startX: e.clientX, startY: e.clientY }
+      return
+    }
+
     gestureRef.current = { type: 'pan', startX: e.clientX, startY: e.clientY, v0: Object.assign({}, viewRef.current) }
   }
 
@@ -664,7 +718,7 @@ export default function TraceStudio(props) {
       return
     }
 
-    if (g.type === 'addpin' || g.type === 'picktap') {
+    if (g.type === 'addpin' || g.type === 'picktap' || g.type === 'marktap') {
       if (Math.hypot(e.clientX - g.startX, e.clientY - g.startY) > 8) g.moved = true
       return
     }
@@ -700,7 +754,44 @@ export default function TraceStudio(props) {
     if (g.type === 'dragpin' && !g.moved) { setEditPinId(g.pinId); return }
     if (g.type === 'picktap' && !g.moved) { pickTextAt(g.pt); return }
     if (g.type === 'picktap' && g.moved) { return }
+    if (g.type === 'marktap' && !g.moved) { markCableAt(g.pt); return }
+    if (g.type === 'marktap' && g.moved) { return }
     if (g.type === 'zone') { commitZone(); return }
+  }
+
+  /* MARK mode: tap on a traced line -> cable-issue marker between the two
+     nearest captured devices on that loop. Feeds the Blockers board. */
+  function markCableAt(pagePt) {
+    var img = pageImgRef.current
+    if (!img) return
+    var page = pageRef.current
+    var thresh = 30 / viewRef.current.scale
+    if (thresh < 20) thresh = 20
+    var best = null
+    loopsRef.current.forEach(function(loop) {
+      if ((loop.page || 1) !== page) return
+      loop.strokes.forEach(function(stroke) {
+        for (var i = 0; i < stroke.length - 1; i++) {
+          var d = perpDist(pagePt, stroke[i], stroke[i + 1])
+          if (d < thresh && (!best || d < best.d)) best = { d: d, loop: loop }
+        }
+      })
+    })
+    if (!best) { setAiMsg('TAP CLOSER TO A TRACED LINE TO MARK A CABLE ISSUE'); return }
+    var loop = best.loop
+    if (loop.deviceIds.length < 2) { setAiMsg('THIS LOOP NEEDS AT LEAST 2 CAPTURED DEVICES BEFORE MARKING A CABLE SEGMENT'); return }
+
+    var dists = loop.deviceIds.map(function(pid, idx) {
+      var p = pinsRef.current.find(function(x) { return x.id === pid })
+      if (!p) return { idx: idx, d: Infinity }
+      return { idx: idx, d: Math.hypot(p.x * img.width - pagePt.x, p.y * img.height - pagePt.y) }
+    })
+    dists.sort(function(a, b) { return a.d - b.d })
+    var afterIndex = Math.min(dists[0].idx, dists[1].idx)
+
+    setActiveLoopId(loop.id)
+    activeLoopRef.current = loop.id
+    setEditRemark({ loopId: loop.id, afterIndex: afterIndex, x: pagePt.x / img.width, y: pagePt.y / img.height })
   }
 
   function commitZone() {
@@ -716,6 +807,9 @@ export default function TraceStudio(props) {
     var zone = {
       id: nid('zone'),
       name: 'ZONE ' + (zonesRef.current.length + 1),
+      kind: 'group',
+      shape: 'rect',
+      color: ZONE_COLORS[zonesRef.current.length % ZONE_COLORS.length],
       x1: x1 / img.width, y1: y1 / img.height,
       x2: x2 / img.width, y2: y2 / img.height,
       page: pageRef.current
@@ -908,14 +1002,22 @@ export default function TraceStudio(props) {
     requestDraw()
   }
 
-  function setRemark(loopId, afterIndex, text) {
+  function setRemark(loopId, afterIndex, text, pos) {
     loopsRef.current = loopsRef.current.map(function(l) {
       if (l.id !== loopId) return l
+      var existing = (l.remarks || []).find(function(r) { return r.afterIndex === afterIndex })
       var remarks = (l.remarks || []).filter(function(r) { return r.afterIndex !== afterIndex })
-      if (text && text.trim()) remarks = remarks.concat([{ afterIndex: afterIndex, text: up(text) }])
+      if (text && text.trim()) {
+        var entry = { afterIndex: afterIndex, text: up(text) }
+        // Keep/set the on-drawing marker position
+        if (pos && pos.x != null) { entry.x = pos.x; entry.y = pos.y }
+        else if (existing && existing.x != null) { entry.x = existing.x; entry.y = existing.y }
+        remarks = remarks.concat([entry])
+      }
       return Object.assign({}, l, { remarks: remarks })
     })
     setLoops(loopsRef.current)
+    requestDraw()
   }
 
   function removeFromLoop(loopId, pinId) {
@@ -997,8 +1099,8 @@ export default function TraceStudio(props) {
     var unmatched = pins.filter(function(p) { return !placed[p.id] && /^(FCU|VAV|AHU|PAU|ERU)/i.test(p.tag) })
       .map(function(p) { return { tag: p.tag, room: p.room, thermostat: p.thermostat, address: p.address, serial: p.serial } })
 
-    // Zones -> device groupings for the location view
-    var zoneGroups = zones.map(function(z) {
+    // Zones -> device groupings for the location view (highlights are visual only)
+    var zoneGroups = zones.filter(function(z) { return z.kind !== 'highlight' }).map(function(z) {
       var tags = pins.filter(function(p) {
         return (p.page || 1) === (z.page || 1) && p.x >= z.x1 && p.x <= z.x2 && p.y >= z.y1 && p.y <= z.y2
       }).map(function(p) { return p.tag })
@@ -1073,6 +1175,7 @@ export default function TraceStudio(props) {
           {modeBtn('pin', '📍', 'PINS')}
           {modeBtn('trace', '✏️', 'TRACE')}
           {modeBtn('zone', '▭', 'ZONE')}
+          {modeBtn('mark', '⚠', 'MARK')}
           <div className="w-px h-5 bg-border mx-1"></div>
           <button onClick={function() { zoomBy(1.3) }} className="px-2.5 py-1.5 bg-card2 text-dgray hover:text-white rounded text-xs">+</button>
           <button onClick={function() { zoomBy(1 / 1.3) }} className="px-2.5 py-1.5 bg-card2 text-dgray hover:text-white rounded text-xs">−</button>
@@ -1134,7 +1237,8 @@ export default function TraceStudio(props) {
             <div className="absolute bottom-16 md:bottom-3 left-3 bg-card/90 rounded-lg px-3 py-2 text-[9px] text-dgray uppercase pointer-events-none max-w-[75%]">
               {mode === 'trace' && 'DRAW ALONG THE LOOP — PINS CAPTURE IN ORDER. RIGHT-DRAG OR TWO FINGERS TO MOVE AROUND.'}
               {mode === 'pin' && 'TAP EMPTY = ADD PIN · DRAG PIN = MOVE · TAP PIN = EDIT'}
-              {mode === 'zone' && 'DRAG A RECTANGLE AROUND AN AREA TO NAME IT AS A ZONE'}
+              {mode === 'zone' && 'DRAG AN AREA — THEN SET TYPE (DEVICE ZONE / HIGHLIGHT), SHAPE AND COLOR'}
+              {mode === 'mark' && 'TAP ON A TRACED LINE TO MARK A CABLE ISSUE BETWEEN TWO DEVICES → GOES TO BLOCKERS'}
               {mode === 'pan' && 'DRAG TO MOVE · WHEEL / PINCH TO ZOOM'}
             </div>
           )}
@@ -1146,22 +1250,22 @@ export default function TraceStudio(props) {
 
               <label className="text-[8px] text-dgray uppercase block mb-0.5">EQUIPMENT NAME (TAG)</label>
               <div className="flex gap-1 mb-2">
-                <input value={editPin.tag} onChange={function(e) { updatePin(editPin.id, { tag: up(e.target.value) }) }}
+                <input value={editPin.tag} onChange={function(e) { updatePin(editPin.id, { tag: upKeep(e.target.value) }) }}
                   className="flex-1 bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase outline-none focus:border-teal" />
                 <button onClick={function() { setPickField({ pinId: editPin.id, field: 'tag' }) }} title="PICK FROM DRAWING" className="px-2 py-1 bg-teal/20 text-teal text-[9px] font-bold rounded uppercase hover:bg-teal/30">PICK</button>
               </div>
 
               <label className="text-[8px] text-dgray uppercase block mb-0.5">DEVICE SERIAL NO. (SHOWN ON DRAWING)</label>
-              <input value={editPin.serial || ''} onChange={function(e) { updatePin(editPin.id, { serial: up(e.target.value) }) }}
+              <input value={editPin.serial || ''} onChange={function(e) { updatePin(editPin.id, { serial: upKeep(e.target.value) }) }}
                 className="w-full bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase mb-2 outline-none focus:border-teal" />
 
               <label className="text-[8px] text-dgray uppercase block mb-0.5">ADDRESS NO.</label>
-              <input value={editPin.address || ''} onChange={function(e) { updatePin(editPin.id, { address: up(e.target.value) }) }}
+              <input value={editPin.address || ''} onChange={function(e) { updatePin(editPin.id, { address: upKeep(e.target.value) }) }}
                 className="w-full bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase mb-2 outline-none focus:border-teal" />
 
               <label className="text-[8px] text-dgray uppercase block mb-0.5">ROOM NAME</label>
               <div className="flex gap-1 mb-3">
-                <input value={editPin.room || ''} onChange={function(e) { updatePin(editPin.id, { room: up(e.target.value) }) }}
+                <input value={editPin.room || ''} onChange={function(e) { updatePin(editPin.id, { room: upKeep(e.target.value) }) }}
                   className="flex-1 bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase outline-none focus:border-teal" />
                 <button onClick={function() { setPickField({ pinId: editPin.id, field: 'room' }) }} title="PICK FROM DRAWING" className="px-2 py-1 bg-teal/20 text-teal text-[9px] font-bold rounded uppercase hover:bg-teal/30">PICK</button>
               </div>
@@ -1173,14 +1277,41 @@ export default function TraceStudio(props) {
             </div>
           )}
 
-          {/* Zone editor */}
+          {/* Zone / highlight editor */}
           {editZone && (
-            <div className="absolute top-3 left-3 bg-card border border-purple rounded-xl p-3 w-64 z-10">
-              <div className="text-[9px] text-purple font-bold uppercase mb-2">EDIT ZONE</div>
-              <label className="text-[8px] text-dgray uppercase block mb-0.5">ZONE NAME</label>
-              <input value={editZone.name} onChange={function(e) { updateZone(editZone.id, { name: up(e.target.value) }) }}
-                className="w-full bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase mb-3 outline-none focus:border-purple" />
-              <div className="text-[8px] text-dgray uppercase mb-3">DEVICES INSIDE THIS RECTANGLE WILL FORM A GROUP IN THE LOCATION VIEW.</div>
+            <div className="absolute top-3 left-3 bg-card border border-purple rounded-xl p-3 w-72 z-10">
+              <div className="text-[9px] text-purple font-bold uppercase mb-2">EDIT {editZone.kind === 'highlight' ? 'HIGHLIGHT' : 'ZONE'}</div>
+
+              <label className="text-[8px] text-dgray uppercase block mb-0.5">NAME / LABEL</label>
+              <input value={editZone.name} onChange={function(e) { updateZone(editZone.id, { name: upKeep(e.target.value) }) }}
+                className="w-full bg-navy border border-border rounded px-2 py-1 text-[11px] text-white uppercase mb-2 outline-none focus:border-purple" />
+
+              <label className="text-[8px] text-dgray uppercase block mb-1">TYPE</label>
+              <div className="flex gap-1.5 mb-2">
+                <button onClick={function() { updateZone(editZone.id, { kind: 'group' }) }} className={'flex-1 px-2 py-1 text-[9px] font-bold rounded uppercase transition ' + (editZone.kind !== 'highlight' ? 'bg-purple text-white' : 'bg-card2 text-dgray hover:text-white')}>DEVICE ZONE</button>
+                <button onClick={function() { updateZone(editZone.id, { kind: 'highlight' }) }} className={'flex-1 px-2 py-1 text-[9px] font-bold rounded uppercase transition ' + (editZone.kind === 'highlight' ? 'bg-purple text-white' : 'bg-card2 text-dgray hover:text-white')}>HIGHLIGHT</button>
+              </div>
+
+              <label className="text-[8px] text-dgray uppercase block mb-1">SHAPE</label>
+              <div className="flex gap-1.5 mb-2">
+                <button onClick={function() { updateZone(editZone.id, { shape: 'rect' }) }} className={'flex-1 px-2 py-1 text-[9px] font-bold rounded uppercase transition ' + (editZone.shape !== 'circle' ? 'bg-purple text-white' : 'bg-card2 text-dgray hover:text-white')}>▭ RECT</button>
+                <button onClick={function() { updateZone(editZone.id, { shape: 'circle' }) }} className={'flex-1 px-2 py-1 text-[9px] font-bold rounded uppercase transition ' + (editZone.shape === 'circle' ? 'bg-purple text-white' : 'bg-card2 text-dgray hover:text-white')}>◯ CIRCLE</button>
+              </div>
+
+              <label className="text-[8px] text-dgray uppercase block mb-1">COLOR</label>
+              <div className="flex gap-1.5 mb-3">
+                {ZONE_COLORS.map(function(c) {
+                  return <button key={c} onClick={function() { updateZone(editZone.id, { color: c }) }}
+                    className={'w-6 h-6 rounded-full transition ' + (editZone.color === c ? 'ring-2 ring-white scale-110' : 'opacity-60 hover:opacity-100')}
+                    style={{ background: c }}></button>
+                })}
+              </div>
+
+              <div className="text-[8px] text-dgray uppercase mb-3">
+                {editZone.kind === 'highlight'
+                  ? 'VISUAL MARKER ONLY — USE FOR RELOCATED EQUIPMENT, DDC POSITION, NOTES ON THE DRAWING.'
+                  : 'DEVICES INSIDE THIS AREA WILL FORM A GROUP IN THE LOCATION VIEW.'}
+              </div>
               <div className="flex gap-2">
                 <button onClick={function() { setEditZoneId(null) }} className="flex-1 px-2 py-1.5 bg-purple text-white text-[9px] font-bold rounded uppercase">CLOSE</button>
                 <button onClick={function() { deleteZone(editZone.id) }} className="px-2 py-1.5 bg-red/20 text-red text-[9px] font-bold rounded uppercase">DELETE</button>
@@ -1204,7 +1335,7 @@ export default function TraceStudio(props) {
                 <div className="flex gap-2">
                   <button onClick={function() {
                     var inp = document.getElementById('ts-remark-input')
-                    setRemark(editRemark.loopId, editRemark.afterIndex, inp ? inp.value : '')
+                    setRemark(editRemark.loopId, editRemark.afterIndex, inp ? inp.value : '', editRemark)
                     setEditRemark(null)
                   }} className="flex-1 px-2 py-1.5 bg-orange text-white text-[9px] font-bold rounded uppercase">SAVE</button>
                   <button onClick={function() { setEditRemark(null) }} className="px-2 py-1.5 bg-card2 text-dgray text-[9px] rounded uppercase hover:text-white">CANCEL</button>
@@ -1222,10 +1353,10 @@ export default function TraceStudio(props) {
               <button onClick={function() { setPanelOpen(false) }} className="md:hidden text-dgray hover:text-white text-xs">✕</button>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
-              <input value={meta.name} onChange={function(e) { setMeta(Object.assign({}, meta, { name: up(e.target.value) })) }} placeholder="NAME" className="col-span-2 bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
-              <input value={meta.floor} onChange={function(e) { setMeta(Object.assign({}, meta, { floor: up(e.target.value) })) }} placeholder="FLOOR" className="bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
-              <input value={meta.block} onChange={function(e) { setMeta(Object.assign({}, meta, { block: up(e.target.value) })) }} placeholder="BLOCK" className="bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
-              <input value={meta.zone} onChange={function(e) { setMeta(Object.assign({}, meta, { zone: up(e.target.value) })) }} placeholder="ZONE/AREA" className="col-span-2 bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
+              <input value={meta.name} onChange={function(e) { setMeta(Object.assign({}, meta, { name: upKeep(e.target.value) })) }} placeholder="NAME" className="col-span-2 bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
+              <input value={meta.floor} onChange={function(e) { setMeta(Object.assign({}, meta, { floor: upKeep(e.target.value) })) }} placeholder="FLOOR" className="bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
+              <input value={meta.block} onChange={function(e) { setMeta(Object.assign({}, meta, { block: upKeep(e.target.value) })) }} placeholder="BLOCK" className="bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
+              <input value={meta.zone} onChange={function(e) { setMeta(Object.assign({}, meta, { zone: upKeep(e.target.value) })) }} placeholder="ZONE/AREA" className="col-span-2 bg-navy border border-border rounded px-2 py-1 text-[10px] text-white uppercase outline-none focus:border-teal" />
             </div>
           </div>
 
@@ -1251,7 +1382,7 @@ export default function TraceStudio(props) {
                   <input value={loop.name}
                     onClick={function(e) { e.stopPropagation() }}
                     onChange={function(e) {
-                      var v = up(e.target.value)
+                      var v = upKeep(e.target.value)
                       loopsRef.current = loopsRef.current.map(function(l) { return l.id === loop.id ? Object.assign({}, l, { name: v }) : l })
                       setLoops(loopsRef.current)
                     }}
@@ -1325,10 +1456,11 @@ export default function TraceStudio(props) {
 
       {/* ─── Mobile bottom bar ─── */}
       <div className="md:hidden flex items-center gap-1.5 px-2 py-2 bg-card2 border-t border-border">
-        {modeBtn('pan', '✋', 'PAN')}
-        {modeBtn('pin', '📍', 'PIN')}
-        {modeBtn('trace', '✏️', 'TRACE')}
-        {modeBtn('zone', '▭', 'ZONE')}
+        {modeBtn('pan', '✋', '')}
+        {modeBtn('pin', '📍', '')}
+        {modeBtn('trace', '✏️', '')}
+        {modeBtn('zone', '▭', '')}
+        {modeBtn('mark', '⚠', '')}
         <button onClick={function() { setStraighten(!straighten) }} className={'px-2.5 py-2 rounded-md text-[11px] font-bold transition ' + (straighten ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray')}>⊾</button>
         <button onClick={function() { setPanelOpen(!panelOpen) }} className="px-2.5 py-2 bg-card2 text-dgray rounded-md text-[11px] font-bold uppercase">☰</button>
       </div>
