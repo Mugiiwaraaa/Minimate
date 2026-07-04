@@ -157,18 +157,23 @@ export function diffLoops(projectId, prevLoops, nextLoops) {
       return
     }
 
+    // Untouched loop? State is immutable — same reference means identical.
+    // A tick changes ONE loop; every other loop skips in O(1).
+    if (prev.loop === l && prev.pos === li) return
+
     // Existing loop: fields changed?
     if (loopFieldsKey(projectId, prev.loop, prev.pos) !== loopFieldsKey(projectId, l, li)) {
       ops.loopUpserts.push(loopToRow(projectId, l, li))
     }
 
-    // Devices, by id
+    // Devices, by id (same-reference devices skip without serializing)
     var prevDevs = {}
     prev.loop.devices.forEach(function(d, di) { prevDevs[d.id] = { dev: d, pos: di } })
     var seenDevs = {}
     l.devices.forEach(function(d, di) {
       seenDevs[d.id] = true
       var pd = prevDevs[d.id]
+      if (pd && pd.dev === d && pd.pos === di) return
       if (!pd || deviceFieldsKey(projectId, l.id, pd.dev, pd.pos) !== deviceFieldsKey(projectId, l.id, d, di)) {
         ops.devUpserts.push(deviceToRow(projectId, l.id, d, di))
       }
@@ -320,18 +325,36 @@ export function loadLoops(projectId, cb) {
    echoes and must be ignored (or they overwrite text mid-typing).
    ================================================================ */
 
-var recentWrites = {} // 'table:id' -> { key, ts }
+var recentWrites = {} // 'table:id' -> { keys: [last few], ts }
+
+// ORDER-INDEPENDENT serialization: Postgres/realtime return the same row
+// with different key order than we sent (and jsonb re-sorts nested keys).
+// Naive JSON.stringify never matches — every echo would look "remote".
+function stableVal(v) {
+  if (Array.isArray(v)) return '[' + v.map(stableVal).join(',') + ']'
+  if (v && typeof v === 'object') {
+    return '{' + Object.keys(v).sort().map(function(k) {
+      return JSON.stringify(k) + ':' + stableVal(v[k])
+    }).join(',') + '}'
+  }
+  return JSON.stringify(v)
+}
 
 function stableRowKey(row) {
   var c = Object.assign({}, row)
   delete c.updated_at
-  return JSON.stringify(c)
+  return stableVal(c)
 }
 
 function noteWrites(table, rows) {
   var now = Date.now()
   rows.forEach(function(r) {
-    recentWrites[table + ':' + r.id] = { key: stableRowKey(r), ts: now }
+    var k = table + ':' + r.id
+    var e = recentWrites[k] || { keys: [], ts: now }
+    e.keys.push(stableRowKey(r))
+    if (e.keys.length > 6) e.keys = e.keys.slice(-6) // rapid edits: remember several
+    e.ts = now
+    recentWrites[k] = e
   })
   // Opportunistic cleanup
   Object.keys(recentWrites).forEach(function(k) {
@@ -343,7 +366,7 @@ export function isOwnEcho(table, row) {
   if (!row || !row.id) return false
   var e = recentWrites[table + ':' + row.id]
   if (!e || Date.now() - e.ts > 30000) return false
-  return e.key === stableRowKey(row)
+  return e.keys.indexOf(stableRowKey(row)) >= 0
 }
 
 /* ================================================================

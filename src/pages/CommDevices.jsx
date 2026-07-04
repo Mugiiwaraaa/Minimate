@@ -5,8 +5,11 @@ var loopStages = ['comm_cable','control_cable','continuity','termination','devic
 var stgLbl = {comm_cable:'COMM CABLE',control_cable:'CTRL CABLE',continuity:'CONTINUITY',termination:'TERMINATION',device_installed:'INSTALLED',address_set:'ADDRESS'}
 var protocols = ['MODBUS RTU','BACNET MSTP','BACNET IP']
 var deviceTypes = ['FCU THERMOSTAT','FCU CONTROLLER','VAV THERMOSTAT','VAV CONTROLLER','PMU','WATER METER','BTU METER','SENSOR','OTHER']
-var nxL=100,nxD=1000,nxA=500
-function gid(p){if(p==='loop')return 'loop-'+(nxL++);if(p==='area')return 'area-'+(nxA++);return 'ldev-'+(nxD++)}
+// Ids MUST be globally unique — they are database row keys now (M6).
+// The old per-pageload counters ('ldev-1000'…) collided across sessions
+// and corrupted rows into duplicates.
+var gidC=0
+function gid(p){gidC++;var u=Date.now()+'-'+gidC;if(p==='loop')return 'loop-'+u;if(p==='area')return 'area-'+u;return 'ldev-'+u}
 function up(v){return (v||'').toUpperCase().trim()}
 
 // Stage button - defined OUTSIDE so React doesn't remount on parent re-render
