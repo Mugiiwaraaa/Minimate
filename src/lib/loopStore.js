@@ -263,6 +263,9 @@ function drainNow() {
 }
 
 function runBatch(pid, b) {
+  // Remember our writes so their realtime echoes are recognized
+  noteWrites('loops', b.loopUpserts)
+  noteWrites('loop_devices', b.devUpserts)
   // Order matters: loop rows before their device rows; deletes last
   var p = Promise.resolve()
   if (b.loopUpserts.length > 0) {
@@ -309,6 +312,38 @@ export function loadLoops(projectId, cb) {
       cb(null, { loops: rowsToLoops(lres.data, dres.data), hasRows: true })
     })
   })
+}
+
+/* ================================================================
+   OWN-ECHO DETECTION — realtime replays our own writes back to us.
+   We remember what we recently wrote; identical incoming rows are
+   echoes and must be ignored (or they overwrite text mid-typing).
+   ================================================================ */
+
+var recentWrites = {} // 'table:id' -> { key, ts }
+
+function stableRowKey(row) {
+  var c = Object.assign({}, row)
+  delete c.updated_at
+  return JSON.stringify(c)
+}
+
+function noteWrites(table, rows) {
+  var now = Date.now()
+  rows.forEach(function(r) {
+    recentWrites[table + ':' + r.id] = { key: stableRowKey(r), ts: now }
+  })
+  // Opportunistic cleanup
+  Object.keys(recentWrites).forEach(function(k) {
+    if (now - recentWrites[k].ts > 30000) delete recentWrites[k]
+  })
+}
+
+export function isOwnEcho(table, row) {
+  if (!row || !row.id) return false
+  var e = recentWrites[table + ':' + row.id]
+  if (!e || Date.now() - e.ts > 30000) return false
+  return e.key === stableRowKey(row)
 }
 
 /* ================================================================

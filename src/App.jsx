@@ -12,7 +12,7 @@ import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
-import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice } from './lib/loopStore'
+import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho } from './lib/loopStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -252,6 +252,8 @@ export default function App() {
     // (ref, not state: this closure outlives the render it was created in)
     var pid = (rowNew && rowNew.project_id) || (rowOld && rowOld.project_id)
     if (!activeProjectIdRef.current || pid !== activeProjectIdRef.current) return
+    // Our own write bouncing back? Ignore it completely.
+    if (evt !== 'DELETE' && isOwnEcho(table, rowNew)) return
 
     remoteLoopApplyRef.current = true
     setLoops(function(prev) {
@@ -279,17 +281,34 @@ export default function App() {
         } else {
           var dev = deviceRowToDevice(rowNew)
           var lid = rowNew.loop_id
-          // Remove from wherever it was, insert into its loop at its position
-          next = prev.map(function(l) {
-            return Object.assign({}, l, { devices: l.devices.filter(function(d) { return d.id !== dev.id }) })
+          // Where does this device live on OUR screen right now?
+          var currentLoopId = null
+          prev.forEach(function(l) {
+            if (l.devices.some(function(d) { return d.id === dev.id })) currentLoopId = l.id
           })
-          next = next.map(function(l) {
-            if (l.id !== lid) return l
-            var devs = l.devices.slice()
-            var pos = Math.min(rowNew.position || devs.length, devs.length)
-            devs.splice(pos, 0, dev)
-            return Object.assign({}, l, { devices: devs })
-          })
+          if (currentLoopId === lid) {
+            // Same loop (incl. our own echoes): update IN PLACE — never
+            // reorder the list under the user's cursor
+            next = prev.map(function(l) {
+              if (l.id !== lid) return l
+              return Object.assign({}, l, {
+                devices: l.devices.map(function(d) { return d.id === dev.id ? dev : d })
+              })
+            })
+          } else {
+            // Moved between loops, or brand new: remove everywhere,
+            // insert into its loop at the stored position
+            next = prev.map(function(l) {
+              return Object.assign({}, l, { devices: l.devices.filter(function(d) { return d.id !== dev.id }) })
+            })
+            next = next.map(function(l) {
+              if (l.id !== lid) return l
+              var devs = l.devices.slice()
+              var pos = Math.min(rowNew.position || devs.length, devs.length)
+              devs.splice(pos, 0, dev)
+              return Object.assign({}, l, { devices: devs })
+            })
+          }
         }
       }
       prevLoopsRef.current = next // server-originated: never echo row ops back
