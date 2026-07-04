@@ -12,7 +12,7 @@ import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
-import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho } from './lib/loopStore'
+import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -244,6 +244,31 @@ export default function App() {
     })
   }
 
+  // Remote reorder: positions arrive one row at a time. Wait for the
+  // burst to finish (500ms quiet), then apply the database's final order
+  // for that loop in ONE settled update.
+  var orderRefreshRef = useRef({})
+  function scheduleLoopOrderRefresh(loopId) {
+    var timers = orderRefreshRef.current
+    if (timers[loopId]) clearTimeout(timers[loopId])
+    timers[loopId] = setTimeout(function() {
+      delete timers[loopId]
+      var pid = activeProjectIdRef.current
+      if (!pid) return
+      fetchLoopDevices(pid, loopId, function(err, orderedDevs) {
+        if (err || !orderedDevs) return
+        setLoops(function(prev) {
+          var next = prev.map(function(l) {
+            if (l.id !== loopId) return l
+            return Object.assign({}, l, { devices: orderedDevs })
+          })
+          prevLoopsRef.current = next // server-ordered: no echo ops
+          return next
+        })
+      })
+    }, 500)
+  }
+
   // ─── M6 P3: apply one server row event to loop state ───────
   // A colleague's tick arrives as ONE device row — we patch just that.
   function handleLoopRowChange(table, payload) {
@@ -289,8 +314,17 @@ export default function App() {
             if (l.devices.some(function(d) { return d.id === dev.id })) currentLoopId = l.id
           })
           if (currentLoopId === lid) {
-            // Same loop (incl. our own echoes): update IN PLACE — never
-            // reorder the list under the user's cursor
+            // Same loop: update fields IN PLACE (no jumping mid-work).
+            // If the stored position disagrees with where it sits on our
+            // screen, a colleague reordered — settle the order shortly.
+            var curIdx = -1
+            prev.forEach(function(l) {
+              if (l.id !== lid) return
+              l.devices.forEach(function(d, di) { if (d.id === dev.id) curIdx = di })
+            })
+            if (typeof rowNew.position === 'number' && rowNew.position !== curIdx) {
+              scheduleLoopOrderRefresh(lid)
+            }
             next = prev.map(function(l) {
               if (l.id !== lid) return l
               return Object.assign({}, l, {

@@ -396,6 +396,23 @@ export function unsubscribeLoops() {
   }
 }
 
+/* Fetch ONE loop's devices in stored order — used to settle the display
+   order after a remote reorder burst (positions arrive per-row; the
+   database has the authoritative final arrangement). */
+export function fetchLoopDevices(projectId, loopId, cb) {
+  if (isDemo || !supabase) { cb(null, null); return }
+  supabase
+    .from('loop_devices')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('loop_id', loopId)
+    .order('position', { ascending: true })
+    .then(function(res) {
+      if (res.error) { cb(res.error, null); return }
+      cb(null, (res.data || []).map(function(r) { return deviceRowToDevice(r) }))
+    })
+}
+
 /* One-time per project: copy blob loops into rows. Blob stays canonical. */
 export function ensureBackfill(projectId, blobLoops) {
   if (isDemo || !supabase || !projectId) return
