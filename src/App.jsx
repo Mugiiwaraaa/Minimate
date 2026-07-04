@@ -142,10 +142,12 @@ export default function App() {
 
   // ─── Auto-save to Supabase on state changes ────────────────
   var initialLoadDone = useRef(false)
+  var lastEditRef = useRef(0) // last REAL local edit — guards remote clobbering
 
   useEffect(function() {
     if (!activeProject || !activeProject.id || isDemo) return
     if (!initialLoadDone.current) return // don't save during initial load
+    lastEditRef.current = Date.now()
     var data = {
       panels: panels,
       equipmentMap: equipmentMap,
@@ -177,9 +179,12 @@ export default function App() {
       setSaveConflict(true)
       setSaveStatus('error')
     })
-    // Remote/merged data: apply to state without triggering an echo save loop
+    // Remote/merged data: apply to state without triggering an echo save loop.
+    // NEVER apply while the user is actively working (last edit < 4s ago) —
+    // their own save will merge everything correctly anyway.
     onRemoteData(function(row) {
       if (!row || !row.data) return
+      if (Date.now() - lastEditRef.current < 4000) return
       initialLoadDone.current = false
       var d = row.data
       setPanels(d.panels || [])
@@ -788,6 +793,16 @@ export default function App() {
   function applyDrawingResult(result, drawExcl) {
     var did = result.drawingId || ''
 
+    // Remember existing devices (by tag) so a RE-TRACE never wipes
+    // commissioning progress, remarks or field-entered details
+    var prevByTag = {}
+    loops.forEach(function(l) {
+      if (l.source !== 'drawing') return
+      l.devices.forEach(function(d) {
+        if (d.tag && !prevByTag[d.tag]) prevByTag[d.tag] = d
+      })
+    })
+
     // Device-level replacement: re-trace of a drawing replaces ONLY devices
     // and remarks that came from that drawing. A loop can span floors
     // (traced across multiple drawings) — other floors' devices survive.
@@ -817,6 +832,21 @@ export default function App() {
         var dev = makeLoopDevice(d.tag, d.room, d.thermostat, d.address, d.serial)
         dev.floor = result.floorLabel || ''
         dev.drawingId = did
+        // Re-trace: carry over everything already earned on this device
+        var old = prevByTag[dev.tag]
+        if (old) {
+          dev.comm_cable = !!old.comm_cable
+          dev.control_cable = !!old.control_cable
+          dev.continuity = !!old.continuity
+          dev.termination = !!old.termination
+          dev.device_installed = !!old.device_installed
+          dev.address_set = !!old.address_set
+          dev.remarks = old.remarks || ''
+          if (!dev.address && old.address) dev.address = old.address
+          if (!dev.serial && old.serial) dev.serial = old.serial
+          if (!dev.room_name && old.room_name) dev.room_name = old.room_name
+          if (!dev.thermostat && old.thermostat) dev.thermostat = old.thermostat
+        }
         return dev
       })
 

@@ -103,6 +103,21 @@ export function saveProjectMeta(projectId, fields, cb) {
 //   not in base, only local       -> WE added it       -> kept
 //   on both sides                 -> our copy wins (we are the one saving)
 
+// Field-level 3-way merge of one entity: my field wins only if I CHANGED
+// it since load. Fields I didn't touch keep the server's (other user's)
+// value. This is what protects "supervisor filled DDC/gateway on the loop
+// while I only ticked device stages" — both survive.
+function merge3Fields(s, l, b) {
+  var out = Object.assign({}, s)
+  Object.keys(l).forEach(function(k) {
+    if (k === 'devices') return // devices merge separately, per device
+    var lv = JSON.stringify(l[k])
+    var bv = b ? JSON.stringify(b[k]) : undefined
+    if (b === undefined || b === null || lv !== bv) out[k] = l[k]
+  })
+  return out
+}
+
 function mergeById(serverArr, localArr, baseArr, mergeItem) {
   var sBy = {}
   var bBy = {}
@@ -115,7 +130,7 @@ function mergeById(serverArr, localArr, baseArr, mergeItem) {
     seen[l.id] = true
     var s = sBy[l.id]
     if (s) {
-      out.push(mergeItem ? mergeItem(s, l, bBy[l.id]) : l)
+      out.push(mergeItem ? mergeItem(s, l, bBy[l.id]) : merge3Fields(s, l, bBy[l.id]))
       return
     }
     var b = bBy[l.id]
@@ -148,7 +163,9 @@ export function mergeProjectData(server, local, base) {
   local = local || {}
   base = base || {}
   function mergeLoop(s, l, b) {
-    return Object.assign({}, s, l, { devices: mergeById(s.devices, l.devices, (b || {}).devices) })
+    var merged = merge3Fields(s, l, b)
+    merged.devices = mergeById(s.devices, l.devices, (b || {}).devices)
+    return merged
   }
   return {
     panels: mergeById(server.panels, local.panels, base.panels),
@@ -243,13 +260,22 @@ export function saveProjectData(projectId, stateObj) {
   saveTimer = setTimeout(flushSave, 1500) // 1.5s debounce
 }
 
+var inFlight = false // only ONE save round-trip at a time — rapid edits queue up
+
 function flushSave() {
   if (!pendingData || !pendingProjectId || isDemo || !supabase) return
+  if (inFlight) {
+    // A save is mid-flight; try again when it lands (finishSave also re-fires)
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(flushSave, 500)
+    return
+  }
   var pid = pendingProjectId
   var data = pendingData
   pendingData = null
   pendingProjectId = null
   saveTimer = null
+  inFlight = true
 
   if (!versionSupported) {
     // Fallback: version column missing — plain save (old behavior)
@@ -259,11 +285,17 @@ function flushSave() {
       .eq('id', pid)
       .then(function(res) {
         if (res.error) console.error('[MINIMATE] Save failed:', res.error.message)
+        finishSave()
       })
     return
   }
 
   attemptSave(pid, data, 0)
+}
+
+function finishSave() {
+  inFlight = false
+  if (pendingData) flushSave() // edits made during the round-trip save next
 }
 
 function attemptSave(pid, data, attempt) {
@@ -282,16 +314,19 @@ function attemptSave(pid, data, attempt) {
           versionSupported = false
           supabase.from('projects').update({ data: data }).eq('id', pid).then(function(r2) {
             if (r2.error) console.error('[MINIMATE] Save failed:', r2.error.message)
+            finishSave()
           })
           return
         }
         console.error('[MINIMATE] Save failed:', res.error.message)
+        finishSave()
         return
       }
       if (res.data && res.data.length > 0) {
         // Save accepted — we own the new version; this data is the new base
         localVersion = res.data[0].version
         setLoadedData(data)
+        finishSave()
         return
       }
 
@@ -305,21 +340,28 @@ function attemptSave(pid, data, attempt) {
         .then(function(fresh) {
           if (fresh.error || !fresh.data) {
             if (conflictHandler) conflictHandler(null)
+            finishSave()
             return
           }
           if (attempt >= 2) {
             // Merging keeps losing the race — surface the banner
             if (conflictHandler) conflictHandler(fresh.data)
+            finishSave()
             return
           }
           var merged = mergeProjectData(fresh.data.data, data, baseData)
           localVersion = fresh.data.version || 0
           setLoadedData(fresh.data.data) // server state is the new base for the retry
-          // Let the app show the merged picture (includes the other user's work)
-          if (remoteDataHandler) remoteDataHandler(Object.assign({}, fresh.data, { data: merged }))
+          // Show the merged picture ONLY if the user is not mid-edit —
+          // never stomp on checkboxes being ticked right now
+          if (remoteDataHandler && !pendingData && !saveTimer) {
+            remoteDataHandler(Object.assign({}, fresh.data, { data: merged }))
+          }
           attemptSave(pid, merged, attempt + 1)
         })
+        .catch(function(e) { console.error('[MINIMATE] Conflict fetch failed:', e && e.message); finishSave() })
     })
+    .catch(function(e) { console.error('[MINIMATE] Save request failed:', e && e.message); finishSave() })
 }
 
 // ─── Backups ─────────────────────────────────────────────────
