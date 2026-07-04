@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { isDemo } from '../lib/supabase'
-import { listProjects, createProject } from '../lib/supabaseDb'
+import { listProjects, createProject, listArchivedProjects, restoreProject, hardDeleteProject } from '../lib/supabaseDb'
 
 export default function ProjectSelector(props) {
   var onSelectProject = props.onSelectProject
@@ -28,18 +28,46 @@ export default function ProjectSelector(props) {
   var creatingState = useState(false)
   var creating = creatingState[0]
   var setCreating = creatingState[1]
+  var archivedState = useState([])
+  var archived = archivedState[0]
+  var setArchived = archivedState[1]
+  var showArchivedState = useState(false)
+  var showArchived = showArchivedState[0]
+  var setShowArchived = showArchivedState[1]
 
   useEffect(function() {
     if (isDemo) {
       setLoading(false)
       return
     }
+    refreshLists()
+  }, [])
+
+  function refreshLists() {
     listProjects(function(err, data) {
       setLoading(false)
       if (err) { setError(err.message); return }
       setProjects(data || [])
     })
-  }, [])
+    listArchivedProjects(function(err, data) {
+      if (!err) setArchived(data || [])
+    })
+  }
+
+  function handleRestore(p) {
+    restoreProject(p.id, function(err) {
+      if (err) { setError(err.message); return }
+      refreshLists()
+    })
+  }
+
+  function handleHardDelete(p) {
+    if (!window.confirm('PERMANENTLY DELETE "' + p.name + '"? THIS CANNOT BE UNDONE (ONLY BACKUP SNAPSHOTS REMAIN).')) return
+    hardDeleteProject(p.id, function(err) {
+      if (err) { setError(err.message); return }
+      refreshLists()
+    })
+  }
 
   function handleCreate() {
     if (!newName.trim()) return
@@ -207,6 +235,34 @@ export default function ProjectSelector(props) {
             {projects.length === 0 && !showCreate && (
               <div className="text-center text-dgray text-xs mt-4">
                 NO PROJECTS YET. CREATE YOUR FIRST ONE TO GET STARTED.
+              </div>
+            )}
+
+            {/* Archived projects — soft-deleted, restorable */}
+            {archived.length > 0 && (
+              <div className="mt-8">
+                <button onClick={function(){ setShowArchived(!showArchived) }}
+                  className="mx-auto block text-[10px] text-dgray hover:text-white transition">
+                  {showArchived ? '▾' : '▸'} ARCHIVED PROJECTS ({archived.length})
+                </button>
+                {showArchived && (
+                  <div className="mt-3 max-w-md mx-auto space-y-2">
+                    {archived.map(function(p) {
+                      return (
+                        <div key={p.id} className="bg-card/50 rounded-lg border border-border px-4 py-2.5 flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-dgray truncate">{p.name}</div>
+                            <div className="text-[9px] text-dgray/60">{p.client || 'NO CLIENT'} · ARCHIVED {formatDate(p.updated_at)}</div>
+                          </div>
+                          <button onClick={function(){ handleRestore(p) }}
+                            className="px-3 py-1 bg-teal/20 text-teal text-[10px] font-bold rounded hover:bg-teal/30 transition shrink-0">RESTORE</button>
+                          <button onClick={function(){ handleHardDelete(p) }}
+                            className="px-2 py-1 text-dgray/60 hover:text-red text-[10px] transition shrink-0">DELETE FOREVER</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -66,6 +66,38 @@ export function createProject(name, client, location, cb) {
     })
 }
 
+// Archived (soft-deleted) projects — restorable from the project selector
+export function listArchivedProjects(cb) {
+  if (isDemo || !supabase) { cb(null, []); return }
+  supabase
+    .from('projects')
+    .select('id, name, client, location, status, updated_at')
+    .eq('status', 'on_hold')
+    .order('updated_at', { ascending: false })
+    .then(function(res) {
+      cb(res.error || null, res.data || [])
+    })
+}
+
+export function restoreProject(projectId, cb) {
+  if (isDemo || !supabase) { cb(new Error('No Supabase connection')); return }
+  supabase
+    .from('projects')
+    .update({ status: 'active' })
+    .eq('id', projectId)
+    .then(function(res) { cb(res.error || null) })
+}
+
+// PERMANENT delete — no recovery except project_backups snapshots
+export function hardDeleteProject(projectId, cb) {
+  if (isDemo || !supabase) { cb(new Error('No Supabase connection')); return }
+  supabase
+    .from('projects')
+    .delete()
+    .eq('id', projectId)
+    .then(function(res) { cb(res.error || null) })
+}
+
 export function deleteProject(projectId, cb) {
   if (isDemo || !supabase) {
     cb(new Error('No Supabase connection'))
