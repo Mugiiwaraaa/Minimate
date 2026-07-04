@@ -178,6 +178,11 @@ export default function TraceStudio(props) {
   var tempZoneRef = useRef(null)    // live rectangle while dragging, page px
   var fileHashRef = useRef(rec ? (rec.fileHash || '') : '')
   var rafRef = useRef(0)
+  // Hi-res tile: re-render of the VISIBLE region at current zoom (vector PDFs
+  // stay razor sharp at any zoom; base raster is only for fast panning)
+  var hiResRef = useRef(null)        // {canvas, x, y, w, h, page} page-px space
+  var hiResTokenRef = useRef(0)
+  var hiResTimerRef = useRef(null)
 
   var pinsRef = useRef(pins);               pinsRef.current = pins
   var loopsRef = useRef(loops);             loopsRef.current = loops
@@ -235,6 +240,8 @@ export default function TraceStudio(props) {
   function renderPage(n) {
     var pdf = pdfRef.current
     if (!pdf) return Promise.resolve()
+    hiResRef.current = null
+    hiResTokenRef.current++
     setLoading(true)
     return pdf.getPage(n).then(function(page) {
       var vp1 = page.getViewport({ scale: 1 })
@@ -271,6 +278,71 @@ export default function TraceStudio(props) {
     })
   }
 
+  // ─── Progressive sharp rendering ───────────────────────────
+  // After the view settles, re-render ONLY the visible region of the PDF
+  // at the current zoom level. Vector CAD PDFs stay crisp at any zoom.
+  function scheduleHiRes() {
+    if (hiResTimerRef.current) clearTimeout(hiResTimerRef.current)
+    hiResTimerRef.current = setTimeout(renderHiResTile, 280)
+  }
+
+  function renderHiResTile() {
+    var pdf = pdfRef.current
+    if (!pdf) return // image files are already at native resolution
+    var canvas = canvasRef.current
+    var img = pageImgRef.current
+    if (!canvas || !img) return
+    var v = viewRef.current
+
+    // Base raster is 1:1 or better at this zoom — no tile needed
+    if (v.scale <= 1.05) {
+      if (hiResRef.current) { hiResRef.current = null; requestDraw() }
+      return
+    }
+
+    // Visible region in page px, padded so small pans stay sharp
+    var pad = 150 / v.scale + 100
+    var x0 = Math.max(0, (0 - v.tx) / v.scale - pad)
+    var y0 = Math.max(0, (0 - v.ty) / v.scale - pad)
+    var x1 = Math.min(img.width, (canvas.width - v.tx) / v.scale + pad)
+    var y1 = Math.min(img.height, (canvas.height - v.ty) / v.scale + pad)
+    if (x1 <= x0 || y1 <= y0) return
+
+    // Extra density over the base raster, memory-capped
+    var density = Math.min(v.scale, 6)
+    var tw = Math.round((x1 - x0) * density)
+    var th = Math.round((y1 - y0) * density)
+    var maxPixels = 3200 * 3200
+    if (tw * th > maxPixels) {
+      var shrink = Math.sqrt(maxPixels / (tw * th))
+      density = density * shrink
+      tw = Math.round((x1 - x0) * density)
+      th = Math.round((y1 - y0) * density)
+    }
+    if (density <= 1.02) return
+
+    var token = ++hiResTokenRef.current
+    var pageNo = pageRef.current
+    pdf.getPage(pageNo).then(function(page) {
+      var vp1 = page.getViewport({ scale: 1 })
+      var baseScale = img.width / vp1.width
+      var vp = page.getViewport({ scale: baseScale * density })
+      var c = document.createElement('canvas')
+      c.width = tw
+      c.height = th
+      var cctx = c.getContext('2d')
+      return page.render({
+        canvasContext: cctx,
+        viewport: vp,
+        transform: [1, 0, 0, 1, -x0 * density, -y0 * density]
+      }).promise.then(function() {
+        if (token !== hiResTokenRef.current) return // stale — view moved on
+        hiResRef.current = { canvas: c, x: x0, y: y0, w: x1 - x0, h: y1 - y0, page: pageNo }
+        requestDraw()
+      })
+    }).catch(function() { /* keep base raster */ })
+  }
+
   function fitView() {
     var img = pageImgRef.current
     var canvas = canvasRef.current
@@ -282,6 +354,7 @@ export default function TraceStudio(props) {
       ty: (canvas.height - img.height * s) / 2
     }
     requestDraw()
+    scheduleHiRes()
   }
 
   // ─── Canvas sizing ─────────────────────────────────────────
@@ -333,6 +406,12 @@ export default function TraceStudio(props) {
     var W = img.width
     var H = img.height
     var page = pageRef.current
+
+    // Sharp overlay of the visible region (rendered at current zoom)
+    var hr = hiResRef.current
+    if (hr && hr.page === page) {
+      ctx.drawImage(hr.canvas, hr.x, hr.y, hr.w, hr.h)
+    }
 
     // Zones + highlights (under strokes)
     zonesRef.current.forEach(function(z) {
@@ -748,6 +827,7 @@ export default function TraceStudio(props) {
     if (!g) return
     if (Object.keys(pointersRef.current).length > 0 && g.type === 'pinch') return
     gestureRef.current = null
+    if (g.type === 'pan' || g.type === 'pinch') scheduleHiRes()
 
     if (g.type === 'stroke') { commitStroke(); return }
     if (g.type === 'addpin' && !g.moved) { addPinAt(g.pt); return }
@@ -898,6 +978,7 @@ export default function TraceStudio(props) {
       ty: cy - (cy - v.ty) * (ns / v.scale)
     }
     requestDraw()
+    scheduleHiRes()
   }
 
   function zoomBy(k) {
@@ -912,6 +993,7 @@ export default function TraceStudio(props) {
       ty: cy - (cy - v.ty) * (ns / v.scale)
     }
     requestDraw()
+    scheduleHiRes()
   }
 
   // ─── AI pin extraction ─────────────────────────────────────
