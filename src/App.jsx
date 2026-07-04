@@ -12,6 +12,7 @@ import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
+import { syncLoops, flushLoopOps, ensureBackfill } from './lib/loopStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -143,11 +144,15 @@ export default function App() {
   // ─── Auto-save to Supabase on state changes ────────────────
   var initialLoadDone = useRef(false)
   var lastEditRef = useRef(0) // last REAL local edit — guards remote clobbering
+  var prevLoopsRef = useRef([]) // last loops state synced to rows (M6 dual-write)
 
   useEffect(function() {
     if (!activeProject || !activeProject.id || isDemo) return
     if (!initialLoadDone.current) return // don't save during initial load
     lastEditRef.current = Date.now()
+    // M6 P1 dual-write: diff loops -> per-row ops (blob below stays canonical)
+    syncLoops(activeProject.id, prevLoopsRef.current, loops)
+    prevLoopsRef.current = loops
     var data = {
       panels: panels,
       equipmentMap: equipmentMap,
@@ -168,7 +173,7 @@ export default function App() {
 
   // Flush save before page unload
   useEffect(function() {
-    function onBeforeUnload() { flushPendingSave() }
+    function onBeforeUnload() { flushPendingSave(); flushLoopOps() }
     window.addEventListener('beforeunload', onBeforeUnload)
     return function() { window.removeEventListener('beforeunload', onBeforeUnload) }
   }, [])
@@ -185,6 +190,7 @@ export default function App() {
     onRemoteData(function(row) {
       if (!row || !row.data) return
       if (Date.now() - lastEditRef.current < 4000) return
+      prevLoopsRef.current = row.data.loops || [] // remote data isn't OUR edit — no row ops
       initialLoadDone.current = false
       var d = row.data
       setPanels(d.panels || [])
@@ -219,6 +225,7 @@ export default function App() {
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
+      prevLoopsRef.current = data.loops || []
       undoRef.current = []
       setTimeout(function() { initialLoadDone.current = true }, 500)
     })
@@ -254,9 +261,11 @@ export default function App() {
       setActiveProject(fullProject || project)
       setLoadedVersion((fullProject && fullProject.version) || 0)
       setLoadedData(data)
+      prevLoopsRef.current = data.loops || []
       if (fullProject && fullProject.id) {
         subscribeToProject(fullProject.id)
         autoBackup(fullProject.id, fullProject.name, data)
+        ensureBackfill(fullProject.id, data.loops || []) // M6 P1: one-time row copy
       }
       // Allow auto-save after state is populated
       setTimeout(function() { initialLoadDone.current = true }, 500)
@@ -265,8 +274,10 @@ export default function App() {
 
   function handleSwitchProject() {
     flushPendingSave()
+    flushLoopOps()
     unsubscribeFromProject()
     initialLoadDone.current = false
+    prevLoopsRef.current = []
     setActiveProject(null)
     setPanels([])
     setEquipmentMap({})
