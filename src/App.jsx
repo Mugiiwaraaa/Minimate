@@ -144,15 +144,17 @@ export default function App() {
   // ─── Auto-save to Supabase on state changes ────────────────
   var initialLoadDone = useRef(false)
   var lastEditRef = useRef(0) // last REAL local edit — guards remote clobbering
-  var prevLoopsRef = useRef([]) // last loops state synced to rows (M6)
-  var remoteLoopApplyRef = useRef(false) // true while applying a server row event
+  var prevLoopsRef = useRef([]) // last loops state synced to rows (M6).
+  // Server-applied loop arrays are assigned to this ref BEFORE setState, so
+  // the sync effect can tell them apart by REFERENCE — immune to React
+  // batching a user tick together with a server patch.
   var activeProjectIdRef = useRef(null) // stable id for row-event handlers (closures)
 
   // M6 P2: LOOPS live in rows. A tick = one row upsert, not a blob save.
   useEffect(function() {
     if (!activeProject || !activeProject.id || isDemo) return
     if (!initialLoadDone.current) return
-    if (remoteLoopApplyRef.current) { remoteLoopApplyRef.current = false; return } // server event echo — nothing to write
+    if (loops === prevLoopsRef.current) return // server-originated array — already in rows
     lastEditRef.current = Date.now()
     syncLoops(activeProject.id, prevLoopsRef.current, loops)
     prevLoopsRef.current = loops
@@ -255,7 +257,7 @@ export default function App() {
     // Our own write bouncing back? Ignore it completely.
     if (evt !== 'DELETE' && isOwnEcho(table, rowNew)) return
 
-    remoteLoopApplyRef.current = true
+    console.log('[M6] Applying remote ' + table + ' ' + evt + ' (' + ((rowNew && (rowNew.tag || rowNew.name || rowNew.id)) || (rowOld && rowOld.id)) + ')')
     setLoops(function(prev) {
       var next
       if (table === 'loops') {
@@ -353,7 +355,6 @@ export default function App() {
         // M6 P2: rows are the truth for loops; blob loops are the fallback
         loadLoops(fullProject.id, function(lerr, rowResult) {
           if (!lerr && rowResult && rowResult.hasRows) {
-            remoteLoopApplyRef.current = true
             prevLoopsRef.current = rowResult.loops
             setLoops(rowResult.loops)
             autoBackup(fullProject.id, fullProject.name, Object.assign({}, data, { loops: rowResult.loops }))
