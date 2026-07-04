@@ -39,6 +39,7 @@ function autoShrink(e){e.target.style.height='';e.target.style.whiteSpace='nowra
 
 export default function CommDevices(props){
   var loops=props.loops,areas=props.areas,onUpdateLoops=props.onUpdateLoops,onUpdateAreas=props.onUpdateAreas
+  var gateways=props.gateways||[],onUpdateGateways=props.onUpdateGateways||function(){}
   var vs=useState('loops'),view=vs[0],setView=vs[1]
   var es=useState(null),expanded=es[0],setExpanded=es[1]
   var sas=useState(false),showAdd=sas[0],setShowAdd=sas[1]
@@ -181,6 +182,7 @@ export default function CommDevices(props){
         <div className="flex gap-2">
           <button onClick={function(){setView('loops');setExpanded(null)}} className={'px-3 md:px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='loops'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOOP VIEW</button>
           <button onClick={function(){setView('location');setExpanded(null)}} className={'px-3 md:px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='location'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>LOCATION VIEW</button>
+          <button onClick={function(){setView('gateways');setExpanded(null)}} className={'px-3 md:px-4 py-1.5 text-xs font-semibold rounded-md transition uppercase '+(view==='gateways'?'bg-teal text-white':'bg-card2 text-dgray hover:text-white')}>GATEWAY/RTR</button>
         </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
@@ -204,7 +206,7 @@ export default function CommDevices(props){
           })}
         </div>
       </div>
-      {view==='loops'?renderLoopView():renderLocationView()}
+      {view==='loops'?renderLoopView():view==='gateways'?renderGatewayView():renderLocationView()}
     </div>
   )
 
@@ -300,6 +302,114 @@ export default function CommDevices(props){
       })}
       {loops.length===0&&!showAdd&&(<div className="bg-card rounded-xl border border-border p-8 text-center"><div className="text-dgray text-sm uppercase">NO COMMUNICATION LOOPS YET.</div></div>)}
       {dragDev&&dragDev.type==='loop'&&(<div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-cyan/20 text-cyan text-xs px-4 py-2 rounded-lg border border-cyan z-50 uppercase">DRAG TO REORDER OR MOVE TO ANOTHER LOOP</div>)}
+    </div>)
+  }
+
+  // ─── GATEWAY / RTR VIEW ─────────────────────────────────
+  // Gateway = Modbus devices head-end · RTR = BACnet MSTP-to-IP router
+  // Hierarchy: GATEWAY/RTR → DDC REF → IP → BACNET ID → loops → devices
+  function renderGatewayView(){
+    var showAddGw=addDevTo==='__gw__'
+    function loopsOf(g){return loops.filter(function(l){return up(l.gateway)===up(g.name)&&up(g.name)!==''})}
+    var assignedLoopIds={}
+    gateways.forEach(function(g){loopsOf(g).forEach(function(l){assignedLoopIds[l.id]=true})})
+    var unassignedLoops=loops.filter(function(l){return !assignedLoopIds[l.id]})
+
+    function updateGw(gid,field,val){
+      onUpdateGateways(gateways.map(function(g){if(g.id!==gid)return g;var o={};o[field]=val;return Object.assign({},g,o)}))
+    }
+    function deleteGw(gid){
+      var g=gateways.find(function(x){return x.id===gid})
+      if(!g)return
+      // Unlink its loops so they show as unassigned again
+      onUpdateLoops(loops.map(function(l){return up(l.gateway)===up(g.name)?Object.assign({},l,{gateway:''}):l}))
+      onUpdateGateways(gateways.filter(function(x){return x.id!==gid}))
+    }
+    function assignLoop(loopId,gwName){
+      onUpdateLoops(loops.map(function(l){return l.id===loopId?Object.assign({},l,{gateway:up(gwName)}):l}))
+    }
+    function addGw(){
+      if(!newLoop.name.trim())return
+      onUpdateGateways(gateways.concat([{id:'gw-'+Date.now(),name:up(newLoop.name),kind:newLoop.protocol==='RTR'?'RTR':'GATEWAY',ddc_ref:up(newLoop.ddc_ref),ip:up(newLoop.gateway),bacnet_id:up(newLoop.zone),notes:''}]))
+      setNewLoop({name:'',protocol:'MODBUS RTU',gateway:'',ddc_ref:'',floor:'',zone:''})
+      setAddDevTo(null)
+    }
+
+    return (<div>
+      <div className="flex justify-between items-center mb-3">
+        <div className="text-xs text-dgray uppercase">GATEWAY = MODBUS HEAD-END · RTR = BACNET MSTP/IP ROUTER. ASSIGN LOOPS ONCE — SYNCED WITH LOOP VIEW, LOCATION VIEW AND TRACED DRAWINGS.</div>
+        <button onClick={function(){setAddDevTo(showAddGw?null:'__gw__')}} className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase shrink-0">+ ADD GATEWAY/RTR</button>
+      </div>
+
+      {showAddGw&&(<div className="bg-card rounded-xl border border-teal p-4 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-3">
+          <div><label className="text-[10px] text-dgray block mb-1">NAME/NUMBER</label><input value={newLoop.name} onChange={function(e){setNewLoop(Object.assign({},newLoop,{name:e.target.value}))}} placeholder="GW-01 / RTR-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div><label className="text-[10px] text-dgray block mb-1">TYPE</label><select value={newLoop.protocol} onChange={function(e){setNewLoop(Object.assign({},newLoop,{protocol:e.target.value}))}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal uppercase"><option value="GATEWAY">GATEWAY (MODBUS)</option><option value="RTR">RTR (BACNET)</option></select></div>
+          <div><label className="text-[10px] text-dgray block mb-1">DDC REF</label><input value={newLoop.ddc_ref} onChange={function(e){setNewLoop(Object.assign({},newLoop,{ddc_ref:e.target.value}))}} placeholder="DDC-GF-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div><label className="text-[10px] text-dgray block mb-1">IP ADDRESS</label><input value={newLoop.gateway} onChange={function(e){setNewLoop(Object.assign({},newLoop,{gateway:e.target.value}))}} placeholder="192.168.1.10" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div><label className="text-[10px] text-dgray block mb-1">BACNET ID</label><input value={newLoop.zone} onChange={function(e){setNewLoop(Object.assign({},newLoop,{zone:e.target.value}))}} placeholder="2401" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div className="flex items-end gap-2"><button onClick={addGw} className="px-4 py-1.5 bg-teal text-white text-xs font-semibold rounded hover:bg-teal/80 uppercase">CREATE</button><button onClick={function(){setAddDevTo(null)}} className="px-3 py-1.5 bg-card2 text-dgray text-xs rounded hover:text-white uppercase">X</button></div>
+        </div>
+      </div>)}
+
+      {gateways.map(function(g){
+        var gLoops=loopsOf(g)
+        var gDevs=[];gLoops.forEach(function(l){gDevs=gDevs.concat(l.devices)})
+        var gPct=calcWeightedPct(gDevs)
+        var isRtr=g.kind==='RTR'
+        return (<div key={g.id} className="bg-card rounded-xl border border-border mb-3 overflow-hidden">
+          <div className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 bg-card2/50">
+            <span className={'text-[9px] font-bold px-2 py-0.5 rounded uppercase '+(isRtr?'bg-purple/20 text-purple':'bg-teal/20 text-teal')}>{isRtr?'RTR (BACNET)':'GATEWAY (MODBUS)'}</span>
+            <input value={g.name||''} onChange={function(e){updateGw(g.id,'name',up(e.target.value))}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-sm font-bold text-white outline-none w-28"/>
+            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">DDC:</span><input value={g.ddc_ref||''} onChange={function(e){updateGw(g.id,'ddc_ref',up(e.target.value))}} style={{textTransform:'uppercase'}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan outline-none w-24"/></span>
+            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">IP:</span><input value={g.ip||''} onChange={function(e){updateGw(g.id,'ip',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-orange outline-none w-28"/></span>
+            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">BACNET ID:</span><input value={g.bacnet_id||''} onChange={function(e){updateGw(g.id,'bacnet_id',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-purple outline-none w-16"/></span>
+            <span className="ml-auto flex items-center gap-2">
+              <span className="text-[10px] text-dgray">{gLoops.length} LOOPS · {gDevs.length} DEV</span>
+              <div className="w-16 h-1.5 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(gPct>=100?'bg-green':gPct>=50?'bg-teal':gPct>0?'bg-orange':'bg-red')} style={{width:gPct+'%'}}/></div>
+              <span className="text-[10px] text-dgray w-8 text-right">{gPct}%</span>
+              <button onClick={function(){deleteGw(g.id)}} className="text-[10px] text-red/40 hover:text-red">X</button>
+            </span>
+          </div>
+          {gLoops.length===0&&(<div className="px-4 py-3 text-[11px] text-dgray italic uppercase">NO LOOPS ASSIGNED — USE THE DROPDOWNS BELOW</div>)}
+          {gLoops.map(function(l){
+            var lPct=calcWeightedPct(l.devices)
+            return (<div key={l.id} className="px-4 py-2 border-t border-border/30">
+              <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                <span className="text-xs font-bold text-white uppercase">{l.name}</span>
+                {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
+                <span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{l.protocol}</span>
+                <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
+                <div className="w-14 h-1 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(lPct>=100?'bg-green':lPct>0?'bg-teal':'bg-red/30')} style={{width:lPct+'%'}}/></div>
+                <button onClick={function(){assignLoop(l.id,'')}} className="ml-auto text-[9px] text-dgray hover:text-red uppercase">UNASSIGN</button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {l.devices.map(function(d){
+                  return <span key={d.id} title={(d.room_name||'')+(d.address?' · ADDR '+d.address:'')} className={'px-1.5 py-0.5 rounded text-[9px] uppercase '+(d.device_installed?'bg-green/15 text-green':'bg-card2 text-lgray')}>{d.tag||'?'}{d.address?<span className="text-cyan"> #{d.address}</span>:null}</span>
+                })}
+              </div>
+            </div>)
+          })}
+        </div>)
+      })}
+
+      {gateways.length===0&&(<div className="bg-card rounded-xl border border-border p-8 text-center mb-3"><div className="text-dgray text-sm uppercase">NO GATEWAYS OR RTRS YET. ADD ONE TO BUILD THE NETWORK TREE.</div></div>)}
+
+      {unassignedLoops.length>0&&(<div className="bg-card rounded-xl border border-orange/30 p-4">
+        <div className="text-[10px] text-orange font-bold uppercase mb-2">LOOPS WITHOUT A GATEWAY/RTR ({unassignedLoops.length})</div>
+        {unassignedLoops.map(function(l){
+          return (<div key={l.id} className="flex flex-wrap items-center gap-2 py-1.5 border-b border-border/20">
+            <span className="text-xs font-bold text-white uppercase">{l.name}</span>
+            {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
+            <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
+            {l.gateway&&<span className="text-[9px] text-dgray uppercase">(GATEWAY "{l.gateway}" NOT DEFINED)</span>}
+            <select value="" onChange={function(e){if(e.target.value)assignLoop(l.id,e.target.value)}} className="ml-auto bg-navy border border-border rounded px-2 py-1 text-[10px] text-white outline-none uppercase cursor-pointer">
+              <option value="">ASSIGN TO...</option>
+              {gateways.map(function(g){return <option key={g.id} value={g.name}>{g.name} ({g.kind})</option>})}
+            </select>
+          </div>)
+        })}
+      </div>)}
     </div>)
   }
 

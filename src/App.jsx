@@ -10,7 +10,7 @@ import DrawingsPage from './pages/DrawingsPage'
 import BlockersPage from './pages/BlockersPage'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
-import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion } from './lib/supabaseDb'
+import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -87,6 +87,9 @@ export default function App() {
   var blockersState = useState([]) // cable issues + manual blockers
   var blockers = blockersState[0]
   var setBlockers = blockersState[1]
+  var gatewaysState = useState([]) // gateways (Modbus) + RTRs (BACnet MSTP/IP routers)
+  var gateways = gatewaysState[0]
+  var setGateways = gatewaysState[1]
 
   // Import preview modal state
   var ipState = useState(null)
@@ -138,7 +141,8 @@ export default function App() {
       loops: loops,
       areaGroups: areaGroups,
       drawings: drawings,
-      blockers: blockers
+      blockers: blockers,
+      gateways: gateways
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -146,7 +150,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings, blockers])
+  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings, blockers, gateways])
 
   // Flush save before page unload
   useEffect(function() {
@@ -161,7 +165,23 @@ export default function App() {
       setSaveConflict(true)
       setSaveStatus('error')
     })
-    return function() { onSaveConflict(null) }
+    // Remote/merged data: apply to state without triggering an echo save loop
+    onRemoteData(function(row) {
+      if (!row || !row.data) return
+      initialLoadDone.current = false
+      var d = row.data
+      setPanels(d.panels || [])
+      setEquipmentMap(d.equipmentMap || {})
+      setTerminationMap(d.terminationMap || {})
+      setLoops(d.loops || [])
+      setAreaGroups(d.areaGroups || [])
+      setDrawings(d.drawings || [])
+      setBlockers(d.blockers || [])
+      setGateways(d.gateways || [])
+      setSaveConflict(false)
+      setTimeout(function() { initialLoadDone.current = true }, 400)
+    })
+    return function() { onSaveConflict(null); onRemoteData(null) }
   }, [])
 
   function reloadFromServer() {
@@ -178,6 +198,7 @@ export default function App() {
       setAreaGroups(data.areaGroups || [])
       setDrawings(data.drawings || [])
       setBlockers(data.blockers || [])
+      setGateways(data.gateways || [])
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       undoRef.current = []
@@ -211,8 +232,13 @@ export default function App() {
       setAreaGroups(data.areaGroups || [])
       setDrawings(data.drawings || [])
       setBlockers(data.blockers || [])
+      setGateways(data.gateways || [])
       setActiveProject(fullProject || project)
       setLoadedVersion((fullProject && fullProject.version) || 0)
+      if (fullProject && fullProject.id) {
+        subscribeToProject(fullProject.id)
+        autoBackup(fullProject.id, fullProject.name, data)
+      }
       // Allow auto-save after state is populated
       setTimeout(function() { initialLoadDone.current = true }, 500)
     })
@@ -220,6 +246,7 @@ export default function App() {
 
   function handleSwitchProject() {
     flushPendingSave()
+    unsubscribeFromProject()
     initialLoadDone.current = false
     setActiveProject(null)
     setPanels([])
@@ -229,6 +256,7 @@ export default function App() {
     setAreaGroups([])
     setDrawings([])
     setBlockers([])
+    setGateways([])
     undoRef.current = []
   }
 
@@ -677,6 +705,52 @@ export default function App() {
 
   function handleDeleteDrawing(id) {
     setDrawings(function(prev) { return prev.filter(function(d) { return d.id !== id }) })
+  }
+
+  // ─── Backup: export / restore project as JSON ─────────────
+  function handleExportProject() {
+    var payload = {
+      minimate: true,
+      name: (activeProject && activeProject.name) || 'PROJECT',
+      exportedAt: new Date().toISOString(),
+      data: {
+        panels: panels, equipmentMap: equipmentMap, terminationMap: terminationMap,
+        loops: loops, areaGroups: areaGroups, drawings: drawings, blockers: blockers, gateways: gateways
+      }
+    }
+    var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' })
+    var a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = payload.name.replace(/[^A-Z0-9]+/gi, '-') + '-BACKUP-' + new Date().toISOString().substring(0, 10) + '.json'
+    a.click()
+    setTimeout(function() { URL.revokeObjectURL(a.href) }, 5000)
+  }
+
+  function handleRestoreProject(e) {
+    var file = e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    var reader = new FileReader()
+    reader.onload = function() {
+      try {
+        var payload = JSON.parse(reader.result)
+        var d = payload.data || payload // accept raw data objects too
+        if (!d || (!d.loops && !d.panels)) { alert('NOT A MINIMATE BACKUP FILE'); return }
+        if (!window.confirm('RESTORE BACKUP? THIS REPLACES THE CURRENT PROJECT DATA (CTRL+Z CAN UNDO ONCE).')) return
+        pushUndo()
+        setPanels(d.panels || [])
+        setEquipmentMap(d.equipmentMap || {})
+        setTerminationMap(d.terminationMap || {})
+        setLoops(d.loops || [])
+        setAreaGroups(d.areaGroups || [])
+        setDrawings(d.drawings || [])
+        setBlockers(d.blockers || [])
+        setGateways(d.gateways || [])
+      } catch (err) {
+        alert('COULD NOT READ BACKUP: ' + err.message)
+      }
+    }
+    reader.readAsText(file)
   }
 
   function confirmDrawingImport() {
@@ -1288,7 +1362,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-navy text-white">
-      <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} isDemo={isDemo} />
+      <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} onExportProject={handleExportProject} onRestoreProject={handleRestoreProject} isDemo={isDemo} />
       {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
 
       {/* Multi-user save conflict banner */}
@@ -1327,7 +1401,7 @@ export default function App() {
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
           <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
-          <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUndo={handleUndo} canUndo={canUndo} />} />
+          <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />

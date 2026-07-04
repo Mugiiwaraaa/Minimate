@@ -116,6 +116,17 @@ export default function Sidebar(props) {
               </button>
             </div>
           )}
+          {props.onExportProject && (
+            <div className="px-4 pb-3 flex gap-2">
+              <button onClick={function(){props.onExportProject();setIsOpen(false)}} title="DOWNLOAD A JSON BACKUP OF THIS PROJECT" className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 bg-card border border-border rounded-lg hover:border-teal/50 transition text-[10px] text-dgray hover:text-white uppercase font-semibold">
+                ⬇ BACKUP
+              </button>
+              <label title="RESTORE FROM A JSON BACKUP FILE" className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 bg-card border border-border rounded-lg hover:border-orange/50 transition text-[10px] text-dgray hover:text-white uppercase font-semibold cursor-pointer">
+                ⬆ RESTORE
+                <input type="file" accept=".json" onChange={function(e){setIsOpen(false);if(props.onRestoreProject)props.onRestoreProject(e)}} className="hidden"/>
+              </label>
+            </div>
+          )}
           {!props.isDemo && props.onSwitchProject && (
             <div className="px-4 pb-3">
               <button onClick={handleSwitch}

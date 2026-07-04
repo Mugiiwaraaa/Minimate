@@ -92,11 +92,61 @@ export function saveProjectMeta(projectId, fields, cb) {
     })
 }
 
-// ─── Data Persistence (debounced, version-locked) ──────────
+// ─── Entity-level merge (multi-user) ────────────────────────
+//
+// When two users save concurrently, we merge at ENTITY level:
+// my devices/loops/panels overwrite the server's copies of the SAME
+// entities; entities only on the server (someone else's work) are
+// kept. Known limitation: deleting an entity another user just
+// edited can bring it back — acceptable until per-row sync (M6).
+
+function mergeById(serverArr, localArr, mergeItem) {
+  var byId = {}
+  ;(serverArr || []).forEach(function(s) { if (s && s.id) byId[s.id] = s })
+  var seen = {}
+  var out = (localArr || []).map(function(l) {
+    if (l && l.id) seen[l.id] = true
+    var s = l && l.id ? byId[l.id] : null
+    return (s && mergeItem) ? mergeItem(s, l) : l
+  })
+  ;(serverArr || []).forEach(function(s) {
+    if (s && s.id && !seen[s.id]) out.push(s)
+  })
+  return out
+}
+
+function mergeEquipMap(serverMap, localMap) {
+  var out = Object.assign({}, serverMap || {})
+  Object.keys(localMap || {}).forEach(function(pid) {
+    out[pid] = mergeById((serverMap || {})[pid], localMap[pid])
+  })
+  return out
+}
+
+export function mergeProjectData(server, local) {
+  server = server || {}
+  local = local || {}
+  function mergeLoop(s, l) {
+    return Object.assign({}, s, l, { devices: mergeById(s.devices, l.devices) })
+  }
+  return {
+    panels: mergeById(server.panels, local.panels),
+    equipmentMap: mergeEquipMap(server.equipmentMap, local.equipmentMap),
+    terminationMap: Object.assign({}, server.terminationMap || {}, local.terminationMap || {}),
+    loops: mergeById(server.loops, local.loops, mergeLoop),
+    areaGroups: mergeById(server.areaGroups, local.areaGroups),
+    drawings: mergeById(server.drawings, local.drawings),
+    blockers: mergeById(server.blockers, local.blockers),
+    gateways: mergeById(server.gateways, local.gateways)
+  }
+}
+
+// ─── Data Persistence (debounced, version-locked, self-merging) ──
 //
 // Optimistic concurrency: every save requires the row version we
-// loaded. If another user saved first, our update matches 0 rows
-// and we fire the conflict handler instead of silently overwriting.
+// loaded. If another user saved first, we MERGE their data with ours
+// and retry (up to 3x). The conflict banner only fires if merging
+// keeps failing.
 //
 // Requires (run once in Supabase SQL editor):
 //   alter table projects add column if not exists version int not null default 0;
@@ -107,11 +157,47 @@ var pendingProjectId = null
 var localVersion = 0          // version of the row we loaded/last saved
 var versionSupported = true   // false if column missing (migration not run yet)
 var conflictHandler = null
+var remoteDataHandler = null  // App applies fresh/merged data to state
+var liveChannel = null
 
 // App registers a callback: called when a save is rejected because
 // another user saved first. Receives the fresh server row.
 export function onSaveConflict(handler) {
   conflictHandler = handler
+}
+
+// App registers a callback: called with a fresh row (data + version)
+// whenever remote changes arrive or a conflict was auto-merged.
+export function onRemoteData(handler) {
+  remoteDataHandler = handler
+}
+
+// ─── Realtime: keep everyone current, shrink the conflict window ──
+// Requires (run once in Supabase SQL editor):
+//   alter publication supabase_realtime add table projects;
+export function subscribeToProject(projectId) {
+  if (isDemo || !supabase) return
+  unsubscribeFromProject()
+  liveChannel = supabase
+    .channel('proj-' + projectId)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'projects', filter: 'id=eq.' + projectId }, function(payload) {
+      var row = payload && payload.new
+      if (!row) return
+      var v = row.version || 0
+      if (v <= localVersion) return           // our own save echoing back
+      if (pendingData || saveTimer) return    // we're mid-edit; conflict path will merge
+      localVersion = v
+      console.log('[MINIMATE] Remote update received (v' + v + ')')
+      if (remoteDataHandler) remoteDataHandler(row)
+    })
+    .subscribe()
+}
+
+export function unsubscribeFromProject() {
+  if (liveChannel && supabase) {
+    supabase.removeChannel(liveChannel)
+    liveChannel = null
+  }
 }
 
 // Called by App after loading a project so saves carry the right version
@@ -149,6 +235,10 @@ function flushSave() {
     return
   }
 
+  attemptSave(pid, data, 0)
+}
+
+function attemptSave(pid, data, attempt) {
   var attemptVersion = localVersion
   supabase
     .from('projects')
@@ -175,16 +265,85 @@ function flushSave() {
         localVersion = res.data[0].version
         return
       }
-      // 0 rows updated ⇒ someone else saved first ⇒ CONFLICT
-      console.warn('[MINIMATE] Save conflict: project changed on server (local v' + attemptVersion + ')')
+
+      // 0 rows ⇒ someone saved first ⇒ MERGE their data with ours and retry
+      console.warn('[MINIMATE] Concurrent save detected (local v' + attemptVersion + ') - merging (attempt ' + (attempt + 1) + '/3)')
       supabase
         .from('projects')
         .select('*')
         .eq('id', pid)
         .single()
         .then(function(fresh) {
-          if (conflictHandler) conflictHandler(fresh.error ? null : fresh.data)
+          if (fresh.error || !fresh.data) {
+            if (conflictHandler) conflictHandler(null)
+            return
+          }
+          if (attempt >= 2) {
+            // Merging keeps losing the race — surface the banner
+            if (conflictHandler) conflictHandler(fresh.data)
+            return
+          }
+          var merged = mergeProjectData(fresh.data.data, data)
+          localVersion = fresh.data.version || 0
+          // Let the app show the merged picture (includes the other user's work)
+          if (remoteDataHandler) remoteDataHandler(Object.assign({}, fresh.data, { data: merged }))
+          attemptSave(pid, merged, attempt + 1)
         })
+    })
+}
+
+// ─── Backups ─────────────────────────────────────────────────
+// Requires (run once in Supabase SQL editor):
+//   create table if not exists project_backups (
+//     id uuid primary key default gen_random_uuid(),
+//     project_id uuid not null,
+//     name text,
+//     version int default 0,
+//     data jsonb,
+//     created_at timestamptz default now()
+//   );
+//   alter table project_backups enable row level security;
+//   create policy "open" on project_backups for all using (true) with check (true);
+
+// Auto-snapshot: called on project load. Takes a backup if the newest
+// one is older than 6 hours, then prunes to the latest 20.
+export function autoBackup(projectId, projectName, dataObj) {
+  if (isDemo || !supabase || !projectId) return
+  supabase
+    .from('project_backups')
+    .select('created_at')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .then(function(res) {
+      if (res.error) {
+        console.warn('[MINIMATE] Backups table missing? Run the project_backups migration.', res.error.message)
+        return
+      }
+      var newest = res.data && res.data[0] && res.data[0].created_at
+      if (newest && (Date.now() - new Date(newest).getTime()) < 6 * 3600 * 1000) return
+      supabase
+        .from('project_backups')
+        .insert({ project_id: projectId, name: projectName || '', version: localVersion, data: dataObj || {} })
+        .then(function(ins) {
+          if (ins.error) { console.warn('[MINIMATE] Backup failed:', ins.error.message); return }
+          console.log('[MINIMATE] Auto-backup saved')
+          pruneBackups(projectId)
+        })
+    })
+}
+
+function pruneBackups(projectId) {
+  supabase
+    .from('project_backups')
+    .select('id')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .range(20, 99)
+    .then(function(res) {
+      if (res.error || !res.data || res.data.length === 0) return
+      var ids = res.data.map(function(r) { return r.id })
+      supabase.from('project_backups').delete().in('id', ids).then(function() {})
     })
 }
 
