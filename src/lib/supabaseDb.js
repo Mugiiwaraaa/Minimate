@@ -167,10 +167,24 @@ export function mergeProjectData(server, local, base) {
     merged.devices = mergeById(s.devices, l.devices, (b || {}).devices)
     return merged
   }
+  // terminationMap: 3-way per panel — my panel wins only if I changed it
+  function mergeTermMap(serverMap, localMap, baseMap) {
+    var out = Object.assign({}, serverMap || {})
+    Object.keys(localMap || {}).forEach(function(pid) {
+      var lv = JSON.stringify(localMap[pid])
+      var bv = (baseMap || {})[pid] === undefined ? undefined : JSON.stringify(baseMap[pid])
+      if (bv === undefined || lv !== bv) out[pid] = localMap[pid]
+    })
+    Object.keys(out).forEach(function(pid) {
+      if ((baseMap || {})[pid] !== undefined && (localMap || {})[pid] === undefined) delete out[pid]
+    })
+    return out
+  }
+
   return {
     panels: mergeById(server.panels, local.panels, base.panels),
     equipmentMap: mergeEquipMap(server.equipmentMap, local.equipmentMap, base.equipmentMap),
-    terminationMap: Object.assign({}, server.terminationMap || {}, local.terminationMap || {}),
+    terminationMap: mergeTermMap(server.terminationMap, local.terminationMap, base.terminationMap),
     loops: mergeById(server.loops, local.loops, base.loops, mergeLoop),
     areaGroups: mergeById(server.areaGroups, local.areaGroups, base.areaGroups),
     drawings: mergeById(server.drawings, local.drawings, base.drawings),
