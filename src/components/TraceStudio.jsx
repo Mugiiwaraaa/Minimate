@@ -338,9 +338,10 @@ export default function TraceStudio(props) {
       }).promise.then(function() {
         if (token !== hiResTokenRef.current) return // stale — view moved on
         hiResRef.current = { canvas: c, x: x0, y: y0, w: x1 - x0, h: y1 - y0, page: pageNo }
+        console.log('[TRACE] Sharp tile rendered: ' + tw + 'x' + th + ' @ density ' + density.toFixed(2) + 'x (zoom ' + viewRef.current.scale.toFixed(2) + ')')
         requestDraw()
       })
-    }).catch(function() { /* keep base raster */ })
+    }).catch(function(err) { console.warn('[TRACE] Hi-res render failed:', err && err.message) })
   }
 
   function fitView() {
@@ -1178,7 +1179,7 @@ export default function TraceStudio(props) {
 
     var placed = {}
     loops.forEach(function(l) { l.deviceIds.forEach(function(pid) { placed[pid] = true }) })
-    var unmatched = pins.filter(function(p) { return !placed[p.id] && /^(FCU|VAV|AHU|PAU|ERU)/i.test(p.tag) })
+    var unmatched = pins.filter(function(p) { return !placed[p.id] && /^(FCU|VAV|AHU|PAU|ERU|PMU|PM|WM|BTU)/i.test(p.tag) })
       .map(function(p) { return { tag: p.tag, room: p.room, thermostat: p.thermostat, address: p.address, serial: p.serial } })
 
     // Zones -> device groupings for the location view (highlights are visual only)

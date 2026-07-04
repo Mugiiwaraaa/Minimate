@@ -34,6 +34,9 @@ function makeLoopDevice(tag, room, thermostat, address, serial) {
   if (t.indexOf('FCU') >= 0) device_type = 'FCU THERMOSTAT'
   else if (t.indexOf('VAV') >= 0) device_type = 'VAV'
   else if (t.indexOf('AHU') >= 0) device_type = 'AHU'
+  else if (t.indexOf('PMU') >= 0 || t.indexOf('PM-') === 0) device_type = 'PMU'
+  else if (t.indexOf('WM') === 0 || t.indexOf('WATER') >= 0) device_type = 'WATER METER'
+  else if (t.indexOf('BTU') >= 0) device_type = 'BTU METER'
   deviceIdCounter++
   return {
     id: 'dev-' + Date.now() + '-' + deviceIdCounter,

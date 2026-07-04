@@ -9,10 +9,11 @@ import { callGeminiWithImage } from '../geminiClient'
 var PIN_PROMPT = [
   'You are analyzing one page of a BMS (Building Management System) shop drawing image.',
   '',
-  'GOAL: Locate every FCU / VAV / AHU device tag printed on the drawing, WITH its position.',
+  'GOAL: Locate every BMS device tag printed on the drawing, WITH its position.',
+  'Device families: FCU, VAV, AHU, PAU, ERU, PMU (power meter), WM (water meter), BTU (energy meter).',
   '',
   'How to find devices:',
-  '- Device tags appear in small labeled boxes, e.g. "FCU-28-02". A thermostat tag like "FCU-28-02-TR" is often below it.',
+  '- Device tags appear in small labeled boxes, e.g. "FCU-28-02", "PMU-03", "WM-12", "BTU-05". A thermostat tag like "FCU-28-02-TR" is often below it.',
   '- Near each device there may be a ROOM LABEL BOX with the room name, e.g. "LOBBY SF-078".',
   '',
   'For each device report:',

@@ -4,7 +4,7 @@ import StatusBadge from '../components/StatusBadge'
 var loopStages = ['comm_cable','control_cable','continuity','termination','device_installed','address_set']
 var stgLbl = {comm_cable:'COMM CABLE',control_cable:'CTRL CABLE',continuity:'CONTINUITY',termination:'TERMINATION',device_installed:'INSTALLED',address_set:'ADDRESS'}
 var protocols = ['MODBUS RTU','BACNET MSTP','BACNET IP']
-var deviceTypes = ['FCU THERMOSTAT','FCU CONTROLLER','VAV THERMOSTAT','VAV CONTROLLER','SENSOR','OTHER']
+var deviceTypes = ['FCU THERMOSTAT','FCU CONTROLLER','VAV THERMOSTAT','VAV CONTROLLER','PMU','WATER METER','BTU METER','SENSOR','OTHER']
 var nxL=100,nxD=1000,nxA=500
 function gid(p){if(p==='loop')return 'loop-'+(nxL++);if(p==='area')return 'area-'+(nxA++);return 'ldev-'+(nxD++)}
 function up(v){return (v||'').toUpperCase().trim()}

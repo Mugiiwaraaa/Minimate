@@ -7,7 +7,7 @@ import { uploadToGemini, callGeminiWithFile } from '../geminiClient'
 var PDF_PROMPT = [
   'You are analyzing a BMS (Building Management System) CAD shop drawing.',
   '',
-  'PRIMARY GOAL: Read every FCU device tag and identify which room it serves.',
+  'PRIMARY GOAL: Read every BMS device tag (FCU, VAV, AHU, PAU, ERU, PMU power meters, WM water meters, BTU energy meters) and identify which room it serves.',
   '',
   'How to find devices:',
   '- FCU tags appear in small labeled boxes (often yellow/highlighted), e.g. "FCU-28-02"',

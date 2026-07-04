@@ -10,7 +10,7 @@ var PHOTO_PROMPT = [
   '',
   'UNDERSTANDING THE DRAWING:',
   '- Highlighted paths (often yellow, but could be any color) trace the physical cable routing for communication loops',
-  '- A LOOP is a continuous highlighted path connecting multiple FCU devices to a DDC panel',
+  '- A LOOP is a continuous highlighted path connecting multiple devices (FCU, VAV, PMU power meters, WM water meters, BTU meters) to a DDC panel',
   '- The supervisor may use the SAME color for ALL loops. What separates loops is PATH CONTINUITY — two separate highlighted paths that do not connect are two different loops.',
   '- Along each path, the supervisor has written CIRCLED NUMBERS (1, 2, 3...) in red/dark ink next to each FCU device. These numbers show the device sequence on that loop.',
   '- A single loop typically has between 1 and 32 devices.',

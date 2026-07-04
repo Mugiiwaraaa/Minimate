@@ -195,7 +195,7 @@ function mergeResults(cadResults, loopResults, onProgress) {
   enrichedLoops.forEach(function(l) { l.devices.forEach(function(d) { matchedTags[d.tag] = true }) })
   var unmatchedDevices = []
   Object.keys(deviceInfo).forEach(function(tag) {
-    if (!matchedTags[tag] && /^(FCU|VAV|AHU|PAU|ERU)/i.test(tag)) {
+    if (!matchedTags[tag] && /^(FCU|VAV|AHU|PAU|ERU|PMU|PM|WM|BTU)/i.test(tag)) {
       unmatchedDevices.push({ tag: tag, room: deviceInfo[tag].room, thermostat: deviceInfo[tag].thermostat })
     }
   })
