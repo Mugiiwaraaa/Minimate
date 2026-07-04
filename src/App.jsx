@@ -12,7 +12,7 @@ import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
-import { syncLoops, flushLoopOps, ensureBackfill } from './lib/loopStore'
+import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice } from './lib/loopStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -144,20 +144,33 @@ export default function App() {
   // ─── Auto-save to Supabase on state changes ────────────────
   var initialLoadDone = useRef(false)
   var lastEditRef = useRef(0) // last REAL local edit — guards remote clobbering
-  var prevLoopsRef = useRef([]) // last loops state synced to rows (M6 dual-write)
+  var prevLoopsRef = useRef([]) // last loops state synced to rows (M6)
+  var remoteLoopApplyRef = useRef(false) // true while applying a server row event
+  var activeProjectIdRef = useRef(null) // stable id for row-event handlers (closures)
 
+  // M6 P2: LOOPS live in rows. A tick = one row upsert, not a blob save.
+  useEffect(function() {
+    if (!activeProject || !activeProject.id || isDemo) return
+    if (!initialLoadDone.current) return
+    if (remoteLoopApplyRef.current) { remoteLoopApplyRef.current = false; return } // server event echo — nothing to write
+    lastEditRef.current = Date.now()
+    syncLoops(activeProject.id, prevLoopsRef.current, loops)
+    prevLoopsRef.current = loops
+    setSaveStatus('saving')
+    var t = setTimeout(function() { setSaveStatus('saved') }, 1200)
+    var t2 = setTimeout(function() { setSaveStatus('idle') }, 3200)
+    return function() { clearTimeout(t); clearTimeout(t2) }
+  }, [loops])
+
+  // Everything else stays in the versioned blob (3-way merged)
   useEffect(function() {
     if (!activeProject || !activeProject.id || isDemo) return
     if (!initialLoadDone.current) return // don't save during initial load
     lastEditRef.current = Date.now()
-    // M6 P1 dual-write: diff loops -> per-row ops (blob below stays canonical)
-    syncLoops(activeProject.id, prevLoopsRef.current, loops)
-    prevLoopsRef.current = loops
     var data = {
       panels: panels,
       equipmentMap: equipmentMap,
       terminationMap: terminationMap,
-      loops: loops,
       areaGroups: areaGroups,
       drawings: drawings,
       blockers: blockers,
@@ -169,7 +182,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, loops, areaGroups, drawings, blockers, gateways])
+  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways])
 
   // Flush save before page unload
   useEffect(function() {
@@ -190,13 +203,12 @@ export default function App() {
     onRemoteData(function(row) {
       if (!row || !row.data) return
       if (Date.now() - lastEditRef.current < 4000) return
-      prevLoopsRef.current = row.data.loops || [] // remote data isn't OUR edit — no row ops
+      // M6 P2: loops live in rows now — blob updates never touch loop state
       initialLoadDone.current = false
       var d = row.data
       setPanels(d.panels || [])
       setEquipmentMap(d.equipmentMap || {})
       setTerminationMap(d.terminationMap || {})
-      setLoops(d.loops || [])
       setAreaGroups(d.areaGroups || [])
       setDrawings(d.drawings || [])
       setBlockers(d.blockers || [])
@@ -217,7 +229,7 @@ export default function App() {
       setPanels(data.panels || [])
       setEquipmentMap(data.equipmentMap || {})
       setTerminationMap(data.terminationMap || {})
-      setLoops(data.loops || [])
+      // loops: rows are truth (M6 P2) — blob reload doesn't touch them
       setAreaGroups(data.areaGroups || [])
       setDrawings(data.drawings || [])
       setBlockers(data.blockers || [])
@@ -225,9 +237,63 @@ export default function App() {
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
-      prevLoopsRef.current = data.loops || []
       undoRef.current = []
       setTimeout(function() { initialLoadDone.current = true }, 500)
+    })
+  }
+
+  // ─── M6 P3: apply one server row event to loop state ───────
+  // A colleague's tick arrives as ONE device row — we patch just that.
+  function handleLoopRowChange(table, payload) {
+    var evt = payload.eventType
+    var rowNew = payload.new
+    var rowOld = payload.old
+    // DELETE events aren't reliably filtered by project — check the PK.
+    // (ref, not state: this closure outlives the render it was created in)
+    var pid = (rowNew && rowNew.project_id) || (rowOld && rowOld.project_id)
+    if (!activeProjectIdRef.current || pid !== activeProjectIdRef.current) return
+
+    remoteLoopApplyRef.current = true
+    setLoops(function(prev) {
+      var next
+      if (table === 'loops') {
+        if (evt === 'DELETE') {
+          var delId = rowOld && rowOld.id
+          next = prev.filter(function(l) { return l.id !== delId })
+        } else {
+          var shell = loopRowToLoop(rowNew)
+          var found = false
+          next = prev.map(function(l) {
+            if (l.id !== shell.id) return l
+            found = true
+            return Object.assign({}, l, shell, { devices: l.devices })
+          })
+          if (!found) next = next.concat([Object.assign({}, shell, { devices: [] })])
+        }
+      } else {
+        if (evt === 'DELETE') {
+          var dId = rowOld && rowOld.id
+          next = prev.map(function(l) {
+            return Object.assign({}, l, { devices: l.devices.filter(function(d) { return d.id !== dId }) })
+          })
+        } else {
+          var dev = deviceRowToDevice(rowNew)
+          var lid = rowNew.loop_id
+          // Remove from wherever it was, insert into its loop at its position
+          next = prev.map(function(l) {
+            return Object.assign({}, l, { devices: l.devices.filter(function(d) { return d.id !== dev.id }) })
+          })
+          next = next.map(function(l) {
+            if (l.id !== lid) return l
+            var devs = l.devices.slice()
+            var pos = Math.min(rowNew.position || devs.length, devs.length)
+            devs.splice(pos, 0, dev)
+            return Object.assign({}, l, { devices: devs })
+          })
+        }
+      }
+      prevLoopsRef.current = next // server-originated: never echo row ops back
+      return next
     })
   }
 
@@ -259,13 +325,27 @@ export default function App() {
       setBlockers(data.blockers || [])
       setGateways(data.gateways || [])
       setActiveProject(fullProject || project)
+      activeProjectIdRef.current = (fullProject && fullProject.id) || null
       setLoadedVersion((fullProject && fullProject.version) || 0)
       setLoadedData(data)
       prevLoopsRef.current = data.loops || []
       if (fullProject && fullProject.id) {
         subscribeToProject(fullProject.id)
-        autoBackup(fullProject.id, fullProject.name, data)
-        ensureBackfill(fullProject.id, data.loops || []) // M6 P1: one-time row copy
+        // M6 P2: rows are the truth for loops; blob loops are the fallback
+        loadLoops(fullProject.id, function(lerr, rowResult) {
+          if (!lerr && rowResult && rowResult.hasRows) {
+            remoteLoopApplyRef.current = true
+            prevLoopsRef.current = rowResult.loops
+            setLoops(rowResult.loops)
+            autoBackup(fullProject.id, fullProject.name, Object.assign({}, data, { loops: rowResult.loops }))
+          } else {
+            // No rows yet (or table missing): keep blob loops, backfill once
+            ensureBackfill(fullProject.id, data.loops || [])
+            autoBackup(fullProject.id, fullProject.name, data)
+          }
+          // M6 P3: live per-row events
+          subscribeLoops(fullProject.id, handleLoopRowChange)
+        })
       }
       // Allow auto-save after state is populated
       setTimeout(function() { initialLoadDone.current = true }, 500)
@@ -276,8 +356,10 @@ export default function App() {
     flushPendingSave()
     flushLoopOps()
     unsubscribeFromProject()
+    unsubscribeLoops()
     initialLoadDone.current = false
     prevLoopsRef.current = []
+    activeProjectIdRef.current = null
     setActiveProject(null)
     setPanels([])
     setEquipmentMap({})

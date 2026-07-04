@@ -57,6 +57,24 @@ function deviceToRow(projectId, loopId, dev, position) {
   }
 }
 
+export function loopRowToLoop(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    protocol: r.protocol,
+    gateway: r.gateway,
+    ddc_ref: r.ddc_ref,
+    floor: r.floor,
+    zone: r.zone,
+    color: r.color,
+    source: r.source,
+    drawingId: r.drawing_id,
+    cable_remarks: r.cable_remarks || []
+  }
+}
+
+export function deviceRowToDevice(r) { return rowToDevice(r) }
+
 function rowToDevice(r) {
   return {
     id: r.id,
@@ -291,6 +309,33 @@ export function loadLoops(projectId, cb) {
       cb(null, { loops: rowsToLoops(lres.data, dres.data), hasRows: true })
     })
   })
+}
+
+/* ================================================================
+   P3 REALTIME — per-row events, filtered by project
+   ================================================================ */
+
+var rowChannel = null
+
+export function subscribeLoops(projectId, onRow) {
+  if (isDemo || !supabase) return
+  unsubscribeLoops()
+  rowChannel = supabase
+    .channel('rows-' + projectId)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'loops', filter: 'project_id=eq.' + projectId }, function(payload) {
+      onRow('loops', payload)
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'loop_devices', filter: 'project_id=eq.' + projectId }, function(payload) {
+      onRow('loop_devices', payload)
+    })
+    .subscribe()
+}
+
+export function unsubscribeLoops() {
+  if (rowChannel && supabase) {
+    supabase.removeChannel(rowChannel)
+    rowChannel = null
+  }
 }
 
 /* One-time per project: copy blob loops into rows. Blob stays canonical. */
