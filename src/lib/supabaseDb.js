@@ -92,52 +92,73 @@ export function saveProjectMeta(projectId, fields, cb) {
     })
 }
 
-// ─── Entity-level merge (multi-user) ────────────────────────
+// ─── Entity-level 3-WAY merge (multi-user) ──────────────────
 //
-// When two users save concurrently, we merge at ENTITY level:
-// my devices/loops/panels overwrite the server's copies of the SAME
-// entities; entities only on the server (someone else's work) are
-// kept. Known limitation: deleting an entity another user just
-// edited can bring it back — acceptable until per-row sync (M6).
+// base = what the data looked like when WE loaded/last saved.
+// Knowing the base lets us tell deletions apart from additions:
+//   in base, on server, not local  -> WE deleted it     -> stays deleted
+//   in base, local, not on server -> THEY deleted it   -> deleted, unless
+//                                     we edited it since (edit wins)
+//   not in base, only on server   -> THEY added it     -> kept
+//   not in base, only local       -> WE added it       -> kept
+//   on both sides                 -> our copy wins (we are the one saving)
 
-function mergeById(serverArr, localArr, mergeItem) {
-  var byId = {}
-  ;(serverArr || []).forEach(function(s) { if (s && s.id) byId[s.id] = s })
+function mergeById(serverArr, localArr, baseArr, mergeItem) {
+  var sBy = {}
+  var bBy = {}
+  ;(serverArr || []).forEach(function(s) { if (s && s.id) sBy[s.id] = s })
+  ;(baseArr || []).forEach(function(b) { if (b && b.id) bBy[b.id] = b })
   var seen = {}
-  var out = (localArr || []).map(function(l) {
-    if (l && l.id) seen[l.id] = true
-    var s = l && l.id ? byId[l.id] : null
-    return (s && mergeItem) ? mergeItem(s, l) : l
+  var out = []
+  ;(localArr || []).forEach(function(l) {
+    if (!l || !l.id) { out.push(l); return }
+    seen[l.id] = true
+    var s = sBy[l.id]
+    if (s) {
+      out.push(mergeItem ? mergeItem(s, l, bBy[l.id]) : l)
+      return
+    }
+    var b = bBy[l.id]
+    if (!b) { out.push(l); return } // we added it
+    // They deleted it. Keep ours only if we changed it since load (edit wins).
+    if (JSON.stringify(l) !== JSON.stringify(b)) out.push(l)
   })
   ;(serverArr || []).forEach(function(s) {
-    if (s && s.id && !seen[s.id]) out.push(s)
+    if (!s || !s.id || seen[s.id]) return
+    if (bBy[s.id]) return // was in our base and we no longer have it -> WE deleted it
+    out.push(s)           // they added it
   })
   return out
 }
 
-function mergeEquipMap(serverMap, localMap) {
+function mergeEquipMap(serverMap, localMap, baseMap) {
   var out = Object.assign({}, serverMap || {})
   Object.keys(localMap || {}).forEach(function(pid) {
-    out[pid] = mergeById((serverMap || {})[pid], localMap[pid])
+    out[pid] = mergeById((serverMap || {})[pid], localMap[pid], (baseMap || {})[pid])
+  })
+  // Panels we deleted entirely
+  Object.keys(out).forEach(function(pid) {
+    if ((baseMap || {})[pid] && !(localMap || {})[pid]) delete out[pid]
   })
   return out
 }
 
-export function mergeProjectData(server, local) {
+export function mergeProjectData(server, local, base) {
   server = server || {}
   local = local || {}
-  function mergeLoop(s, l) {
-    return Object.assign({}, s, l, { devices: mergeById(s.devices, l.devices) })
+  base = base || {}
+  function mergeLoop(s, l, b) {
+    return Object.assign({}, s, l, { devices: mergeById(s.devices, l.devices, (b || {}).devices) })
   }
   return {
-    panels: mergeById(server.panels, local.panels),
-    equipmentMap: mergeEquipMap(server.equipmentMap, local.equipmentMap),
+    panels: mergeById(server.panels, local.panels, base.panels),
+    equipmentMap: mergeEquipMap(server.equipmentMap, local.equipmentMap, base.equipmentMap),
     terminationMap: Object.assign({}, server.terminationMap || {}, local.terminationMap || {}),
-    loops: mergeById(server.loops, local.loops, mergeLoop),
-    areaGroups: mergeById(server.areaGroups, local.areaGroups),
-    drawings: mergeById(server.drawings, local.drawings),
-    blockers: mergeById(server.blockers, local.blockers),
-    gateways: mergeById(server.gateways, local.gateways)
+    loops: mergeById(server.loops, local.loops, base.loops, mergeLoop),
+    areaGroups: mergeById(server.areaGroups, local.areaGroups, base.areaGroups),
+    drawings: mergeById(server.drawings, local.drawings, base.drawings),
+    blockers: mergeById(server.blockers, local.blockers, base.blockers),
+    gateways: mergeById(server.gateways, local.gateways, base.gateways)
   }
 }
 
@@ -155,10 +176,16 @@ var saveTimer = null
 var pendingData = null
 var pendingProjectId = null
 var localVersion = 0          // version of the row we loaded/last saved
+var baseData = null           // snapshot of data at load/last save (3-way merge base)
 var versionSupported = true   // false if column missing (migration not run yet)
 var conflictHandler = null
 var remoteDataHandler = null  // App applies fresh/merged data to state
 var liveChannel = null
+
+// Called by App after loading a project: remember the base snapshot
+export function setLoadedData(dataObj) {
+  try { baseData = JSON.parse(JSON.stringify(dataObj || {})) } catch (e) { baseData = null }
+}
 
 // App registers a callback: called when a save is rejected because
 // another user saved first. Receives the fresh server row.
@@ -187,6 +214,7 @@ export function subscribeToProject(projectId) {
       if (v <= localVersion) return           // our own save echoing back
       if (pendingData || saveTimer) return    // we're mid-edit; conflict path will merge
       localVersion = v
+      setLoadedData(row.data)
       console.log('[MINIMATE] Remote update received (v' + v + ')')
       if (remoteDataHandler) remoteDataHandler(row)
     })
@@ -261,8 +289,9 @@ function attemptSave(pid, data, attempt) {
         return
       }
       if (res.data && res.data.length > 0) {
-        // Save accepted — we own the new version
+        // Save accepted — we own the new version; this data is the new base
         localVersion = res.data[0].version
+        setLoadedData(data)
         return
       }
 
@@ -283,8 +312,9 @@ function attemptSave(pid, data, attempt) {
             if (conflictHandler) conflictHandler(fresh.data)
             return
           }
-          var merged = mergeProjectData(fresh.data.data, data)
+          var merged = mergeProjectData(fresh.data.data, data, baseData)
           localVersion = fresh.data.version || 0
+          setLoadedData(fresh.data.data) // server state is the new base for the retry
           // Let the app show the merged picture (includes the other user's work)
           if (remoteDataHandler) remoteDataHandler(Object.assign({}, fresh.data, { data: merged }))
           attemptSave(pid, merged, attempt + 1)

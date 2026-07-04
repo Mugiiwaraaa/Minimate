@@ -36,6 +36,10 @@ function stageCount(devs,stage){return devs.filter(function(d){return d[stage]})
 function autoGrow(e){e.target.style.whiteSpace='normal';e.target.style.height='auto';e.target.style.height=e.target.scrollHeight+'px'}
 function autoShrink(e){e.target.style.height='';e.target.style.whiteSpace='nowrap'}
 
+// Numeric address sort — "3" < "12" < "ADDR-20"; blanks last
+function addrNum(a){var n=parseInt(String(a||'').replace(/[^0-9]/g,''),10);return isNaN(n)?Infinity:n}
+function sortDevsByAddr(devs){return devs.slice().sort(function(a,b){return addrNum(a.address)-addrNum(b.address)})}
+
 
 export default function CommDevices(props){
   var loops=props.loops,areas=props.areas,onUpdateLoops=props.onUpdateLoops,onUpdateAreas=props.onUpdateAreas
@@ -48,6 +52,8 @@ export default function CommDevices(props){
   var dis=useState(null),dragIdx=dis[0],setDragIdx=dis[1]
   var addDevAreaSt=useState(null),addDevArea=addDevAreaSt[0],setAddDevArea=addDevAreaSt[1]
   var dais=useState(null),dragAreaIdx=dais[0],setDragAreaIdx=dais[1]
+  var egw=useState(null),expandedGw=egw[0],setExpandedGw=egw[1]
+  var egl=useState(null),expandedGwLoop=egl[0],setExpandedGwLoop=egl[1]
   var nls=useState({name:'',protocol:'MODBUS RTU',gateway:'',ddc_ref:'',floor:'',zone:''})
   var newLoop=nls[0],setNewLoop=nls[1]
   var nds=useState({device_type:'FCU THERMOSTAT',tag:'',room_name:'',address:''})
@@ -269,7 +275,7 @@ export default function CommDevices(props){
                 <div><label className="text-[9px] text-dgray block mb-0.5">ADDRESS</label><input value={newDev.address} onChange={function(e){setNewDev(Object.assign({},newDev,{address:e.target.value}))}} placeholder="1" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div className="flex items-end gap-1"><button onClick={function(){addDevice(loop.id)}} className="px-3 py-1 bg-teal text-white text-[11px] font-semibold rounded hover:bg-teal/80 uppercase">ADD</button><button onClick={function(){setAddDevTo(null)}} className="px-3 py-1 bg-card text-dgray text-[11px] rounded hover:text-white">X</button></div>
               </div>
-            </div>):(<button onClick={function(){setAddDevTo(loop.id)}} className="text-[11px] text-teal hover:text-cyan font-medium mb-3 block uppercase">+ ADD DEVICE</button>)}
+            </div>):(<div className="flex items-center gap-4 mb-3"><button onClick={function(){setAddDevTo(loop.id)}} className="text-[11px] text-teal hover:text-cyan font-medium uppercase">+ ADD DEVICE</button><button onClick={function(){onUpdateLoops(loops.map(function(x){return x.id===loop.id?Object.assign({},x,{devices:sortDevsByAddr(x.devices)}):x}))}} title="ARRANGE DEVICES SMALLEST ADDRESS FIRST — YOU CAN STILL DRAG TO REORDER" className="text-[11px] text-dgray hover:text-cyan font-medium uppercase">⇅ SORT BY ADDR</button></div>)}
             {loop.devices.length>0?(<div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-border/50">
               <th className="text-[9px] text-dgray text-center px-1 py-1.5 w-6"></th>
               <th className="text-[9px] text-dgray text-left px-2 py-1.5">TYPE</th>
@@ -352,44 +358,80 @@ export default function CommDevices(props){
         </div>
       </div>)}
 
-      {gateways.map(function(g){
+      {gateways.length>0&&(<div className="hidden md:grid bg-card2 rounded-t-lg px-4 py-2 grid-cols-12 gap-2 text-[9px] text-dgray uppercase font-semibold border border-border/50 border-b-0">
+        <div className="col-span-2">GATEWAY/RTR</div><div className="col-span-1">TYPE</div><div className="col-span-2">DDC REF</div><div className="col-span-2">IP ADDRESS</div><div className="col-span-1">BACNET ID</div><div className="col-span-1 text-center">LOOPS</div><div className="col-span-3 text-right">PROGRESS</div>
+      </div>)}
+      {gateways.map(function(g,gi){
         var gLoops=loopsOf(g)
         var gDevs=[];gLoops.forEach(function(l){gDevs=gDevs.concat(l.devices)})
         var gPct=calcWeightedPct(gDevs)
         var isRtr=g.kind==='RTR'
-        return (<div key={g.id} className="bg-card rounded-xl border border-border mb-3 overflow-hidden">
-          <div className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 bg-card2/50">
-            <span className={'text-[9px] font-bold px-2 py-0.5 rounded uppercase '+(isRtr?'bg-purple/20 text-purple':'bg-teal/20 text-teal')}>{isRtr?'RTR (BACNET)':'GATEWAY (MODBUS)'}</span>
-            <input value={g.name||''} onChange={function(e){updateGw(g.id,'name',up(e.target.value))}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-sm font-bold text-white outline-none w-28"/>
-            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">DDC:</span><input value={g.ddc_ref||''} onChange={function(e){updateGw(g.id,'ddc_ref',up(e.target.value))}} style={{textTransform:'uppercase'}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan outline-none w-24"/></span>
-            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">IP:</span><input value={g.ip||''} onChange={function(e){updateGw(g.id,'ip',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-orange outline-none w-28"/></span>
-            <span className="flex items-center gap-1 text-[10px]"><span className="text-dgray">BACNET ID:</span><input value={g.bacnet_id||''} onChange={function(e){updateGw(g.id,'bacnet_id',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-purple outline-none w-16"/></span>
-            <span className="ml-auto flex items-center gap-2">
-              <span className="text-[10px] text-dgray">{gLoops.length} LOOPS · {gDevs.length} DEV</span>
+        var isGExp=expandedGw===g.id
+        return (<div key={g.id} className={'bg-card border border-border/50 overflow-hidden '+(gi===gateways.length-1?'rounded-b-lg':'')}>
+          {/* Gateway row — click to expand its loops */}
+          <div className="px-4 py-2.5 flex flex-wrap md:grid md:grid-cols-12 gap-2 items-center cursor-pointer hover:bg-card2/50" onClick={function(){setExpandedGw(isGExp?null:g.id);setExpandedGwLoop(null)}}>
+            <div className="flex-1 md:flex-none md:col-span-2 flex items-center gap-1.5">
+              <span className="text-dgray text-xs w-3">{isGExp?'▾':'▸'}</span>
+              <input value={g.name||''} onClick={function(e){e.stopPropagation()}} onChange={function(e){updateGw(g.id,'name',up(e.target.value))}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-sm font-bold text-white outline-none w-full min-w-0"/>
+            </div>
+            <div className="md:col-span-1" onClick={function(e){e.stopPropagation()}}>
+              <select value={g.kind||'GATEWAY'} onChange={function(e){updateGw(g.id,'kind',e.target.value)}} className={'bg-transparent text-[9px] font-bold outline-none cursor-pointer uppercase '+(isRtr?'text-purple':'text-teal')}>
+                <option value="GATEWAY">GATEWAY</option><option value="RTR">RTR</option>
+              </select>
+            </div>
+            <div className="hidden md:block md:col-span-2" onClick={function(e){e.stopPropagation()}}><input value={g.ddc_ref||''} onChange={function(e){updateGw(g.id,'ddc_ref',up(e.target.value))}} style={{textTransform:'uppercase'}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan outline-none w-full"/></div>
+            <div className="hidden md:block md:col-span-2" onClick={function(e){e.stopPropagation()}}><input value={g.ip||''} onChange={function(e){updateGw(g.id,'ip',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-orange outline-none w-full"/></div>
+            <div className="hidden md:block md:col-span-1" onClick={function(e){e.stopPropagation()}}><input value={g.bacnet_id||''} onChange={function(e){updateGw(g.id,'bacnet_id',e.target.value)}} placeholder="-" className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-purple outline-none w-full"/></div>
+            <div className="md:col-span-1 text-center text-[11px] text-dgray">{gLoops.length} ({gDevs.length} DEV)</div>
+            <div className="md:col-span-3 flex items-center justify-end gap-2">
               <div className="w-16 h-1.5 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(gPct>=100?'bg-green':gPct>=50?'bg-teal':gPct>0?'bg-orange':'bg-red')} style={{width:gPct+'%'}}/></div>
               <span className="text-[10px] text-dgray w-8 text-right">{gPct}%</span>
-              <button onClick={function(){deleteGw(g.id)}} className="text-[10px] text-red/40 hover:text-red">X</button>
-            </span>
+              <button onClick={function(e){e.stopPropagation();deleteGw(g.id)}} className="text-[10px] text-red/40 hover:text-red ml-1">X</button>
+            </div>
           </div>
-          {gLoops.length===0&&(<div className="px-4 py-3 text-[11px] text-dgray italic uppercase">NO LOOPS ASSIGNED — USE THE DROPDOWNS BELOW</div>)}
-          {gLoops.map(function(l){
-            var lPct=calcWeightedPct(l.devices)
-            return (<div key={l.id} className="px-4 py-2 border-t border-border/30">
-              <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                <span className="text-xs font-bold text-white uppercase">{l.name}</span>
-                {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
-                <span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{l.protocol}</span>
-                <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
-                <div className="w-14 h-1 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(lPct>=100?'bg-green':lPct>0?'bg-teal':'bg-red/30')} style={{width:lPct+'%'}}/></div>
-                <button onClick={function(){assignLoop(l.id,'')}} className="ml-auto text-[9px] text-dgray hover:text-red uppercase">UNASSIGN</button>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {l.devices.map(function(d){
-                  return <span key={d.id} title={(d.room_name||'')+(d.address?' · ADDR '+d.address:'')} className={'px-1.5 py-0.5 rounded text-[9px] uppercase '+(d.device_installed?'bg-green/15 text-green':'bg-card2 text-lgray')}>{d.tag||'?'}{d.address?<span className="text-cyan"> #{d.address}</span>:null}</span>
-                })}
-              </div>
-            </div>)
-          })}
+
+          {/* Expanded: loops under this gateway */}
+          {isGExp&&(<div className="border-t border-border/30">
+            {gLoops.length===0&&(<div className="px-8 py-3 text-[11px] text-dgray italic uppercase">NO LOOPS ASSIGNED — USE THE DROPDOWNS IN THE UNASSIGNED SECTION BELOW</div>)}
+            {gLoops.map(function(l){
+              var lPct=calcWeightedPct(l.devices)
+              var isLExp=expandedGwLoop===l.id
+              return (<div key={l.id}>
+                <div className="pl-8 pr-4 py-2 flex flex-wrap items-center gap-2 cursor-pointer hover:bg-card2/40 border-b border-border/20" onClick={function(){setExpandedGwLoop(isLExp?null:l.id)}}>
+                  <span className="text-dgray text-xs w-3">{isLExp?'▾':'▸'}</span>
+                  <span className="text-xs font-bold text-white uppercase">{l.name}</span>
+                  {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
+                  <span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{l.protocol}</span>
+                  <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
+                  <div className="w-14 h-1 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(lPct>=100?'bg-green':lPct>0?'bg-teal':'bg-red/30')} style={{width:lPct+'%'}}/></div>
+                  <span className="ml-auto flex items-center gap-3">
+                    <button onClick={function(e){e.stopPropagation();onUpdateLoops(loops.map(function(x){return x.id===l.id?Object.assign({},x,{devices:sortDevsByAddr(x.devices)}):x}))}} title="ARRANGE DEVICES SMALLEST ADDRESS FIRST" className="text-[9px] text-teal hover:text-cyan uppercase">SORT BY ADDR</button>
+                    <button onClick={function(e){e.stopPropagation();assignLoop(l.id,'')}} className="text-[9px] text-dgray hover:text-red uppercase">UNASSIGN</button>
+                  </span>
+                </div>
+                {isLExp&&(<div className="pl-10 pr-4 py-2 bg-navy/40 border-b border-border/20 overflow-x-auto">
+                  <table className="w-full"><thead><tr className="border-b border-border/50">
+                    <th className="text-[9px] text-dgray text-left px-2 py-1.5">TYPE</th>
+                    <th className="text-[9px] text-dgray text-left px-2 py-1.5">EQUIP TAG</th>
+                    <th className="text-[9px] text-dgray text-left px-2 py-1.5">ROOM</th>
+                    <th className="text-[9px] text-dgray text-center px-2 py-1.5">ADDR</th>
+                    {loopStages.map(function(s){return <th key={s} className="text-[9px] text-dgray text-center px-1 py-1.5">{stgLbl[s]}</th>})}
+                  </tr></thead><tbody>
+                    {l.devices.map(function(dev){
+                      return (<tr key={dev.id} className="border-b border-border/20 hover:bg-teal/4">
+                        <td className="text-[10px] px-2 py-1.5 text-purple uppercase">{dev.device_type}</td>
+                        <td className="text-[11px] px-2 py-1.5 text-white font-medium uppercase">{dev.tag||'-'}</td>
+                        <td className="text-[11px] px-2 py-1.5 text-lgray uppercase">{dev.room_name||'-'}</td>
+                        <td className="text-[11px] px-2 py-1.5 text-cyan text-center">{dev.address||'-'}</td>
+                        {loopStages.map(function(s){var ch=dev[s],idx=loopStages.indexOf(s),prev=idx===0||dev[loopStages[idx-1]];return <td key={s} className="text-center px-1 py-1.5"><StgBtn checked={ch} prevDone={prev} onClick={function(){handleToggle(l.id,dev.id,s)}}/></td>})}
+                      </tr>)
+                    })}
+                  </tbody></table>
+                  <div className="text-[8px] text-dgray uppercase mt-1.5">EDIT TAGS/ROOMS/ADDRESSES IN LOOP VIEW — STAGES ARE LIVE HERE</div>
+                </div>)}
+              </div>)
+            })}
+          </div>)}
         </div>)
       })}
 

@@ -10,7 +10,8 @@ import DrawingsPage from './pages/DrawingsPage'
 import BlockersPage from './pages/BlockersPage'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
-import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
+import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
+import { hashFile } from './lib/fileStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -27,6 +28,17 @@ function Placeholder(props) {
 // SINGLE source of truth for the device shape. Matches what
 // CommDevices.jsx reads/writes: device_type, room_name, address,
 // the 6 commissioning stages, remarks.
+// Numeric address sort: "3" < "12" < "ADDR-20"; blanks go last
+function addrNum(a) {
+  var n = parseInt(String(a || '').replace(/[^0-9]/g, ''), 10)
+  return isNaN(n) ? Infinity : n
+}
+function sortDevicesByAddress(devs) {
+  var hasAddr = devs.some(function(d) { return addrNum(d.address) !== Infinity })
+  if (!hasAddr) return devs
+  return devs.slice().sort(function(a, b) { return addrNum(a.address) - addrNum(b.address) })
+}
+
 var deviceIdCounter = 0
 function makeLoopDevice(tag, room, thermostat, address, serial) {
   var t = (tag || '').toUpperCase().trim()
@@ -201,6 +213,7 @@ export default function App() {
       setGateways(data.gateways || [])
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
+      setLoadedData(data)
       undoRef.current = []
       setTimeout(function() { initialLoadDone.current = true }, 500)
     })
@@ -235,6 +248,7 @@ export default function App() {
       setGateways(data.gateways || [])
       setActiveProject(fullProject || project)
       setLoadedVersion((fullProject && fullProject.version) || 0)
+      setLoadedData(data)
       if (fullProject && fullProject.id) {
         subscribeToProject(fullProject.id)
         autoBackup(fullProject.id, fullProject.name, data)
@@ -668,7 +682,14 @@ export default function App() {
   function openTraceStudio(file) {
     setDrawingImport(null)
     setImportExclusions({})
-    setTraceSession({ file: file, record: null })
+    // If this exact file was traced before, reopen ITS record —
+    // prevents duplicate drawings/loops from tracing the same PDF twice
+    hashFile(file).then(function(hash) {
+      var existing = drawings.find(function(d) { return d.fileHash === hash })
+      setTraceSession({ file: file, record: existing || null })
+    }).catch(function() {
+      setTraceSession({ file: file, record: null })
+    })
   }
 
   function handleOpenDrawing(record, file) {
@@ -690,9 +711,10 @@ export default function App() {
       })
       return found ? next : next.concat([drawingRecord])
     })
-    // Hand off to the SAME preview/confirm flow as AI import
-    setImportExclusions({})
-    setDrawingImport({ step: 'preview', files: [], progress: [], result: result, error: null })
+    // Apply directly — no preview, no re-import. Loops, blockers and zones
+    // sync quietly into every view; re-trace replaces this drawing's own data.
+    pushUndo()
+    applyDrawingResult(result, {})
   }
 
   function handleUpdateDrawingMeta(id, fields) {
@@ -756,9 +778,14 @@ export default function App() {
   function confirmDrawingImport() {
     if (!drawingImport || !drawingImport.result) return
     pushUndo()
+    applyDrawingResult(drawingImport.result, importExclusions)
+    setDrawingImport(null)
+    setImportExclusions({})
+  }
 
-    var result = drawingImport.result
-    var drawExcl = importExclusions
+  // Applies loops/blockers/zones from an AI import OR a trace session.
+  // Trace DONE calls this directly — no preview, no re-import, subtle sync.
+  function applyDrawingResult(result, drawExcl) {
     var did = result.drawingId || ''
 
     // Device-level replacement: re-trace of a drawing replaces ONLY devices
@@ -794,6 +821,8 @@ export default function App() {
       })
 
       if (loopDevices.length === 0) return
+      // Auto-sort by address (smallest → largest); traced order kept when no addresses
+      loopDevices = sortDevicesByAddress(loopDevices)
 
       var remarks = (loop.cableRemarks || []).map(function(r) {
         return { from: r.from, to: r.to, text: r.text, drawingId: did }
