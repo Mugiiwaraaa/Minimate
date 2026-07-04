@@ -796,8 +796,10 @@ export default function App() {
     // Remember existing devices (by tag) so a RE-TRACE never wipes
     // commissioning progress, remarks or field-entered details
     var prevByTag = {}
+    var prevLoopByName = {}
     loops.forEach(function(l) {
       if (l.source !== 'drawing') return
+      if (l.name && !prevLoopByName[l.name]) prevLoopByName[l.name] = l
       l.devices.forEach(function(d) {
         if (d.tag && !prevByTag[d.tag]) prevByTag[d.tag] = d
       })
@@ -832,9 +834,11 @@ export default function App() {
         var dev = makeLoopDevice(d.tag, d.room, d.thermostat, d.address, d.serial)
         dev.floor = result.floorLabel || ''
         dev.drawingId = did
-        // Re-trace: carry over everything already earned on this device
+        // Re-trace: carry over everything already earned on this device.
+        // Same id keeps area/zone groups pointing at it.
         var old = prevByTag[dev.tag]
         if (old) {
+          dev.id = old.id
           dev.comm_cable = !!old.comm_cable
           dev.control_cable = !!old.control_cable
           dev.continuity = !!old.continuity
@@ -875,16 +879,21 @@ export default function App() {
         return
       }
 
-      var loopId = 'loop-dwg-' + (did ? did + '-' : '') + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-')
+      // RE-TRACE: this loop existed before (its devices were all replaced
+      // above, so it fell out of newLoops) — keep its id and every field
+      // entered in loop view: gateway, zone, DDC ref, protocol. This is
+      // what stops gateway assignments and zone names vanishing.
+      var prevLoop = prevLoopByName[loop.loopId]
+      var loopId = prevLoop ? prevLoop.id : ('loop-dwg-' + (did ? did + '-' : '') + loop.loopId.toLowerCase().replace(/[^a-z0-9]/g, '-'))
       newLoops.push({
         id: loopId,
         name: loop.loopId,
-        protocol: 'MODBUS RTU',
-        gateway: '',
-        ddc_ref: loop.ddcPanel || '',
-        floor: result.floorLabel || '',
-        zone: '',
-        color: loop.color || '',
+        protocol: (prevLoop && prevLoop.protocol) || 'MODBUS RTU',
+        gateway: (prevLoop && prevLoop.gateway) || '',
+        ddc_ref: loop.ddcPanel || (prevLoop && prevLoop.ddc_ref) || '',
+        floor: result.floorLabel || (prevLoop && prevLoop.floor) || '',
+        zone: (prevLoop && prevLoop.zone) || '',
+        color: loop.color || (prevLoop && prevLoop.color) || '',
         source: 'drawing',
         drawingId: did,
         cable_remarks: remarks,

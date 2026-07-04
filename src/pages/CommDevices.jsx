@@ -153,6 +153,13 @@ export default function CommDevices(props){
       return a
     }));setDragDev(null)
   }
+  function moveArea(aid,dir){
+    var idx=areas.findIndex(function(a){return a.id===aid})
+    var to=idx+dir
+    if(idx<0||to<0||to>=areas.length)return
+    var next=areas.slice();var t=next[idx];next[idx]=next[to];next[to]=t
+    onUpdateAreas(next)
+  }
   function startReorderArea(aid,fi){setDragAreaIdx({areaId:aid,fromIndex:fi})}
   function dropReorderArea(aid,ti){
     if(!dragAreaIdx||dragAreaIdx.areaId!==aid||dragAreaIdx.fromIndex===ti){setDragAreaIdx(null);return}
@@ -482,6 +489,10 @@ export default function CommDevices(props){
           onDragOver={function(e){e.preventDefault()}} onDrop={function(){dropOnArea(area.id)}}>
           <div className="bg-card2 px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-card2/80" onClick={function(){setExpanded(isExp?null:'area-'+area.id)}}>
             <div className="flex items-center gap-3">
+              <span className="flex flex-col -my-1" onClick={function(e){e.stopPropagation()}}>
+                <button onClick={function(){moveArea(area.id,-1)}} title="MOVE AREA UP" className="text-[10px] text-dgray hover:text-teal leading-none px-1">▲</button>
+                <button onClick={function(){moveArea(area.id,1)}} title="MOVE AREA DOWN" className="text-[10px] text-dgray hover:text-teal leading-none px-1">▼</button>
+              </span>
               <input value={area.name} onClick={function(e){e.stopPropagation()}} onChange={function(e){renameArea(area.id,e.target.value)}} onBlur={function(){renameAreaBlur(area.id)}} style={{textTransform:'uppercase'}} className="bg-transparent text-sm font-bold text-white outline-none border-b border-transparent focus:border-teal w-56"/>
               <span className="text-[10px] text-dgray uppercase">{ad.length} DEVICES</span><span className="text-[10px] text-dgray">|</span>
               <span className="text-[10px] text-green uppercase">{ai} INSTALLED</span><span className="text-[10px] text-dgray">|</span>
