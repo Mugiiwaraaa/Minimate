@@ -173,7 +173,7 @@ export default function ReportsPage(props) {
 
   // ─── Excel export ─────────────────────────────────────────
   function exportExcel() {
-    if (!window.XLSX) { alert('SPREADSHEET LIBRARY NOT LOADED - CHECK CONNECTION AND RELOAD') return }
+    if (!window.XLSX) { alert('SPREADSHEET LIBRARY NOT LOADED - CHECK CONNECTION AND RELOAD'); return }
     var X = window.XLSX
     var wb = X.utils.book_new()
 
