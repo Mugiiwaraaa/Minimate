@@ -42,6 +42,16 @@ var PRESETS = {
   'FULL REPORT': SECTION_DEFS.map(function(s) { return s.key })
 }
 
+// Suggested title per report type — auto-fills cfg.reportTitle on preset click
+// (only while the engineer hasn't manually overridden it; see titleTouched).
+var PRESET_TITLES = {
+  'WEEKLY PROGRESS': 'BMS COMMISSIONING PROGRESS REPORT',
+  'DDC SCHEDULE': 'DDC PANEL SCHEDULE',
+  'COMMISSIONING': 'COMMISSIONING STATUS REPORT',
+  'FULL REPORT': 'BMS COMMISSIONING REPORT'
+}
+var DEFAULT_TITLE = 'BMS COMMISSIONING PROGRESS REPORT'
+
 var CANOPY_OPTS = ['N/A', 'REQUIRED', 'DONE']
 
 var stageWeights = { comm_cable: 25, control_cable: 25, continuity: 10, termination: 25, device_installed: 15, address_set: 0 }
@@ -56,6 +66,7 @@ var IO_STAGES = [
 ]
 
 function up(v) { return (v || '').toUpperCase() }
+function upKeep(v) { return (v || '').toUpperCase() } // no trim: safe for controlled onChange
 
 function weightedPct(devs) {
   if (!devs || devs.length === 0) return 0
@@ -87,7 +98,8 @@ export default function ReportsPage(props) {
 
   var cfg = Object.assign({
     reportNo: '', periodFrom: '', periodTo: '', contractor: '', client: props.projectClient || '',
-    preparedBy: '', notes: '', sections: {}, workItems: null
+    preparedBy: '', notes: '', sections: {}, workItems: null,
+    reportTitle: DEFAULT_TITLE, titleTouched: false
   }, props.config || {})
   var sections = Object.assign({}, cfg.sections)
   function sectionOn(key) {
@@ -118,6 +130,7 @@ export default function ReportsPage(props) {
     next[field] = value
     props.onConfig(next)
   }
+  function setCfgMulti(obj) { props.onConfig(Object.assign({}, cfg, obj)) }
 
   function toggleSection(key) {
     var next = Object.assign({}, cfg, { sections: Object.assign({}, sections) })
@@ -130,6 +143,7 @@ export default function ReportsPage(props) {
     var on = PRESETS[name] || (cfg.presets || {})[name] || []
     var next = Object.assign({}, cfg, { sections: {} })
     SECTION_DEFS.forEach(function(s) { next.sections[s.key] = on.indexOf(s.key) >= 0 })
+    if (!cfg.titleTouched && PRESET_TITLES[name]) next.reportTitle = PRESET_TITLES[name]
     props.onConfig(next)
   }
   function saveCurrentPreset() {
@@ -398,7 +412,7 @@ export default function ReportsPage(props) {
     var wb = X.utils.book_new()
 
     var summary = [
-      ['MINIMATE PROGRESS REPORT'],
+      [up(cfg.reportTitle) || DEFAULT_TITLE],
       ['PROJECT', up(props.projectName)],
       ['CLIENT', up(cfg.client)],
       ['CONTRACTOR', up(cfg.contractor)],
@@ -512,6 +526,10 @@ export default function ReportsPage(props) {
 
         <div className="bg-card rounded-xl border border-border p-4 mb-4">
           <div className="text-[10px] text-dgray uppercase font-semibold mb-2">REPORT HEADER — SAVED WITH THE PROJECT</div>
+          <div className="mb-2">
+            <label className="text-[9px] text-dgray block mb-0.5">REPORT TITLE — SHOWN ON THE REPORT (AUTO-FILLS FROM REPORT TYPE UNTIL YOU EDIT IT)</label>
+            <input value={cfg.reportTitle} onChange={function(e) { setCfgMulti({ reportTitle: upKeep(e.target.value), titleTouched: true }) }} placeholder={DEFAULT_TITLE} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-sm text-white uppercase outline-none focus:border-teal font-bold" />
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
             <div><label className="text-[9px] text-dgray block mb-0.5">REPORT NO</label><input value={cfg.reportNo} onChange={function(e) { setCfg('reportNo', up(e.target.value)) }} placeholder="WPR-012" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
             <div><label className="text-[9px] text-dgray block mb-0.5">PERIOD FROM</label><input type="date" value={cfg.periodFrom} onChange={function(e) { setCfg('periodFrom', e.target.value) }} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal" /></div>
@@ -546,7 +564,7 @@ export default function ReportsPage(props) {
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <div className="text-xl font-black uppercase">{cfg.contractor || 'CONTRACTOR'}</div>
-              <div className="text-sm font-bold text-teal uppercase mt-1">BMS COMMISSIONING PROGRESS REPORT</div>
+              <div className="text-sm font-bold text-teal uppercase mt-1">{cfg.reportTitle || DEFAULT_TITLE}</div>
             </div>
             <div className="text-right text-[11px] uppercase">
               <div><span className="text-dgray">REPORT NO: </span><span className="font-bold">{cfg.reportNo || '-'}</span></div>
