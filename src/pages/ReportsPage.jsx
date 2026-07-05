@@ -52,6 +52,36 @@ var PRESET_TITLES = {
 }
 var DEFAULT_TITLE = 'BMS COMMISSIONING PROGRESS REPORT'
 
+// Column customization per table (saved in cfg.cols[table]): engineer can
+// hide/show, resize S/M/L, no-wrap, and add free-text columns. SR / activity
+// label / panel name stay always-visible except where listed below.
+var WORK_COLS = [
+  { key: 'unit', label: 'UNIT' },
+  { key: 'teams', label: 'TEAMS' },
+  { key: 'design', label: 'DESIGN' },
+  { key: 'floors', label: 'PER-FLOOR' },
+  { key: 'workdone', label: 'WORKDONE' },
+  { key: 'balance', label: 'BALANCE' },
+  { key: 'remark', label: 'REMARK' }
+]
+var DDC_COLS = [
+  { key: 'level', label: 'LEVEL' },
+  { key: 'zone', label: 'ZONE' },
+  { key: 'part', label: 'PART' },
+  { key: 'panelName', label: 'PANEL NAME' },
+  { key: 'location', label: 'LOCATION' },
+  { key: 'canopy', label: 'CANOPY' },
+  { key: 'ddcInstall', label: 'DDC INSTALL' },
+  { key: 'cablePulling', label: 'CABLE PULLING' },
+  { key: 'panelTerm', label: 'PANEL TERM' },
+  { key: 'functionalTest', label: 'FUNC TEST' },
+  { key: 'inspections', label: 'INSPECTIONS' },
+  { key: 'remarks', label: 'REMARKS' }
+]
+// Default column order (SR / S-N fixed leftmost; custom col ids appended)
+var WORK_ORDER = ['label', 'unit', 'teams', 'design', 'floors', 'workdone', 'balance', 'remark']
+var DDC_ORDER = ['level', 'zone', 'part', 'panelName', 'location', 'canopy', 'ddcInstall', 'cablePulling', 'panelTerm', 'functionalTest', 'inspections', 'remarks']
+
 var CANOPY_OPTS = ['N/A', 'REQUIRED', 'DONE']
 
 var stageWeights = { comm_cable: 25, control_cable: 25, continuity: 10, termination: 25, device_installed: 15, address_set: 0 }
@@ -117,6 +147,18 @@ export default function ReportsPage(props) {
   var collapsedState = useState({})
   var collapsed = collapsedState[0]
   var setCollapsed = collapsedState[1]
+  var editDdcState = useState(false)
+  var editDdc = editDdcState[0]
+  var setEditDdc = editDdcState[1]
+  var resizeState = useState(null)
+  var resize = resizeState[0]
+  var setResize = resizeState[1]
+  var colDragState = useState(null)
+  var colDrag = colDragState[0]
+  var setColDrag = colDragState[1]
+  var rowDragState = useState(null)
+  var rowDrag = rowDragState[0]
+  var setRowDrag = rowDragState[1]
 
   useEffect(function() {
     if (!props.projectId) return
@@ -131,6 +173,274 @@ export default function ReportsPage(props) {
     props.onConfig(next)
   }
   function setCfgMulti(obj) { props.onConfig(Object.assign({}, cfg, obj)) }
+
+  // ── Column customization ──────────────────────────────────
+  function colCfg(tbl) { return (cfg.cols && cfg.cols[tbl]) || {} }
+  function colOn(tbl, key) { var h = colCfg(tbl).hide || {}; return !h[key] }
+  function colWrap(tbl, key) { var n = colCfg(tbl).nowrap || {}; return n[key] ? ' whitespace-nowrap' : '' }
+  function colStyle(tbl, key) {
+    var live = (resize && resize.tbl === tbl && resize.key === key) ? resize.w : null
+    var px = live != null ? live : (colCfg(tbl).px || {})[key]
+    if (px) return { width: px + 'px', minWidth: px + 'px', maxWidth: px + 'px' }
+    return undefined
+  }
+  function customCols(tbl) { return colCfg(tbl).custom || [] }
+  function setColPart(tbl, kind, key, value) {
+    var cols = Object.assign({}, cfg.cols || {})
+    var t = Object.assign({ hide: {}, w: {}, nowrap: {}, custom: [] }, cols[tbl] || {})
+    var g = Object.assign({}, t[kind] || {})
+    if (value === undefined) { delete g[key] } else { g[key] = value }
+    t[kind] = g
+    cols[tbl] = t
+    setCfg('cols', cols)
+  }
+  function toggleColHide(tbl, key) { setColPart(tbl, 'hide', key, colOn(tbl, key) ? true : undefined) }
+  function toggleColWrap(tbl, key) { var n = (colCfg(tbl).nowrap || {})[key]; setColPart(tbl, 'nowrap', key, n ? undefined : true) }
+  function onResizeDown(tbl, key, e) {
+    e.preventDefault(); e.stopPropagation()
+    var th = e.currentTarget.parentNode
+    var startW = (colCfg(tbl).px || {})[key] || (th && th.offsetWidth) || 120
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (err) {}
+    setResize({ tbl: tbl, key: key, startX: e.clientX, startW: startW, w: startW })
+  }
+  function onResizeMove(e) {
+    if (!resize) return
+    var w = Math.max(40, resize.startW + (e.clientX - resize.startX))
+    setResize(Object.assign({}, resize, { w: w }))
+  }
+  function onResizeUp(e) {
+    if (!resize) return
+    setColPart(resize.tbl, 'px', resize.key, Math.round(resize.w))
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch (err) {}
+    setResize(null)
+  }
+  function grow(el) { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }
+  function thc(tbl, key, label, extra, rk) {
+    var editing = tbl === 'work' ? editWork : editDdc
+    var over = colDrag && colDrag.tbl === tbl && colDrag.overKey === key && colDrag.key !== key
+    return (
+      <th key={rk || key} data-colkey={key} data-coltbl={tbl} onPointerDown={function(e) { startColDrag(tbl, key, e) }} onPointerMove={colDragMove} onPointerUp={colDragUp} className={thCls + (extra || '') + colWrap(tbl, key) + ' relative' + (editing ? ' cursor-move select-none' : '') + (over ? ' bg-teal/25' : '')} style={colStyle(tbl, key)}>
+        {editing && <span className="text-dgray mr-1 no-print">⠿</span>}{label}
+        <span onPointerDown={function(e) { onResizeDown(tbl, key, e) }} onPointerMove={onResizeMove} onPointerUp={onResizeUp} className="absolute top-0 right-0 h-full w-2 cursor-col-resize hover:bg-teal/50 no-print" style={{ touchAction: 'none' }}></span>
+      </th>
+    )
+  }
+
+  // ── Column order + drag-reorder ───────────────────────────
+  function baseKeys(tbl) { return tbl === 'work' ? WORK_ORDER : DDC_ORDER }
+  function customById(tbl, k) { var l = customCols(tbl); for (var i = 0; i < l.length; i++) { if (l[i].id === k) return l[i] } return null }
+  function orderedKeys(tbl) {
+    var base = baseKeys(tbl).concat(customCols(tbl).map(function(c) { return c.id }))
+    var saved = colCfg(tbl).order
+    if (!saved) return base
+    var out = []
+    saved.forEach(function(k) { if (base.indexOf(k) >= 0 && out.indexOf(k) < 0) out.push(k) })
+    base.forEach(function(k) { if (out.indexOf(k) < 0) out.push(k) })
+    return out
+  }
+  function setColMeta(tbl, field, val) {
+    var cols = Object.assign({}, cfg.cols || {})
+    var t = Object.assign({ hide: {}, w: {}, nowrap: {}, custom: [] }, cols[tbl] || {})
+    t[field] = val
+    cols[tbl] = t
+    setCfg('cols', cols)
+  }
+  function moveColumn(tbl, key, beforeKey) {
+    var ord = orderedKeys(tbl).slice()
+    var from = ord.indexOf(key)
+    if (from < 0) return
+    ord.splice(from, 1)
+    var to = ord.indexOf(beforeKey)
+    if (to < 0) to = ord.length
+    ord.splice(to, 0, key)
+    setColMeta(tbl, 'order', ord)
+  }
+  function startColDrag(tbl, key, e) {
+    var editing = tbl === 'work' ? editWork : editDdc
+    if (!editing) return
+    e.preventDefault()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (err) {}
+    setColDrag({ tbl: tbl, key: key, overKey: key })
+  }
+  function colDragMove(e) {
+    if (!colDrag) return
+    var el = document.elementFromPoint(e.clientX, e.clientY)
+    var th = el && el.closest ? el.closest('[data-colkey]') : null
+    if (th) {
+      var k = th.getAttribute('data-colkey')
+      var t = th.getAttribute('data-coltbl')
+      if (t === colDrag.tbl && k && k !== colDrag.overKey) setColDrag(Object.assign({}, colDrag, { overKey: k }))
+    }
+  }
+  function colDragUp(e) {
+    if (!colDrag) return
+    var d = colDrag
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch (err) {}
+    setColDrag(null)
+    if (d.overKey && d.overKey !== d.key) moveColumn(d.tbl, d.key, d.overKey)
+  }
+
+  // ── Row drag-reorder ──────────────────────────────────────
+  function startRowDrag(tbl, id, e) {
+    e.preventDefault(); e.stopPropagation()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (err) {}
+    setRowDrag({ tbl: tbl, id: id, overId: id })
+  }
+  function rowDragMove(e) {
+    if (!rowDrag) return
+    var el = document.elementFromPoint(e.clientX, e.clientY)
+    var tr = el && el.closest ? el.closest('[data-rowid]') : null
+    if (tr) {
+      var id = tr.getAttribute('data-rowid')
+      var t = tr.getAttribute('data-rowtbl')
+      if (t === rowDrag.tbl && id && id !== rowDrag.overId) setRowDrag(Object.assign({}, rowDrag, { overId: id }))
+    }
+  }
+  function rowDragUp(e) {
+    if (!rowDrag) return
+    var d = rowDrag
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch (err) {}
+    setRowDrag(null)
+    if (d.overId && d.overId !== d.id) moveRow(d.tbl, d.id, d.overId)
+  }
+  function moveRow(tbl, id, beforeId) {
+    if (tbl === 'work') {
+      var arr = workItems.slice()
+      var from = arr.findIndex(function(w) { return w.id === id })
+      if (from < 0) return
+      var it = arr.splice(from, 1)[0]
+      var to = arr.findIndex(function(w) { return w.id === beforeId })
+      if (to < 0) to = arr.length
+      arr.splice(to, 0, it)
+      setWorkItems(arr)
+    } else {
+      var ids = schedPanels.map(function(p) { return p.id })
+      var f2 = ids.indexOf(id)
+      if (f2 < 0) return
+      ids.splice(f2, 1)
+      var t2 = ids.indexOf(beforeId)
+      if (t2 < 0) t2 = ids.length
+      ids.splice(t2, 0, id)
+      setColMeta('ddc', 'rowOrder', ids)
+    }
+  }
+
+  // ── Data-driven header + body cell renderers ──────────────
+  function workHeadMeta(k) { return { label: { l: 'DEVICES / ACTIVITY' }, unit: { l: 'UNIT' }, teams: { l: 'TEAMS' }, design: { l: 'DESIGN', x: ' text-center' }, workdone: { l: 'WORKDONE', x: ' text-center' }, balance: { l: 'BALANCE', x: ' text-center' }, remark: { l: 'REMARK' } }[k] }
+  function workHead(k) {
+    if (k === 'floors') return colOn('work', 'floors') ? floorOrder.map(function(f) { return thc('work', 'floors', f, ' text-center', f) }) : null
+    var cc = customById('work', k)
+    if (cc) return thc('work', cc.id, cc.label, '')
+    if (!colOn('work', k)) return null
+    var m = workHeadMeta(k)
+    if (!m) return null
+    return thc('work', k, m.l, m.x || '')
+  }
+  function workCell(k, it, r) {
+    if (k === 'label') return (
+      <td key="label" className={tdCls} style={colStyle('work', 'label')}>
+        {editWork ? <input value={it.label} onChange={function(e) { updItem(it.id, { label: up(e.target.value) }) }} className={inCls + ' w-full text-[11px] text-white'} /> : it.label}
+        {editWork && it.kind === 'auto' && (
+          <div className="flex gap-1 mt-0.5 no-print">
+            <select value={it.deviceType} onChange={function(e) { updItem(it.id, { deviceType: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{typeOrder.map(function(t) { return <option key={t} value={t}>{t}</option> })}</select>
+            <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
+          </div>
+        )}
+        {editWork && it.kind === 'io' && (
+          <div className="flex gap-1 mt-0.5 no-print">
+            <span className="px-1 py-0.5 text-[8px] text-cyan uppercase font-bold">IO POINTS ×</span>
+            <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-cyan uppercase outline-none">{IO_STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
+          </div>
+        )}
+      </td>
+    )
+    if (k === 'unit') return colOn('work', 'unit') ? <td key="unit" className={tdCls + ' text-dgray' + colWrap('work', 'unit')} style={colStyle('work', 'unit')}>{editWork ? <input value={it.unit} onChange={function(e) { updItem(it.id, { unit: up(e.target.value) }) }} className={inCls + ' w-16 text-[11px] text-dgray'} /> : it.unit}</td> : null
+    if (k === 'teams') return colOn('work', 'teams') ? <td key="teams" className={tdCls + colWrap('work', 'teams')} style={colStyle('work', 'teams')}><input value={it.teams || ''} onChange={function(e) { updItem(it.id, { teams: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td> : null
+    if (k === 'design') return colOn('work', 'design') ? <td key="design" className={tdCls + ' text-center' + colWrap('work', 'design')} style={colStyle('work', 'design')}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={it.kind === 'manual' ? '0' : String(r.liveDesign)} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td> : null
+    if (k === 'floors') return colOn('work', 'floors') ? r.perFloor.map(function(n, fi) { return <td key={'fl' + fi} className={tdCls + ' text-center text-dgray' + colWrap('work', 'floors')} style={colStyle('work', 'floors')}>{n === null ? '' : (n || '')}</td> }) : null
+    if (k === 'workdone') return colOn('work', 'workdone') ? (<td key="workdone" className={tdCls + ' text-center font-bold text-green'}>{it.kind === 'manual' ? <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} /> : r.done}</td>) : null
+    if (k === 'balance') return colOn('work', 'balance') ? <td key="balance" className={tdCls + ' text-center ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td> : null
+    if (k === 'remark') return colOn('work', 'remark') ? <td key="remark" className={tdCls} style={colStyle('work', 'remark')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={it.remark || ''} onChange={function(e) { updItem(it.id, { remark: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
+    var cc = customById('work', k)
+    if (cc) { var v = (it.custom && it.custom[cc.id]) || ''; return <td key={cc.id} className={tdCls} style={colStyle('work', cc.id)}><input value={v} onChange={function(e) { var o = Object.assign({}, it.custom || {}); o[cc.id] = up(e.target.value); updItem(it.id, { custom: o }) }} placeholder="" className={inCls + ' w-full text-[10px] text-lgray'} /></td> }
+    return null
+  }
+  function ddcHeadMeta(k) { return { level: { l: 'LEVEL' }, zone: { l: 'ZONE' }, part: { l: 'PART' }, panelName: { l: 'PANEL NAME' }, location: { l: 'LOCATION' }, canopy: { l: 'CANOPY', x: ' text-center' }, ddcInstall: { l: 'DDC INSTALLATION', x: ' text-center' }, cablePulling: { l: 'CABLE PULLING', x: ' text-center' }, panelTerm: { l: 'PANEL TERMINATION', x: ' text-center' }, functionalTest: { l: 'FUNCTIONAL TEST', x: ' text-center' }, inspections: { l: 'INSPECTIONS' }, remarks: { l: 'REMARKS' } }[k] }
+  function ddcHead(k) {
+    var cc = customById('ddc', k)
+    if (cc) return thc('ddc', cc.id, cc.label, '')
+    if (!colOn('ddc', k)) return null
+    var m = ddcHeadMeta(k)
+    if (!m) return null
+    return thc('ddc', k, m.l, m.x || '')
+  }
+  function ddcCell(k, p, showLvl, lvl) {
+    if (k === 'level') return colOn('ddc', 'level') ? <td key="level" className={tdCls + ' font-bold text-orange' + colWrap('ddc', 'level')} style={colStyle('ddc', 'level')}>{showLvl ? (lvl || '-') : ''}</td> : null
+    if (k === 'zone') return colOn('ddc', 'zone') ? <td key="zone" className={tdCls + colWrap('ddc', 'zone')} style={colStyle('ddc', 'zone')}><input value={p.zone || ''} onChange={function(e) { updPanel(p.id, { zone: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td> : null
+    if (k === 'part') return colOn('ddc', 'part') ? <td key="part" className={tdCls + colWrap('ddc', 'part')} style={colStyle('ddc', 'part')}><input value={p.part || ''} onChange={function(e) { updPanel(p.id, { part: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-14 text-[11px] text-lgray'} /></td> : null
+    if (k === 'panelName') return colOn('ddc', 'panelName') ? <td key="panelName" className={tdCls + ' font-bold text-cyan' + colWrap('ddc', 'panelName')} style={colStyle('ddc', 'panelName')}>{p.name}</td> : null
+    if (k === 'location') return colOn('ddc', 'location') ? <td key="location" className={tdCls + colWrap('ddc', 'location')} style={colStyle('ddc', 'location')}>{p.location || '-'}</td> : null
+    if (k === 'canopy') return colOn('ddc', 'canopy') ? (<td key="canopy" className={tdCls + ' text-center'} style={colStyle('ddc', 'canopy')}>
+      <select value={p.canopy || 'N/A'} onChange={function(e) { updPanel(p.id, { canopy: e.target.value }) }} className="bg-transparent text-[10px] uppercase outline-none cursor-pointer text-lgray">
+        {CANOPY_OPTS.map(function(c) { return <option key={c} value={c}>{c}</option> })}
+      </select>
+    </td>) : null
+    if (k === 'ddcInstall') return colOn('ddc', 'ddcInstall') ? (<td key="ddcInstall" className={tdCls + ' text-center'}>
+      <button onClick={function() { updPanel(p.id, { installed: !p.installed }) }} className={'w-5 h-5 rounded border text-[10px] font-bold transition ' + (p.installed ? 'bg-green border-green text-white' : 'border-border text-dgray hover:border-teal')}>{p.installed ? '✓' : ''}</button>
+    </td>) : null
+    if (k === 'cablePulling') return colOn('ddc', 'cablePulling') ? <td key="cablePulling" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'cable_pulled'))}</td> : null
+    if (k === 'panelTerm') return colOn('ddc', 'panelTerm') ? <td key="panelTerm" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'term_ddc_side'))}</td> : null
+    if (k === 'functionalTest') return colOn('ddc', 'functionalTest') ? <td key="functionalTest" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'functional_test'))}</td> : null
+    if (k === 'inspections') return colOn('ddc', 'inspections') ? <td key="inspections" className={tdCls} style={colStyle('ddc', 'inspections')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={p.inspection || ''} onChange={function(e) { updPanel(p.id, { inspection: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-full text-[10px] text-teal resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
+    if (k === 'remarks') return colOn('ddc', 'remarks') ? <td key="remarks" className={tdCls} style={colStyle('ddc', 'remarks')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={p.remarks || ''} onChange={function(e) { updPanel(p.id, { remarks: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
+    var cc = customById('ddc', k)
+    if (cc) { var cv = (p.custom && p.custom[cc.id]) || ''; return <td key={cc.id} className={tdCls} style={colStyle('ddc', cc.id)}><input value={cv} onChange={function(e) { var o = Object.assign({}, p.custom || {}); o[cc.id] = up(e.target.value); updPanel(p.id, { custom: o }) }} placeholder="-" className={inCls + ' w-full text-[10px] text-lgray'} /></td> }
+    return null
+  }
+  function addCustomCol(tbl) {
+    var name = window.prompt('NEW COLUMN NAME:')
+    if (!name || !name.trim()) return
+    var cols = Object.assign({}, cfg.cols || {})
+    var t = Object.assign({ hide: {}, w: {}, nowrap: {}, custom: [] }, cols[tbl] || {})
+    t.custom = (t.custom || []).concat([{ id: 'cc-' + Date.now(), label: up(name).trim() }])
+    cols[tbl] = t
+    setCfg('cols', cols)
+  }
+  function delCustomCol(tbl, id) {
+    var cols = Object.assign({}, cfg.cols || {})
+    var t = Object.assign({}, cols[tbl] || {})
+    t.custom = (t.custom || []).filter(function(c) { return c.id !== id })
+    cols[tbl] = t
+    setCfg('cols', cols)
+  }
+  function columnManager(tbl, list) {
+    return (
+      <div className="no-print bg-navy/40 border border-border rounded p-2 mb-2">
+        <div className="text-[9px] text-dgray uppercase mb-1.5 font-semibold">COLUMNS · CLICK = HIDE/SHOW · ↔ = NO-WRAP · IN THE TABLE BELOW: DRAG A HEADER TO REORDER, DRAG ITS RIGHT EDGE TO RESIZE</div>
+        <div className="flex flex-wrap gap-1 items-center">
+          {list.map(function(col) {
+            var on = colOn(tbl, col.key)
+            var nw = (colCfg(tbl).nowrap || {})[col.key]
+            return (
+              <span key={col.key} className={'inline-flex items-center rounded overflow-hidden border ' + (on ? 'border-border' : 'border-border/40')}>
+                <button onClick={function() { toggleColHide(tbl, col.key) }} className={'px-1.5 py-0.5 text-[9px] font-bold uppercase ' + (on ? 'bg-teal/15 text-teal' : 'bg-card2 text-dgray line-through')}>{col.label}</button>
+                {on && <button onClick={function() { toggleColWrap(tbl, col.key) }} className={'px-1 py-0.5 text-[9px] border-l border-border ' + (nw ? 'bg-cyan/20 text-cyan' : 'bg-card2 text-dgray hover:text-white')}>↔</button>}
+              </span>
+            )
+          })}
+          {customCols(tbl).map(function(cc) {
+            return (
+              <span key={cc.id} className="inline-flex items-center rounded overflow-hidden border border-purple/40">
+                <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-purple/15 text-purple">{cc.label}</span>
+                <button onClick={function() { delCustomCol(tbl, cc.id) }} className="px-1 py-0.5 text-[9px] bg-card2 text-dgray hover:text-red border-l border-border">✕</button>
+              </span>
+            )
+          })}
+          <button onClick={function() { addCustomCol(tbl) }} className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-card2 text-dgray hover:text-white border border-border">+ COLUMN</button>
+        </div>
+      </div>
+    )
+  }
 
   function toggleSection(key) {
     var next = Object.assign({}, cfg, { sections: Object.assign({}, sections) })
@@ -322,6 +632,16 @@ export default function ReportsPage(props) {
     if (fa !== fb) return fa < fb ? -1 : 1
     return up(a.name || '') < up(b.name || '') ? -1 : 1
   })
+  var ddcRowOrder = colCfg('ddc').rowOrder || []
+  if (ddcRowOrder.length) {
+    var rowPos = {}
+    ddcRowOrder.forEach(function(id, ix) { rowPos[id] = ix })
+    schedPanels = schedPanels.slice().sort(function(a, b) {
+      var pa = rowPos[a.id] === undefined ? 1e9 : rowPos[a.id]
+      var pb = rowPos[b.id] === undefined ? 1e9 : rowPos[b.id]
+      return pa - pb
+    })
+  }
 
   // ─── AREA-WISE (location groups under floors) ──────────────
   var devInfo = {} // devId -> {dev, loop}
@@ -613,45 +933,21 @@ export default function ReportsPage(props) {
                 </span>
               )}
             </div>
+            {editWork && columnManager('work', WORK_COLS)}
             <div className="overflow-x-auto">
               <table className="w-full"><thead><tr className="border-b border-border">
-                <th className={thCls}>S/N</th><th className={thCls}>DEVICES / ACTIVITY</th><th className={thCls}>UNIT</th><th className={thCls}>TEAMS</th><th className={thCls + ' text-center'}>DESIGN</th>
-                {floorOrder.map(function(f) { return <th key={f} className={thCls + ' text-center'}>{f}</th> })}
-                <th className={thCls + ' text-center'}>WORKDONE</th><th className={thCls + ' text-center'}>BALANCE</th><th className={thCls}>REMARK</th>
+                <th className={thCls}>S/N</th>
+                {orderedKeys('work').map(function(k) { return workHead(k) })}
                 {editWork && <th className={thCls + ' no-print'}></th>}
               </tr></thead><tbody>
                 {workItems.map(function(it, i) {
                   var r = workRow(it)
-                  var isAuto = it.kind === 'auto'
-                  return (<tr key={it.id} className="border-b border-border/30">
+                  var rowOver = rowDrag && rowDrag.tbl === 'work' && rowDrag.overId === it.id && rowDrag.id !== it.id
+                  return (<tr key={it.id} data-rowid={it.id} data-rowtbl="work" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : '')}>
                     <td className={tdCls + ' text-dgray'}>{i + 1}</td>
-                    <td className={tdCls}>
-                      {editWork ? <input value={it.label} onChange={function(e) { updItem(it.id, { label: up(e.target.value) }) }} className={inCls + ' w-full text-[11px] text-white'} /> : it.label}
-                      {editWork && isAuto && (
-                        <div className="flex gap-1 mt-0.5 no-print">
-                          <select value={it.deviceType} onChange={function(e) { updItem(it.id, { deviceType: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{typeOrder.map(function(t) { return <option key={t} value={t}>{t}</option> })}</select>
-                          <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
-                        </div>
-                      )}
-                      {editWork && it.kind === 'io' && (
-                        <div className="flex gap-1 mt-0.5 no-print">
-                          <span className="px-1 py-0.5 text-[8px] text-cyan uppercase font-bold">IO POINTS ×</span>
-                          <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-cyan uppercase outline-none">{IO_STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
-                        </div>
-                      )}
-                    </td>
-                    <td className={tdCls + ' text-dgray'}>{editWork ? <input value={it.unit} onChange={function(e) { updItem(it.id, { unit: up(e.target.value) }) }} className={inCls + ' w-16 text-[11px] text-dgray'} /> : it.unit}</td>
-                    <td className={tdCls}><input value={it.teams || ''} onChange={function(e) { updItem(it.id, { teams: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td>
-                    <td className={tdCls + ' text-center'}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={it.kind === 'manual' ? '0' : String(r.liveDesign)} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td>
-                    {r.perFloor.map(function(n, fi) { return <td key={fi} className={tdCls + ' text-center text-dgray'}>{n === null ? '' : (n || '')}</td> })}
-                    <td className={tdCls + ' text-center font-bold text-green'}>
-                      {it.kind === 'manual' ? <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} /> : r.done}
-                    </td>
-                    <td className={tdCls + ' text-center ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td>
-                    <td className={tdCls}><input value={it.remark || ''} onChange={function(e) { updItem(it.id, { remark: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic'} /></td>
+                    {orderedKeys('work').map(function(k) { return workCell(k, it, r) })}
                     {editWork && (<td className={tdCls + ' no-print whitespace-nowrap'}>
-                      <button onClick={function() { moveItem(it.id, -1) }} className="text-dgray hover:text-teal px-0.5">▲</button>
-                      <button onClick={function() { moveItem(it.id, 1) }} className="text-dgray hover:text-teal px-0.5">▼</button>
+                      <span onPointerDown={function(e) { startRowDrag('work', it.id, e) }} onPointerMove={rowDragMove} onPointerUp={rowDragUp} className="cursor-grab text-dgray hover:text-teal px-0.5 inline-block" style={{ touchAction: 'none' }}>⠿</span>
                       <button onClick={function() { delItem(it.id) }} className="text-dgray hover:text-red px-0.5">✕</button>
                     </td>)}
                   </tr>)
@@ -724,34 +1020,23 @@ export default function ReportsPage(props) {
         {sectionOn('ddcSchedule') && panels.length > 0 && (
           <div>
             {secTitle('ddcSchedule')}
+            <div className="no-print flex items-center gap-3 mb-2">
+              <button onClick={function() { setEditDdc(!editDdc) }} className={'px-3 py-1 rounded text-[9px] font-bold uppercase transition ' + (editDdc ? 'bg-orange text-white' : 'bg-orange/20 text-orange hover:bg-orange/30')}>{editDdc ? '✓ DONE' : '⚙ CUSTOMIZE COLUMNS'}</button>
+            </div>
+            {editDdc && columnManager('ddc', DDC_COLS)}
             <div className="overflow-x-auto">
               <table className="w-full"><thead><tr className="border-b border-border">
-                <th className={thCls}>SR</th><th className={thCls}>LEVEL</th><th className={thCls}>ZONE</th><th className={thCls}>PART</th><th className={thCls}>PANEL NAME</th><th className={thCls}>LOCATION</th><th className={thCls + ' text-center'}>CANOPY</th><th className={thCls + ' text-center'}>DDC INSTALLATION</th><th className={thCls + ' text-center'}>CABLE PULLING</th><th className={thCls + ' text-center'}>PANEL TERMINATION</th><th className={thCls + ' text-center'}>FUNCTIONAL TEST</th><th className={thCls}>INSPECTIONS</th><th className={thCls}>REMARKS</th>
+                <th className={thCls}>SR</th>
+                {orderedKeys('ddc').map(function(k) { return ddcHead(k) })}
               </tr></thead><tbody>
                 {schedPanels.map(function(p, i) {
                   var prevP = schedPanels[i - 1]
                   var lvl = up(p.floor || '')
                   var showLvl = !prevP || up(prevP.floor || '') !== lvl
-                  return (<tr key={p.id} className="border-b border-border/30">
-                    <td className={tdCls + ' text-dgray'}>{i + 1}</td>
-                    <td className={tdCls + ' font-bold text-orange'}>{showLvl ? (lvl || '-') : ''}</td>
-                    <td className={tdCls}><input value={p.zone || ''} onChange={function(e) { updPanel(p.id, { zone: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td>
-                    <td className={tdCls}><input value={p.part || ''} onChange={function(e) { updPanel(p.id, { part: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-14 text-[11px] text-lgray'} /></td>
-                    <td className={tdCls + ' font-bold text-cyan'}>{p.name}</td>
-                    <td className={tdCls}>{p.location || '-'}</td>
-                    <td className={tdCls + ' text-center'}>
-                      <select value={p.canopy || 'N/A'} onChange={function(e) { updPanel(p.id, { canopy: e.target.value }) }} className="bg-transparent text-[10px] uppercase outline-none cursor-pointer text-lgray">
-                        {CANOPY_OPTS.map(function(c) { return <option key={c} value={c}>{c}</option> })}
-                      </select>
-                    </td>
-                    <td className={tdCls + ' text-center'}>
-                      <button onClick={function() { updPanel(p.id, { installed: !p.installed }) }} className={'w-5 h-5 rounded border text-[10px] font-bold transition ' + (p.installed ? 'bg-green border-green text-white' : 'border-border text-dgray hover:border-teal')}>{p.installed ? '✓' : ''}</button>
-                    </td>
-                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'cable_pulled'))}</td>
-                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'term_ddc_side'))}</td>
-                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'functional_test'))}</td>
-                    <td className={tdCls}><input value={p.inspection || ''} onChange={function(e) { updPanel(p.id, { inspection: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-20 text-[10px] text-teal'} /></td>
-                    <td className={tdCls}><input value={p.remarks || ''} onChange={function(e) { updPanel(p.id, { remarks: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic'} /></td>
+                  var rowOver = rowDrag && rowDrag.tbl === 'ddc' && rowDrag.overId === p.id && rowDrag.id !== p.id
+                  return (<tr key={p.id} data-rowid={p.id} data-rowtbl="ddc" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : '')}>
+                    <td className={tdCls + ' text-dgray whitespace-nowrap'}>{editDdc && <span onPointerDown={function(e) { startRowDrag('ddc', p.id, e) }} onPointerMove={rowDragMove} onPointerUp={rowDragUp} className="cursor-grab text-dgray hover:text-teal mr-1 inline-block no-print" style={{ touchAction: 'none' }}>⠿</span>}{i + 1}</td>
+                    {orderedKeys('ddc').map(function(k) { return ddcCell(k, p, showLvl, lvl) })}
                   </tr>)
                 })}
               </tbody></table>
