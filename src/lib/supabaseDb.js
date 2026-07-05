@@ -194,11 +194,8 @@ export function mergeProjectData(server, local, base) {
   server = server || {}
   local = local || {}
   base = base || {}
-  function mergeLoop(s, l, b) {
-    var merged = merge3Fields(s, l, b)
-    merged.devices = mergeById(s.devices, l.devices, (b || {}).devices)
-    return merged
-  }
+  // M6 P4: loops live in their own tables — the blob no longer carries
+  // them, and the merge never emits a loops key (stale keys die out).
   // terminationMap: 3-way per panel — my panel wins only if I changed it
   function mergeTermMap(serverMap, localMap, baseMap) {
     var out = Object.assign({}, serverMap || {})
@@ -217,7 +214,6 @@ export function mergeProjectData(server, local, base) {
     panels: mergeById(server.panels, local.panels, base.panels),
     equipmentMap: mergeEquipMap(server.equipmentMap, local.equipmentMap, base.equipmentMap),
     terminationMap: mergeTermMap(server.terminationMap, local.terminationMap, base.terminationMap),
-    loops: mergeById(server.loops, local.loops, base.loops, mergeLoop),
     areaGroups: mergeById(server.areaGroups, local.areaGroups, base.areaGroups),
     drawings: mergeById(server.drawings, local.drawings, base.drawings),
     blockers: mergeById(server.blockers, local.blockers, base.blockers),

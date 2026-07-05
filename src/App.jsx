@@ -392,6 +392,20 @@ export default function App() {
             prevLoopsRef.current = rowResult.loops
             setLoops(rowResult.loops)
             autoBackup(fullProject.id, fullProject.name, Object.assign({}, data, { loops: rowResult.loops }))
+            // M6 P4: one-time scrub — old blobs still carry a stale loops
+            // copy from before the cutover; save once without it
+            if (data.loops && data.loops.length > 0) {
+              console.log('[M6] P4: scrubbing legacy loops copy from project blob')
+              saveProjectData(fullProject.id, {
+                panels: data.panels || [],
+                equipmentMap: data.equipmentMap || {},
+                terminationMap: data.terminationMap || {},
+                areaGroups: data.areaGroups || [],
+                drawings: data.drawings || [],
+                blockers: data.blockers || [],
+                gateways: data.gateways || []
+              })
+            }
           } else {
             // No rows yet (or table missing): keep blob loops, backfill once
             ensureBackfill(fullProject.id, data.loops || [])
