@@ -61,8 +61,9 @@ export default function CommDevices(props){
   var newLoop=nls[0],setNewLoop=nls[1]
   var nds=useState({device_type:'FCU THERMOSTAT',tag:'',room_name:'',address:''})
   var newDev=nds[0],setNewDev=nds[1]
-  var nas=useState({name:''}),newArea=nas[0],setNewArea=nas[1]
+  var nas=useState({name:'',floor:''}),newArea=nas[0],setNewArea=nas[1]
   var saas=useState(false),showAddArea=saas[0],setShowAddArea=saas[1]
+  var lfcS=useState({}),locCollapsed=lfcS[0],setLocCollapsed=lfcS[1]
 
 
   var allDevices=[]
@@ -142,7 +143,17 @@ export default function CommDevices(props){
     onUpdateLoops(loops.map(function(l){if(l.id!==lid)return l;var d=l.devices.slice();var it=d.splice(dragIdx.fromIndex,1)[0];d.splice(ti,0,it);return Object.assign({},l,{devices:d})}))
     setDragIdx(null)
   }
-  function addArea(){if(!newArea.name.trim())return;onUpdateAreas(areas.concat([{id:gid('area'),name:up(newArea.name),device_ids:[]}]));setNewArea({name:''});setShowAddArea(false)}
+  function addArea(){if(!newArea.name.trim())return;onUpdateAreas(areas.concat([{id:gid('area'),name:up(newArea.name),floor:up(newArea.floor||''),device_ids:[]}]));setNewArea({name:'',floor:''});setShowAddArea(false)}
+  // Floor of an area: explicit field wins, else derived from member devices
+  function areaFloorOf(a){
+    if(a.floor)return up(a.floor)
+    var devMap={};allDevices.forEach(function(d){devMap[d.id]=d})
+    for(var i=0;i<(a.device_ids||[]).length;i++){
+      var d=devMap[a.device_ids[i]]
+      if(d){var f=up(d.floor||d.loop_floor||'');if(f)return f}
+    }
+    return 'UNSPECIFIED'
+  }
   function deleteArea(id){onUpdateAreas(areas.filter(function(a){return a.id!==id}))}
   function toggleDeviceInArea(aid,did){onUpdateAreas(areas.map(function(a){if(a.id!==aid)return a;var h=a.device_ids.indexOf(did)>=0;return Object.assign({},a,{device_ids:h?a.device_ids.filter(function(i){return i!==did}):a.device_ids.concat([did])})}))}
   function renameArea(aid,n){onUpdateAreas(areas.map(function(a){if(a.id!==aid)return a;return Object.assign({},a,{name:n})}))}
@@ -472,15 +483,43 @@ export default function CommDevices(props){
         <button onClick={function(){setShowAddArea(!showAddArea)}} className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase">+ ADD AREA GROUP</button>
       </div>
       {showAddArea&&(<div className="bg-card rounded-xl border border-teal p-4 mb-4">
-        <h3 className="text-sm font-semibold mb-2 uppercase">NEW AREA GROUP</h3>
+        <h3 className="text-sm font-semibold mb-2 uppercase">NEW AREA GROUP{newArea.floor?<span className="text-teal"> — {newArea.floor}</span>:null}</h3>
         <div className="flex gap-3 items-end">
-          <div className="flex-1"><label className="text-[10px] text-dgray block mb-1">AREA NAME</label><input value={newArea.name} onChange={function(e){setNewArea({name:e.target.value})}} placeholder="GF - EAST WING" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div className="flex-1"><label className="text-[10px] text-dgray block mb-1">AREA NAME</label><input value={newArea.name} onChange={function(e){setNewArea(Object.assign({},newArea,{name:e.target.value}))}} placeholder="EAST WING - ZONE 2" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          <div><label className="text-[10px] text-dgray block mb-1">FLOOR</label><input value={newArea.floor} onChange={function(e){setNewArea(Object.assign({},newArea,{floor:e.target.value}))}} placeholder="GF" style={{textTransform:'uppercase'}} className="w-20 bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
           <button onClick={addArea} className="px-4 py-1.5 bg-teal text-white text-xs font-semibold rounded hover:bg-teal/80 uppercase">CREATE</button>
           <button onClick={function(){setShowAddArea(false)}} className="px-4 py-1.5 bg-card2 text-dgray text-xs rounded hover:text-white uppercase">CANCEL</button>
         </div>
       </div>)}
 
-      {areas.map(function(area){
+      {(function(){
+        // Group areas under collapsible floor headers
+        var floorGroups={},floorList=[]
+        areas.forEach(function(a){
+          var f=areaFloorOf(a)
+          if(!floorGroups[f]){floorGroups[f]=[];floorList.push(f)}
+          floorGroups[f].push(a)
+        })
+        floorList.sort(function(x,y){if(x==='UNSPECIFIED')return 1;if(y==='UNSPECIFIED')return -1;return x<y?-1:1})
+        var devMapAll={};allDevices.forEach(function(d){devMapAll[d.id]=d})
+        return floorList.map(function(fl){
+          var fAreas=floorGroups[fl]
+          var fDevs=[]
+          fAreas.forEach(function(a){a.device_ids.forEach(function(id){if(devMapAll[id])fDevs.push(devMapAll[id])})})
+          var fPct=calcWeightedPct(fDevs)
+          var isC=locCollapsed[fl]
+          return (<div key={fl} className="mb-4">
+            <div className="flex items-center gap-3 px-4 py-2.5 bg-card2 rounded-xl border border-border cursor-pointer hover:bg-card2/80 mb-2" onClick={function(){var n=Object.assign({},locCollapsed);n[fl]=!isC;setLocCollapsed(n)}}>
+              <span className="text-dgray text-xs">{isC?'▸':'▾'}</span>
+              <span className="text-sm font-extrabold text-orange uppercase">{fl}</span>
+              <span className="text-[10px] text-dgray uppercase">{fAreas.length} AREA{fAreas.length===1?'':'S'} · {fDevs.length} DEVICES</span>
+              <span className="ml-auto flex items-center gap-2" onClick={function(e){e.stopPropagation()}}>
+                <div className="w-16 h-1.5 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(fPct>=100?'bg-green':fPct>=50?'bg-teal':fPct>0?'bg-orange':'bg-red/30')} style={{width:fPct+'%'}}/></div>
+                <span className="text-[10px] text-dgray w-8 text-right">{fPct}%</span>
+                <button onClick={function(){setNewArea({name:'',floor:fl==='UNSPECIFIED'?'':fl});setShowAddArea(true)}} title="NEW AREA ON THIS FLOOR" className="px-2 py-1 bg-teal/20 text-teal text-[9px] font-bold rounded uppercase hover:bg-teal/30">+ AREA</button>
+              </span>
+            </div>
+            {!isC&&fAreas.map(function(area){
         var isExp=expanded==='area-'+area.id
         var devMap={};allDevices.forEach(function(d){devMap[d.id]=d})
         var ad=area.device_ids.map(function(id){return devMap[id]}).filter(function(d){return !!d})
@@ -497,6 +536,7 @@ export default function CommDevices(props){
                 <button onClick={function(){moveArea(area.id,1)}} title="MOVE AREA DOWN" className="text-[10px] text-dgray hover:text-teal leading-none px-1">▼</button>
               </span>
               <input value={area.name} onClick={function(e){e.stopPropagation()}} onChange={function(e){renameArea(area.id,e.target.value)}} onBlur={function(){renameAreaBlur(area.id)}} style={{textTransform:'uppercase'}} className="bg-transparent text-sm font-bold text-white outline-none border-b border-transparent focus:border-teal w-56"/>
+              <span className="flex items-center gap-1" onClick={function(e){e.stopPropagation()}}><span className="text-[9px] text-dgray uppercase">FLOOR:</span><input value={area.floor||''} onChange={function(e){onUpdateAreas(areas.map(function(a){return a.id===area.id?Object.assign({},a,{floor:up(e.target.value)}):a}))}} placeholder={areaFloorOf(area)} style={{textTransform:'uppercase'}} className="bg-transparent text-[10px] text-orange font-bold outline-none border-b border-transparent focus:border-teal w-12"/></span>
               <span className="text-[10px] text-dgray uppercase">{ad.length} DEVICES</span><span className="text-[10px] text-dgray">|</span>
               <span className="text-[10px] text-green uppercase">{ai} INSTALLED</span><span className="text-[10px] text-dgray">|</span>
               <span className="text-[10px] text-green uppercase">{adone} DONE</span>
@@ -562,7 +602,10 @@ export default function CommDevices(props){
             </div>)}
           </div>)}
         </div>)
-      })}
+            })}
+          </div>)
+        })
+      })()}
       {areas.length===0&&!showAddArea&&(<div className="bg-card rounded-xl border border-border p-8 text-center"><div className="text-dgray text-sm uppercase">NO AREA GROUPS YET.</div><div className="text-[11px] text-dgray mt-1 uppercase">CREATE AREAS TO ORGANIZE DEVICES FOR CLIENT REPORTS.</div></div>)}
       {unassigned.length>0&&areas.length>0&&(<div className="bg-orange/5 rounded-xl border border-orange/30 p-4 mt-3">
         <div className="flex items-center justify-between">

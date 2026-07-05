@@ -199,6 +199,31 @@ export default function App() {
     return function() { window.removeEventListener('beforeunload', onBeforeUnload) }
   }, [])
 
+  // ─── Stale-build guard ──────────────────────────────────────
+  // One outdated client can overwrite fields newer builds manage.
+  // Compare our loaded bundle hash against the currently deployed one
+  // (poll + on window focus); mismatch = loud banner until refreshed.
+  var updState = useState(false)
+  var updateAvailable = updState[0]
+  var setUpdateAvailable = updState[1]
+
+  useEffect(function() {
+    function checkBuild() {
+      fetch('/?v=' + Date.now(), { cache: 'no-store' }).then(function(r) { return r.text() }).then(function(html) {
+        var m = html.match(/index-([A-Za-z0-9_-]+)\.js/)
+        if (!m) return // dev server — no hashed bundle
+        var cur = ''
+        var scripts = document.querySelectorAll('script[src*="index-"]')
+        if (scripts.length > 0) cur = scripts[0].src || ''
+        if (cur && cur.indexOf(m[1]) < 0) setUpdateAvailable(true)
+      }).catch(function() { /* offline — ignore */ })
+    }
+    var iv = setInterval(checkBuild, 5 * 60 * 1000)
+    window.addEventListener('focus', checkBuild)
+    checkBuild()
+    return function() { clearInterval(iv); window.removeEventListener('focus', checkBuild) }
+  }, [])
+
   // ─── Save conflict handling (another user saved first) ─────
   useEffect(function() {
     onSaveConflict(function() {
@@ -1603,6 +1628,14 @@ export default function App() {
     <div className="min-h-screen bg-navy text-white">
       <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} onExportProject={handleExportProject} onRestoreProject={handleRestoreProject} isDemo={isDemo} />
       {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
+
+      {/* Stale build: block-until-refresh banner */}
+      {updateAvailable && (
+        <div className="no-print fixed top-12 md:top-0 left-0 right-0 md:left-[220px] z-[95] bg-orange border-b border-orange px-4 py-2 flex items-center justify-between gap-3">
+          <div className="text-[11px] text-navy font-bold uppercase">A NEW VERSION OF MINIMATE IS LIVE — REFRESH NOW. WORKING ON AN OLD VERSION CAN OVERWRITE YOUR TEAM'S DATA.</div>
+          <button onClick={function() { window.location.reload() }} className="px-3 py-1 bg-navy text-orange text-[10px] font-bold rounded uppercase hover:bg-navy/80 transition shrink-0">REFRESH NOW</button>
+        </div>
+      )}
 
       {/* Multi-user save conflict banner */}
       {saveConflict && (
