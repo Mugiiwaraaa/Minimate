@@ -1677,7 +1677,7 @@ export default function App() {
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
-          <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} config={reportConfig} onConfig={setReportConfig} />} />
+          <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} config={reportConfig} onConfig={setReportConfig} />} />
         </Routes>
       </div>
     </div>

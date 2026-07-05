@@ -33,6 +33,15 @@ var SECTION_DEFS = [
 
 var stageWeights = { comm_cable: 25, control_cable: 25, continuity: 10, termination: 25, device_installed: 15, address_set: 0 }
 
+// Panel IO point stages (PanelDetail checklists) — reportable quantities
+var IO_STAGES = [
+  { k: 'cable_pulled', label: 'CABLE PULLED' },
+  { k: 'cable_continuity', label: 'CONTINUITY' },
+  { k: 'term_ddc_side', label: 'TERM DDC SIDE' },
+  { k: 'term_field_side', label: 'TERM FIELD SIDE' },
+  { k: 'functional_test', label: 'FUNCTIONAL TEST' }
+]
+
 function up(v) { return (v || '').toUpperCase() }
 
 function weightedPct(devs) {
@@ -60,6 +69,8 @@ export default function ReportsPage(props) {
   var areas = props.areas || []
   var blockers = props.blockers || []
   var gateways = props.gateways || []
+  var panels = props.panels || []
+  var equipmentMap = props.equipmentMap || {}
 
   var cfg = Object.assign({
     reportNo: '', periodFrom: '', periodTo: '', contractor: '', client: props.projectClient || '',
@@ -149,11 +160,41 @@ export default function ReportsPage(props) {
   }
   function addItem(kind) {
     setWorkItems(workItems.concat([{
-      id: wid(), label: kind === 'auto' ? 'NEW TRACKED ACTIVITY' : 'NEW MANUAL ACTIVITY',
-      unit: kind === 'auto' ? 'NOS' : 'METERS', teams: '', kind: kind,
-      deviceType: typeOrder[0] || 'DEVICE', stage: 'comm_cable',
-      design: kind === 'auto' ? null : 0, done: 0, remark: ''
+      id: wid(),
+      label: kind === 'auto' ? 'NEW TRACKED ACTIVITY' : (kind === 'io' ? 'POINT TERMINATION (NO OF PTS)' : 'NEW MANUAL ACTIVITY'),
+      unit: kind === 'manual' ? 'METERS' : 'NOS', teams: '', kind: kind,
+      deviceType: typeOrder[0] || 'DEVICE', stage: kind === 'io' ? 'term_ddc_side' : 'comm_cable',
+      design: kind === 'manual' ? 0 : null, done: 0, remark: ''
     }]))
+  }
+
+  // Panel IO points: design = active point qty across panels; done = qty
+  // where the point's stage checkbox is ticked; per-floor via panel.floor
+  function ioPoints(fn) {
+    panels.forEach(function(p) {
+      var f = up(p.floor || '') || 'UNSPECIFIED'
+      ;(equipmentMap[p.id] || []).forEach(function(eq) {
+        ;(eq.points || []).forEach(function(pt) {
+          if (pt.excluded) return
+          fn(pt, f)
+        })
+      })
+    })
+  }
+  function ioDesign() {
+    var n = 0
+    ioPoints(function(pt) { n += (Number(pt.qty) || 1) })
+    return n
+  }
+  function ioCountAll(stage) {
+    var n = 0
+    ioPoints(function(pt) { if (pt[stage]) n += (Number(pt.qty) || 1) })
+    return n
+  }
+  function ioCountFloor(stage, floor) {
+    var n = 0
+    ioPoints(function(pt, f) { if (f === floor && pt[stage]) n += (Number(pt.qty) || 1) })
+    return n
   }
 
   function autoCount(it, floor) {
@@ -173,10 +214,13 @@ export default function ReportsPage(props) {
   }
   function workRow(it) {
     var isAuto = it.kind === 'auto'
-    var design = (it.design === null || it.design === undefined || it.design === '') ? (isAuto ? autoDesign(it) : 0) : Number(it.design) || 0
-    var done = isAuto ? autoCountAll(it) : (Number(it.done) || 0)
-    var perFloor = isAuto ? floorOrder.map(function(f) { return autoCountFloor(it, f) }) : floorOrder.map(function() { return null })
-    return { design: design, done: done, balance: design - done, perFloor: perFloor }
+    var isIo = it.kind === 'io'
+    var liveDesign = isAuto ? autoDesign(it) : (isIo ? ioDesign() : 0)
+    var design = (it.design === null || it.design === undefined || it.design === '') ? liveDesign : Number(it.design) || 0
+    var done = isAuto ? autoCountAll(it) : (isIo ? ioCountAll(it.stage) : (Number(it.done) || 0))
+    var perFloor = isAuto ? floorOrder.map(function(f) { return autoCountFloor(it, f) })
+      : (isIo ? floorOrder.map(function(f) { return ioCountFloor(it.stage, f) }) : floorOrder.map(function() { return null }))
+    return { design: design, done: done, balance: design - done, perFloor: perFloor, liveDesign: liveDesign }
   }
   function autoCountAll(it) {
     var n = 0
@@ -458,7 +502,8 @@ export default function ReportsPage(props) {
               <button onClick={function() { setEditWork(!editWork) }} className={'px-3 py-1 rounded text-[9px] font-bold uppercase transition ' + (editWork ? 'bg-orange text-white' : 'bg-orange/20 text-orange hover:bg-orange/30')}>{editWork ? '✓ DONE EDITING' : '✎ CUSTOMIZE ACTIVITIES'}</button>
               {editWork && (
                 <span className="flex gap-2">
-                  <button onClick={function() { addItem('auto') }} className="px-2.5 py-1 bg-teal/20 text-teal rounded text-[9px] font-bold uppercase hover:bg-teal/30">+ TRACKED (AUTO QTY)</button>
+                  <button onClick={function() { addItem('auto') }} className="px-2.5 py-1 bg-teal/20 text-teal rounded text-[9px] font-bold uppercase hover:bg-teal/30">+ DEVICES (AUTO QTY)</button>
+                  <button onClick={function() { addItem('io') }} className="px-2.5 py-1 bg-cyan/20 text-cyan rounded text-[9px] font-bold uppercase hover:bg-cyan/30">+ IO POINTS (AUTO QTY)</button>
                   <button onClick={function() { addItem('manual') }} className="px-2.5 py-1 bg-purple/20 text-purple rounded text-[9px] font-bold uppercase hover:bg-purple/30">+ MANUAL (TYPED QTY)</button>
                   <button onClick={function() { if (window.confirm('RESET TO DEFAULT ACTIVITY LIST FROM CURRENT DEVICE TYPES?')) setWorkItems(defaultWorkItems()) }} className="px-2.5 py-1 bg-card2 text-dgray rounded text-[9px] font-bold uppercase hover:text-white">RESET</button>
                 </span>
@@ -484,13 +529,19 @@ export default function ReportsPage(props) {
                           <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
                         </div>
                       )}
+                      {editWork && it.kind === 'io' && (
+                        <div className="flex gap-1 mt-0.5 no-print">
+                          <span className="px-1 py-0.5 text-[8px] text-cyan uppercase font-bold">IO POINTS ×</span>
+                          <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-cyan uppercase outline-none">{IO_STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
+                        </div>
+                      )}
                     </td>
                     <td className={tdCls + ' text-dgray'}>{editWork ? <input value={it.unit} onChange={function(e) { updItem(it.id, { unit: up(e.target.value) }) }} className={inCls + ' w-16 text-[11px] text-dgray'} /> : it.unit}</td>
                     <td className={tdCls}><input value={it.teams || ''} onChange={function(e) { updItem(it.id, { teams: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td>
-                    <td className={tdCls + ' text-center'}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={isAuto ? String(autoDesign(it)) : '0'} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td>
+                    <td className={tdCls + ' text-center'}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={it.kind === 'manual' ? '0' : String(r.liveDesign)} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td>
                     {r.perFloor.map(function(n, fi) { return <td key={fi} className={tdCls + ' text-center text-dgray'}>{n === null ? '' : (n || '')}</td> })}
                     <td className={tdCls + ' text-center font-bold text-green'}>
-                      {isAuto ? r.done : <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} />}
+                      {it.kind === 'manual' ? <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} /> : r.done}
                     </td>
                     <td className={tdCls + ' text-center ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td>
                     <td className={tdCls}><input value={it.remark || ''} onChange={function(e) { updItem(it.id, { remark: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic'} /></td>
