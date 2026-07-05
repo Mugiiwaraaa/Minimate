@@ -1,7 +1,10 @@
-/* --- ReportsPage.jsx --- R1: KPI dashboard + configurable progress report ---
-   Live KPIs from loop/device rows; editable title block; toggleable sections
-   (formats change per client/site — config is saved with the project);
-   EXPORT PDF via print stylesheet, EXPORT EXCEL via SheetJS (window.XLSX). */
+/* --- ReportsPage.jsx --- R1 v2: KPI dashboard + configurable progress report ---
+   - Sections toggle on/off and AUTO-NUMBER themselves.
+   - WORK PROGRESS TABLE: engineer-defined activity lines (corporate format).
+     AUTO rows pull Workdone live from device stages; MANUAL rows (cable
+     meters, point termination…) are typed. Design = contract qty, editable.
+   - AREA-WISE PROGRESS: location groups collapsible under their floors.
+   - EXPORT PDF via print stylesheet; EXPORT EXCEL via SheetJS. */
 
 import { useState, useEffect } from 'react'
 import { fetchSnapshots, computeForecast, countStages } from '../lib/reportStore'
@@ -18,11 +21,11 @@ var STAGES = [
 var SECTION_DEFS = [
   { key: 'summary', label: 'EXECUTIVE SUMMARY' },
   { key: 'workTable', label: 'WORK PROGRESS TABLE' },
-  { key: 'pipeline', label: 'STAGE PIPELINE' },
-  { key: 'floors', label: 'FLOOR-WISE' },
-  { key: 'gateways', label: 'GATEWAY/RTR' },
+  { key: 'pipeline', label: 'COMMISSIONING PIPELINE' },
+  { key: 'areas', label: 'AREA-WISE PROGRESS' },
+  { key: 'gateways', label: 'GATEWAY / RTR SUMMARY' },
   { key: 'loopsReg', label: 'LOOP REGISTER' },
-  { key: 'blockers', label: 'BLOCKERS' },
+  { key: 'blockers', label: 'BLOCKERS / SITE CONSTRAINTS' },
   { key: 'wir', label: 'INSPECTION-READY' },
   { key: 'trend', label: 'TREND & FORECAST' },
   { key: 'notes', label: 'NOTES' }
@@ -47,16 +50,20 @@ function fmtDate(d) {
   return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()
 }
 
+var wiCounter = 0
+function wid() { wiCounter++; return 'wi-' + Date.now() + '-' + wiCounter }
+
 export default function ReportsPage(props) {
-  // props: projectId, projectName, projectClient, loops, blockers, gateways,
-  //        config, onConfig(newConfig)
+  // props: projectId, projectName, projectClient, loops, areas, blockers,
+  //        gateways, config, onConfig(newConfig)
   var loops = props.loops || []
+  var areas = props.areas || []
   var blockers = props.blockers || []
   var gateways = props.gateways || []
 
   var cfg = Object.assign({
     reportNo: '', periodFrom: '', periodTo: '', contractor: '', client: props.projectClient || '',
-    preparedBy: '', notes: '', sections: {}
+    preparedBy: '', notes: '', sections: {}, workItems: null
   }, props.config || {})
   var sections = Object.assign({}, cfg.sections)
   function sectionOn(key) { return sections[key] !== false } // default ON
@@ -64,6 +71,12 @@ export default function ReportsPage(props) {
   var snapsState = useState([])
   var snapshots = snapsState[0]
   var setSnapshots = snapsState[1]
+  var editWorkState = useState(false)
+  var editWork = editWorkState[0]
+  var setEditWork = editWorkState[1]
+  var collapsedState = useState({})
+  var collapsed = collapsedState[0]
+  var setCollapsed = collapsedState[1]
 
   useEffect(function() {
     if (!props.projectId) return
@@ -90,24 +103,141 @@ export default function ReportsPage(props) {
   var counts = countStages(loops)
   var overallPct = weightedPct(allDevices)
 
-  // Floors
-  var floorMap = {}
+  function devFloor(d, l) { return up(d.floor || (l ? l.floor : '') || '') || 'UNSPECIFIED' }
+
   var floorOrder = []
+  var floorSeen = {}
   loops.forEach(function(l) {
     ;(l.devices || []).forEach(function(d) {
-      var f = up(d.floor || l.floor || '') || 'UNSPECIFIED'
-      if (!floorMap[f]) { floorMap[f] = []; floorOrder.push(f) }
-      floorMap[f].push(d)
+      var f = devFloor(d, l)
+      if (!floorSeen[f]) { floorSeen[f] = true; floorOrder.push(f) }
     })
   })
   floorOrder.sort()
 
-  // Gateways
-  function loopsOf(gName) {
-    return loops.filter(function(l) { return up(l.gateway) === up(gName) && up(gName) !== '' })
+  var typeOrder = []
+  var typeSeen = {}
+  allDevices.forEach(function(d) {
+    var t = up(d.device_type || 'DEVICE')
+    if (!typeSeen[t]) { typeSeen[t] = true; typeOrder.push(t) }
+  })
+
+  // ─── WORK ITEMS (engineer-defined activity lines) ─────────
+  function defaultWorkItems() {
+    var items = []
+    typeOrder.forEach(function(t) {
+      STAGES.forEach(function(s) {
+        items.push({ id: wid(), label: t + ' — ' + s.label, unit: 'NOS', teams: '', kind: 'auto', deviceType: t, stage: s.k, design: null, done: 0, remark: '' })
+      })
+    })
+    return items
+  }
+  var workItems = (cfg.workItems && cfg.workItems.length > 0) ? cfg.workItems : defaultWorkItems()
+
+  function setWorkItems(list) { props.onConfig(Object.assign({}, cfg, { workItems: list })) }
+  function updItem(id, patch) {
+    setWorkItems(workItems.map(function(w) { return w.id === id ? Object.assign({}, w, patch) : w }))
+  }
+  function delItem(id) { setWorkItems(workItems.filter(function(w) { return w.id !== id })) }
+  function moveItem(id, dir) {
+    var idx = workItems.findIndex(function(w) { return w.id === id })
+    var to = idx + dir
+    if (idx < 0 || to < 0 || to >= workItems.length) return
+    var next = workItems.slice()
+    var t = next[idx]; next[idx] = next[to]; next[to] = t
+    setWorkItems(next)
+  }
+  function addItem(kind) {
+    setWorkItems(workItems.concat([{
+      id: wid(), label: kind === 'auto' ? 'NEW TRACKED ACTIVITY' : 'NEW MANUAL ACTIVITY',
+      unit: kind === 'auto' ? 'NOS' : 'METERS', teams: '', kind: kind,
+      deviceType: typeOrder[0] || 'DEVICE', stage: 'comm_cable',
+      design: kind === 'auto' ? null : 0, done: 0, remark: ''
+    }]))
   }
 
-  // Loop register rows
+  function autoCount(it, floor) {
+    var n = 0
+    loops.forEach(function(l) {
+      ;(l.devices || []).forEach(function(d) {
+        if (up(d.device_type || 'DEVICE') !== up(it.deviceType)) return
+        if (floor && devFloor(d, l) !== floor) return
+        if (floor === null || !floor) { if (!floor && floor !== null) return }
+        if (d[it.stage]) n++
+      })
+    })
+    return n
+  }
+  function autoDesign(it) {
+    return allDevices.filter(function(d) { return up(d.device_type || 'DEVICE') === up(it.deviceType) }).length
+  }
+  function workRow(it) {
+    var isAuto = it.kind === 'auto'
+    var design = (it.design === null || it.design === undefined || it.design === '') ? (isAuto ? autoDesign(it) : 0) : Number(it.design) || 0
+    var done = isAuto ? autoCountAll(it) : (Number(it.done) || 0)
+    var perFloor = isAuto ? floorOrder.map(function(f) { return autoCountFloor(it, f) }) : floorOrder.map(function() { return null })
+    return { design: design, done: done, balance: design - done, perFloor: perFloor }
+  }
+  function autoCountAll(it) {
+    var n = 0
+    allDevicesWithLoop(function(d, l) {
+      if (up(d.device_type || 'DEVICE') === up(it.deviceType) && d[it.stage]) n++
+    })
+    return n
+  }
+  function autoCountFloor(it, f) {
+    var n = 0
+    allDevicesWithLoop(function(d, l) {
+      if (up(d.device_type || 'DEVICE') === up(it.deviceType) && d[it.stage] && devFloor(d, l) === f) n++
+    })
+    return n
+  }
+  function allDevicesWithLoop(fn) {
+    loops.forEach(function(l) { (l.devices || []).forEach(function(d) { fn(d, l) }) })
+  }
+
+  // ─── AREA-WISE (location groups under floors) ──────────────
+  var devInfo = {} // devId -> {dev, loop}
+  loops.forEach(function(l) { (l.devices || []).forEach(function(d) { devInfo[d.id] = { dev: d, loop: l } }) })
+  var grouped = {} // floor -> [{name, devs}]
+  var groupedIds = {}
+  areas.forEach(function(a) {
+    var byFloor = {}
+    ;(a.device_ids || []).forEach(function(did) {
+      var info = devInfo[did]
+      if (!info) return
+      groupedIds[did] = true
+      var f = devFloor(info.dev, info.loop)
+      if (!byFloor[f]) byFloor[f] = []
+      byFloor[f].push(info.dev)
+    })
+    Object.keys(byFloor).forEach(function(f) {
+      if (!grouped[f]) grouped[f] = []
+      grouped[f].push({ name: up(a.name || 'AREA'), devs: byFloor[f] })
+    })
+  })
+  floorOrder.forEach(function(f) {
+    var ungrouped = []
+    allDevicesWithLoop(function(d, l) {
+      if (!groupedIds[d.id] && devFloor(d, l) === f) ungrouped.push(d)
+    })
+    if (ungrouped.length > 0) {
+      if (!grouped[f]) grouped[f] = []
+      grouped[f].push({ name: 'UNGROUPED', devs: ungrouped })
+    }
+  })
+  function floorDevs(f) {
+    var out = []
+    allDevicesWithLoop(function(d, l) { if (devFloor(d, l) === f) out.push(d) })
+    return out
+  }
+  function toggleCollapse(key) {
+    var next = Object.assign({}, collapsed)
+    next[key] = !next[key]
+    setCollapsed(next)
+  }
+
+  // ─── Registers ─────────────────────────────────────────────
   var loopRows = loops.map(function(l) {
     var devs = l.devices || []
     var inst = devs.filter(function(d) { return d.device_installed }).length
@@ -116,45 +246,10 @@ export default function ReportsPage(props) {
       (inst === devs.length ? 'INSTALLED' : (term === devs.length ? 'WIR READY' : 'IN PROGRESS'))
     return { loop: l, inst: inst, term: term, pct: weightedPct(devs), status: status }
   })
-
-  // Company-format work items: device type × stage, quantities per floor
-  // (mirrors the "Installation" sheet of the corporate Work Progress Report)
-  var typeMap = {}
-  var typeOrder = []
-  loops.forEach(function(l) {
-    ;(l.devices || []).forEach(function(d) {
-      var t = up(d.device_type || 'DEVICE')
-      if (!typeMap[t]) { typeMap[t] = []; typeOrder.push(t) }
-      typeMap[t].push(d)
-    })
-  })
-  var workRows = []
-  typeOrder.forEach(function(t) {
-    var devs = typeMap[t]
-    STAGES.forEach(function(s) {
-      var perFloor = floorOrder.map(function(f) {
-        return devs.filter(function(d) {
-          var df = up(d.floor || '') || 'UNSPECIFIED'
-          return df === f && d[s.k]
-        }).length
-      })
-      var done = devs.filter(function(d) { return d[s.k] }).length
-      workRows.push({
-        item: t + ' — ' + s.label,
-        unit: 'NOS',
-        design: devs.length,
-        perFloor: perFloor,
-        done: done,
-        balance: devs.length - done
-      })
-    })
-  })
-
   var wirReady = loopRows.filter(function(r) { return r.status === 'WIR READY' })
   var openBlockers = blockers.filter(function(b) { return b.status !== 'resolved' })
   var forecast = computeForecast(snapshots, counts.inst, counts.total)
 
-  // Period movement (vs snapshot nearest the period start)
   var movement = null
   if (cfg.periodFrom && snapshots.length > 0) {
     var fromT = new Date(cfg.periodFrom).getTime()
@@ -169,6 +264,18 @@ export default function ReportsPage(props) {
   function ageDays(iso) {
     if (!iso) return '-'
     return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)) + 'D'
+  }
+
+  function loopsOf(gName) {
+    return loops.filter(function(l) { return up(l.gateway) === up(gName) && up(gName) !== '' })
+  }
+
+  // ─── Auto numbering ────────────────────────────────────────
+  var enabledKeys = SECTION_DEFS.filter(function(s) { return sectionOn(s.key) }).map(function(s) { return s.key })
+  function secTitle(key) {
+    var def = SECTION_DEFS.find(function(s) { return s.key === key })
+    var no = enabledKeys.indexOf(key) + 1
+    return <div className="text-[11px] font-extrabold text-teal uppercase tracking-widest mt-6 mb-2 border-b border-border pb-1">{no}. {def.label}</div>
   }
 
   // ─── Excel export ─────────────────────────────────────────
@@ -199,29 +306,39 @@ export default function ReportsPage(props) {
     })
     X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(summary), 'SUMMARY')
 
-    // Company-format Work Progress sheet (mirrors the corporate template)
+    // Company-format Work Progress sheet (engineer-defined activities)
     var work = [
       ['WORK PROGRESS REPORT'],
       ['MEP CONTRACTOR: ' + up(cfg.contractor)],
       ['SUPERINTENDENT: ' + up(cfg.preparedBy)],
       ['PROJECT NAME: ' + up(props.projectName)],
       [],
-      ['S/N', 'WORK ITEM', 'UNIT', 'DESIGN'].concat(floorOrder).concat(['WORKDONE', 'BALANCE', 'REMARK'])
+      ['S/N', 'DEVICES / ACTIVITY', 'UNIT', 'TEAMS', 'DESIGN'].concat(floorOrder).concat(['QTY (WORKDONE)', 'BALANCE', 'REMARK'])
     ]
-    workRows.forEach(function(r, i) {
-      work.push([i + 1, r.item, r.unit, r.design].concat(r.perFloor).concat([r.done, r.balance, '']))
+    workItems.forEach(function(it, i) {
+      var r = workRow(it)
+      work.push([i + 1, up(it.label), up(it.unit), up(it.teams || ''), r.design]
+        .concat(r.perFloor.map(function(n) { return n === null ? '' : n }))
+        .concat([r.done, r.balance, up(it.remark || '')]))
     })
     X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(work), 'WORK PROGRESS')
 
-    var floors = [['FLOOR', 'DEVICES', 'COMM', 'CTRL', 'CONT', 'TERM', 'INST', 'ADDR', 'WEIGHTED %']]
+    // Area-wise sheet: floor rows + indented area rows
+    var areasSheet = [['FLOOR / AREA', 'DEVICES'].concat(STAGES.map(function(s) { return s.label })).concat(['WEIGHTED %'])]
     floorOrder.forEach(function(f) {
-      var devs = floorMap[f]
-      var row = [f, devs.length]
-      STAGES.forEach(function(s) { row.push(devs.filter(function(d) { return d[s.k] }).length) })
-      row.push(weightedPct(devs) + '%')
-      floors.push(row)
+      var fd = floorDevs(f)
+      var frow = [f, fd.length]
+      STAGES.forEach(function(s) { frow.push(fd.filter(function(d) { return d[s.k] }).length) })
+      frow.push(weightedPct(fd) + '%')
+      areasSheet.push(frow)
+      ;(grouped[f] || []).forEach(function(g) {
+        var grow = ['    ' + g.name, g.devs.length]
+        STAGES.forEach(function(s) { grow.push(g.devs.filter(function(d) { return d[s.k] }).length) })
+        grow.push(weightedPct(g.devs) + '%')
+        areasSheet.push(grow)
+      })
     })
-    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(floors), 'FLOORS')
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(areasSheet), 'AREAS')
 
     var loopSheet = [['FLOOR', 'LOOP', 'GATEWAY', 'DDC REF', 'PROTOCOL', 'DEVICES', 'TERMINATED', 'INSTALLED', 'STATUS', '%']]
     loopRows.forEach(function(r) {
@@ -257,12 +374,9 @@ export default function ReportsPage(props) {
     )
   }
 
-  function sectionTitle(no, text) {
-    return <div className="text-[11px] font-extrabold text-teal uppercase tracking-widest mt-6 mb-2 border-b border-border pb-1">{no}. {text}</div>
-  }
-
   var thCls = 'text-[9px] text-dgray text-left px-2 py-1.5 uppercase'
   var tdCls = 'text-[11px] px-2 py-1.5 uppercase'
+  var inCls = 'bg-transparent border-b border-transparent focus:border-teal outline-none uppercase'
 
   return (
     <div>
@@ -277,7 +391,7 @@ export default function ReportsPage(props) {
         </div>
 
         <div className="bg-card rounded-xl border border-border p-4 mb-4">
-          <div className="text-[10px] text-dgray uppercase font-semibold mb-2">REPORT HEADER — SAVED WITH THE PROJECT (FORMATS DIFFER PER CLIENT: FILL WHAT THIS ONE NEEDS)</div>
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-2">REPORT HEADER — SAVED WITH THE PROJECT</div>
           <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3">
             <div><label className="text-[9px] text-dgray block mb-0.5">REPORT NO</label><input value={cfg.reportNo} onChange={function(e) { setCfg('reportNo', up(e.target.value)) }} placeholder="WPR-012" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
             <div><label className="text-[9px] text-dgray block mb-0.5">PERIOD FROM</label><input type="date" value={cfg.periodFrom} onChange={function(e) { setCfg('periodFrom', e.target.value) }} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal" /></div>
@@ -286,11 +400,11 @@ export default function ReportsPage(props) {
             <div><label className="text-[9px] text-dgray block mb-0.5">CLIENT/CONSULTANT</label><input value={cfg.client} onChange={function(e) { setCfg('client', up(e.target.value)) }} placeholder="CLIENT" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
             <div><label className="text-[9px] text-dgray block mb-0.5">PREPARED BY</label><input value={cfg.preparedBy} onChange={function(e) { setCfg('preparedBy', up(e.target.value)) }} placeholder="NAME" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
           </div>
-          <div className="text-[10px] text-dgray uppercase font-semibold mb-1.5">SECTIONS IN THIS REPORT</div>
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-1.5">SECTIONS IN THIS REPORT (AUTO-NUMBERED)</div>
           <div className="flex flex-wrap gap-1.5">
             {SECTION_DEFS.map(function(s) {
               var on = sectionOn(s.key)
-              return <button key={s.key} onClick={function() { toggleSection(s.key) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase transition ' + (on ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white line-through')}>{s.label}</button>
+              return <button key={s.key} onClick={function() { toggleSection(s.key) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase transition ' + (on ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white line-through')}>{on ? (enabledKeys.indexOf(s.key) + 1) + '. ' : ''}{s.label}</button>
             })}
           </div>
         </div>
@@ -298,7 +412,6 @@ export default function ReportsPage(props) {
 
       {/* ─── Report body (screen + print) ─── */}
       <div id="report-body" className="bg-card rounded-xl border border-border p-5 md:p-8">
-        {/* Title block */}
         <div className="border-b-2 border-teal pb-4 mb-2">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
@@ -321,7 +434,7 @@ export default function ReportsPage(props) {
 
         {sectionOn('summary') && (
           <div>
-            {sectionTitle(1, 'EXECUTIVE SUMMARY')}
+            {secTitle('summary')}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
               <div className="bg-card2 rounded-lg p-3"><div className="text-[9px] text-dgray uppercase">OVERALL PROGRESS</div><div className="text-2xl font-extrabold text-teal">{overallPct}%</div></div>
               <div className="bg-card2 rounded-lg p-3"><div className="text-[9px] text-dgray uppercase">DEVICES</div><div className="text-2xl font-extrabold text-cyan">{counts.total}</div></div>
@@ -338,35 +451,65 @@ export default function ReportsPage(props) {
           </div>
         )}
 
-        {sectionOn('workTable') && workRows.length > 0 && (
+        {sectionOn('workTable') && (
           <div>
-            {sectionTitle('1A', 'WORK PROGRESS TABLE')}
+            {secTitle('workTable')}
+            <div className="no-print flex items-center gap-3 mb-2">
+              <button onClick={function() { setEditWork(!editWork) }} className={'px-3 py-1 rounded text-[9px] font-bold uppercase transition ' + (editWork ? 'bg-orange text-white' : 'bg-orange/20 text-orange hover:bg-orange/30')}>{editWork ? '✓ DONE EDITING' : '✎ CUSTOMIZE ACTIVITIES'}</button>
+              {editWork && (
+                <span className="flex gap-2">
+                  <button onClick={function() { addItem('auto') }} className="px-2.5 py-1 bg-teal/20 text-teal rounded text-[9px] font-bold uppercase hover:bg-teal/30">+ TRACKED (AUTO QTY)</button>
+                  <button onClick={function() { addItem('manual') }} className="px-2.5 py-1 bg-purple/20 text-purple rounded text-[9px] font-bold uppercase hover:bg-purple/30">+ MANUAL (TYPED QTY)</button>
+                  <button onClick={function() { if (window.confirm('RESET TO DEFAULT ACTIVITY LIST FROM CURRENT DEVICE TYPES?')) setWorkItems(defaultWorkItems()) }} className="px-2.5 py-1 bg-card2 text-dgray rounded text-[9px] font-bold uppercase hover:text-white">RESET</button>
+                </span>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full"><thead><tr className="border-b border-border">
-                <th className={thCls}>S/N</th><th className={thCls}>WORK ITEM</th><th className={thCls}>UNIT</th><th className={thCls + ' text-center'}>DESIGN</th>
+                <th className={thCls}>S/N</th><th className={thCls}>DEVICES / ACTIVITY</th><th className={thCls}>UNIT</th><th className={thCls}>TEAMS</th><th className={thCls + ' text-center'}>DESIGN</th>
                 {floorOrder.map(function(f) { return <th key={f} className={thCls + ' text-center'}>{f}</th> })}
-                <th className={thCls + ' text-center'}>WORKDONE</th><th className={thCls + ' text-center'}>BALANCE</th>
+                <th className={thCls + ' text-center'}>WORKDONE</th><th className={thCls + ' text-center'}>BALANCE</th><th className={thCls}>REMARK</th>
+                {editWork && <th className={thCls + ' no-print'}></th>}
               </tr></thead><tbody>
-                {workRows.map(function(r, i) {
-                  return (<tr key={i} className="border-b border-border/30">
+                {workItems.map(function(it, i) {
+                  var r = workRow(it)
+                  var isAuto = it.kind === 'auto'
+                  return (<tr key={it.id} className="border-b border-border/30">
                     <td className={tdCls + ' text-dgray'}>{i + 1}</td>
-                    <td className={tdCls}>{r.item}</td>
-                    <td className={tdCls + ' text-dgray'}>{r.unit}</td>
-                    <td className={tdCls + ' text-center'}>{r.design}</td>
-                    {r.perFloor.map(function(n, fi) { return <td key={fi} className={tdCls + ' text-center'}>{n || ''}</td> })}
-                    <td className={tdCls + ' text-center font-bold text-green'}>{r.done}</td>
+                    <td className={tdCls}>
+                      {editWork ? <input value={it.label} onChange={function(e) { updItem(it.id, { label: up(e.target.value) }) }} className={inCls + ' w-full text-[11px] text-white'} /> : it.label}
+                      {editWork && isAuto && (
+                        <div className="flex gap-1 mt-0.5 no-print">
+                          <select value={it.deviceType} onChange={function(e) { updItem(it.id, { deviceType: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{typeOrder.map(function(t) { return <option key={t} value={t}>{t}</option> })}</select>
+                          <select value={it.stage} onChange={function(e) { updItem(it.id, { stage: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[8px] text-teal uppercase outline-none">{STAGES.map(function(s) { return <option key={s.k} value={s.k}>{s.label}</option> })}</select>
+                        </div>
+                      )}
+                    </td>
+                    <td className={tdCls + ' text-dgray'}>{editWork ? <input value={it.unit} onChange={function(e) { updItem(it.id, { unit: up(e.target.value) }) }} className={inCls + ' w-16 text-[11px] text-dgray'} /> : it.unit}</td>
+                    <td className={tdCls}><input value={it.teams || ''} onChange={function(e) { updItem(it.id, { teams: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td>
+                    <td className={tdCls + ' text-center'}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={isAuto ? String(autoDesign(it)) : '0'} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td>
+                    {r.perFloor.map(function(n, fi) { return <td key={fi} className={tdCls + ' text-center text-dgray'}>{n === null ? '' : (n || '')}</td> })}
+                    <td className={tdCls + ' text-center font-bold text-green'}>
+                      {isAuto ? r.done : <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} />}
+                    </td>
                     <td className={tdCls + ' text-center ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td>
+                    <td className={tdCls}><input value={it.remark || ''} onChange={function(e) { updItem(it.id, { remark: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic'} /></td>
+                    {editWork && (<td className={tdCls + ' no-print whitespace-nowrap'}>
+                      <button onClick={function() { moveItem(it.id, -1) }} className="text-dgray hover:text-teal px-0.5">▲</button>
+                      <button onClick={function() { moveItem(it.id, 1) }} className="text-dgray hover:text-teal px-0.5">▼</button>
+                      <button onClick={function() { delItem(it.id) }} className="text-dgray hover:text-red px-0.5">✕</button>
+                    </td>)}
                   </tr>)
                 })}
               </tbody></table>
             </div>
-            <div className="text-[9px] text-dgray uppercase mt-1">QUANTITIES GENERATED LIVE FROM DEVICE STAGES. CABLE-METER AND PANEL-MOUNTING LINES ARRIVE WITH THE MATERIALS ENGINE (R5).</div>
+            <div className="text-[9px] text-dgray uppercase mt-1 no-print">TRACKED ROWS PULL WORKDONE LIVE FROM DEVICE STAGES · MANUAL ROWS (CABLES, POINTS…) ARE TYPED · DESIGN = CONTRACT QTY (BLANK = LIVE DEVICE COUNT)</div>
           </div>
         )}
 
         {sectionOn('pipeline') && (
           <div>
-            {sectionTitle(2, 'COMMISSIONING PIPELINE')}
+            {secTitle('pipeline')}
             <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
               {STAGES.map(function(s) {
                 var done = counts[s.c]
@@ -383,30 +526,49 @@ export default function ReportsPage(props) {
           </div>
         )}
 
-        {sectionOn('floors') && floorOrder.length > 0 && (
+        {sectionOn('areas') && floorOrder.length > 0 && (
           <div>
-            {sectionTitle(3, 'FLOOR-WISE PROGRESS')}
+            {secTitle('areas')}
             <table className="w-full"><thead><tr className="border-b border-border">
-              <th className={thCls}>FLOOR</th><th className={thCls}>DEVICES</th>
+              <th className={thCls}>FLOOR / AREA</th><th className={thCls + ' text-center'}>DEVICES</th>
               {STAGES.map(function(s) { return <th key={s.k} className={thCls + ' text-center'}>{s.label}</th> })}
               <th className={thCls + ' text-right'}>WEIGHTED %</th>
             </tr></thead><tbody>
               {floorOrder.map(function(f) {
-                var devs = floorMap[f]
-                return (<tr key={f} className="border-b border-border/30">
-                  <td className={tdCls + ' font-bold text-orange'}>{f}</td>
-                  <td className={tdCls}>{devs.length}</td>
-                  {STAGES.map(function(s) { return <td key={s.k} className={tdCls + ' text-center'}>{devs.filter(function(d) { return d[s.k] }).length}</td> })}
-                  <td className={tdCls + ' text-right font-bold'}>{weightedPct(devs)}%</td>
-                </tr>)
+                var fd = floorDevs(f)
+                var isCollapsed = collapsed['f:' + f]
+                var groups = grouped[f] || []
+                var rows = []
+                rows.push(
+                  <tr key={'f-' + f} className="border-b border-border/50 bg-card2/50 cursor-pointer hover:bg-card2" onClick={function() { toggleCollapse('f:' + f) }}>
+                    <td className={tdCls + ' font-bold text-orange'}><span className="no-print text-dgray mr-1">{isCollapsed ? '▸' : '▾'}</span>{f}</td>
+                    <td className={tdCls + ' text-center font-bold'}>{fd.length}</td>
+                    {STAGES.map(function(s) { return <td key={s.k} className={tdCls + ' text-center font-bold'}>{fd.filter(function(d) { return d[s.k] }).length}</td> })}
+                    <td className={tdCls + ' text-right font-bold'}>{weightedPct(fd)}%</td>
+                  </tr>
+                )
+                if (!isCollapsed) {
+                  groups.forEach(function(g, gi) {
+                    rows.push(
+                      <tr key={'g-' + f + '-' + gi} className="border-b border-border/20">
+                        <td className={tdCls + ' pl-7 text-lgray'}>{g.name}</td>
+                        <td className={tdCls + ' text-center text-dgray'}>{g.devs.length}</td>
+                        {STAGES.map(function(s) { return <td key={s.k} className={tdCls + ' text-center text-dgray'}>{g.devs.filter(function(d) { return d[s.k] }).length}</td> })}
+                        <td className={tdCls + ' text-right'}>{weightedPct(g.devs)}%</td>
+                      </tr>
+                    )
+                  })
+                }
+                return rows
               })}
             </tbody></table>
+            <div className="text-[9px] text-dgray uppercase mt-1 no-print">AREAS COME FROM LOCATION VIEW GROUPS + TRACE STUDIO ZONES · CLICK A FLOOR ROW TO COLLAPSE · COLLAPSED FLOORS PRINT COLLAPSED</div>
           </div>
         )}
 
         {sectionOn('gateways') && gateways.length > 0 && (
           <div>
-            {sectionTitle(4, 'GATEWAY / RTR SUMMARY')}
+            {secTitle('gateways')}
             <table className="w-full"><thead><tr className="border-b border-border">
               <th className={thCls}>GATEWAY/RTR</th><th className={thCls}>TYPE</th><th className={thCls}>DDC REF</th><th className={thCls}>IP</th><th className={thCls}>BACNET ID</th><th className={thCls + ' text-center'}>LOOPS</th><th className={thCls + ' text-center'}>DEVICES</th><th className={thCls + ' text-right'}>%</th>
             </tr></thead><tbody>
@@ -431,7 +593,7 @@ export default function ReportsPage(props) {
 
         {sectionOn('loopsReg') && (
           <div>
-            {sectionTitle(5, 'LOOP REGISTER')}
+            {secTitle('loopsReg')}
             <table className="w-full"><thead><tr className="border-b border-border">
               <th className={thCls}>FLOOR</th><th className={thCls}>LOOP</th><th className={thCls}>GATEWAY</th><th className={thCls}>DDC</th><th className={thCls + ' text-center'}>DEV</th><th className={thCls + ' text-center'}>TERM</th><th className={thCls + ' text-center'}>INST</th><th className={thCls}>STATUS</th><th className={thCls + ' text-right'}>%</th>
             </tr></thead><tbody>
@@ -454,7 +616,7 @@ export default function ReportsPage(props) {
 
         {sectionOn('blockers') && (
           <div>
-            {sectionTitle(6, 'BLOCKERS / SITE CONSTRAINTS')}
+            {secTitle('blockers')}
             {openBlockers.length === 0 ? (
               <div className="text-[11px] text-green uppercase font-bold">NO OPEN BLOCKERS.</div>
             ) : (
@@ -478,7 +640,7 @@ export default function ReportsPage(props) {
 
         {sectionOn('wir') && (
           <div>
-            {sectionTitle(7, 'INSPECTION-READY (TERMINATION COMPLETE)')}
+            {secTitle('wir')}
             {wirReady.length === 0 ? (
               <div className="text-[11px] text-dgray uppercase">NO LOOPS CURRENTLY AWAITING INSPECTION.</div>
             ) : (
@@ -493,7 +655,7 @@ export default function ReportsPage(props) {
 
         {sectionOn('trend') && (
           <div>
-            {sectionTitle(8, 'TREND & FORECAST')}
+            {secTitle('trend')}
             {snapshots.length < 2 ? (
               <div className="text-[11px] text-dgray uppercase">COLLECTING DAILY PROGRESS DATA — TREND APPEARS AFTER A FEW DAYS OF USE.</div>
             ) : (
@@ -519,8 +681,8 @@ export default function ReportsPage(props) {
 
         {sectionOn('notes') && (
           <div>
-            {sectionTitle(9, 'NOTES')}
-            <textarea value={cfg.notes} onChange={function(e) { setCfg('notes', up(e.target.value)) }} rows="3" placeholder="SITE NOTES, CONSTRAINTS, NEXT WEEK LOOK-AHEAD..." className="w-full bg-navy border border-border rounded px-3 py-2 text-[11px] text-white uppercase outline-none focus:border-teal no-print-border" />
+            {secTitle('notes')}
+            <textarea value={cfg.notes} onChange={function(e) { setCfg('notes', up(e.target.value)) }} rows="3" placeholder="SITE NOTES, CONSTRAINTS, NEXT WEEK LOOK-AHEAD..." className="w-full bg-navy border border-border rounded px-3 py-2 text-[11px] text-white uppercase outline-none focus:border-teal" />
           </div>
         )}
 
