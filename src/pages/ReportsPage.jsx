@@ -62,6 +62,7 @@ var WORK_COLS = [
   { key: 'floors', label: 'PER-FLOOR' },
   { key: 'workdone', label: 'WORKDONE' },
   { key: 'balance', label: 'BALANCE' },
+  { key: 'progress', label: 'PROGRESS %' },
   { key: 'remark', label: 'REMARK' }
 ]
 var DDC_COLS = [
@@ -79,7 +80,7 @@ var DDC_COLS = [
   { key: 'remarks', label: 'REMARKS' }
 ]
 // Default column order (SR / S-N fixed leftmost; custom col ids appended)
-var WORK_ORDER = ['label', 'unit', 'teams', 'design', 'floors', 'workdone', 'balance', 'remark']
+var WORK_ORDER = ['label', 'unit', 'teams', 'design', 'floors', 'workdone', 'balance', 'progress', 'remark']
 var DDC_ORDER = ['level', 'zone', 'part', 'panelName', 'location', 'canopy', 'ddcInstall', 'cablePulling', 'panelTerm', 'functionalTest', 'inspections', 'remarks']
 
 var CANOPY_OPTS = ['N/A', 'REQUIRED', 'DONE']
@@ -159,6 +160,7 @@ export default function ReportsPage(props) {
   var rowDragState = useState(null)
   var rowDrag = rowDragState[0]
   var setRowDrag = rowDragState[1]
+  var ddcMode = cfg.ddcView === 'install' ? 'install' : 'commission'
 
   useEffect(function() {
     if (!props.projectId) return
@@ -229,6 +231,16 @@ export default function ReportsPage(props) {
   // ── Column order + drag-reorder ───────────────────────────
   function baseKeys(tbl) { return tbl === 'work' ? WORK_ORDER : DDC_ORDER }
   function customById(tbl, k) { var l = customCols(tbl); for (var i = 0; i < l.length; i++) { if (l[i].id === k) return l[i] } return null }
+  function pctColor(p) { return p >= 100 ? 'text-green' : (p >= 67 ? 'text-teal' : (p >= 34 ? 'text-orange' : 'text-red')) }
+  function customField(cc, cur, onVal) {
+    var ty = cc.type || 'text'
+    if (ty === 'checkbox') {
+      var on = cur === true || cur === 'true' || cur === 1 || cur === '1'
+      return <button onClick={function() { onVal(!on) }} className={'w-5 h-5 rounded border text-[10px] font-bold transition ' + (on ? 'bg-green border-green text-white rpt-fill' : 'border-border text-dgray hover:border-teal')}>{on ? '✓' : ''}</button>
+    }
+    if (ty === 'number') return <input value={cur === undefined || cur === null ? '' : cur} onChange={function(e) { onVal(e.target.value.replace(/[^0-9.\-]/g, '')) }} placeholder="0" className={inCls + ' w-16 text-[11px] text-white text-center'} />
+    return <input value={cur || ''} onChange={function(e) { onVal(up(e.target.value)) }} placeholder="" className={inCls + ' w-full text-[10px] text-lgray'} />
+  }
   function orderedKeys(tbl) {
     var base = baseKeys(tbl).concat(customCols(tbl).map(function(c) { return c.id }))
     var saved = colCfg(tbl).order
@@ -326,7 +338,7 @@ export default function ReportsPage(props) {
   }
 
   // ── Data-driven header + body cell renderers ──────────────
-  function workHeadMeta(k) { return { label: { l: 'DEVICES / ACTIVITY' }, unit: { l: 'UNIT' }, teams: { l: 'TEAMS' }, design: { l: 'DESIGN', x: ' text-center' }, workdone: { l: 'WORKDONE', x: ' text-center' }, balance: { l: 'BALANCE', x: ' text-center' }, remark: { l: 'REMARK' } }[k] }
+  function workHeadMeta(k) { return { label: { l: 'DEVICES / ACTIVITY' }, unit: { l: 'UNIT' }, teams: { l: 'TEAMS' }, design: { l: 'DESIGN', x: ' text-center' }, workdone: { l: 'WORKDONE', x: ' text-center' }, balance: { l: 'BALANCE', x: ' text-center' }, progress: { l: 'PROGRESS %' }, remark: { l: 'REMARK' } }[k] }
   function workHead(k) {
     if (k === 'floors') return colOn('work', 'floors') ? floorOrder.map(function(f) { return thc('work', 'floors', f, ' text-center', f) }) : null
     var cc = customById('work', k)
@@ -359,10 +371,11 @@ export default function ReportsPage(props) {
     if (k === 'design') return colOn('work', 'design') ? <td key="design" className={tdCls + ' text-center' + colWrap('work', 'design')} style={colStyle('work', 'design')}><input value={it.design === null || it.design === undefined ? '' : it.design} onChange={function(e) { updItem(it.id, { design: e.target.value === '' ? null : e.target.value.replace(/[^0-9]/g, '') }) }} placeholder={it.kind === 'manual' ? '0' : String(r.liveDesign)} className={inCls + ' w-14 text-center text-[11px] text-white'} /></td> : null
     if (k === 'floors') return colOn('work', 'floors') ? r.perFloor.map(function(n, fi) { return <td key={'fl' + fi} className={tdCls + ' text-center text-dgray' + colWrap('work', 'floors')} style={colStyle('work', 'floors')}>{n === null ? '' : (n || '')}</td> }) : null
     if (k === 'workdone') return colOn('work', 'workdone') ? (<td key="workdone" className={tdCls + ' text-center font-bold text-green'}>{it.kind === 'manual' ? <input value={it.done || ''} onChange={function(e) { updItem(it.id, { done: e.target.value.replace(/[^0-9]/g, '') }) }} placeholder="0" className={inCls + ' w-14 text-center text-[11px] text-green font-bold'} /> : r.done}</td>) : null
-    if (k === 'balance') return colOn('work', 'balance') ? <td key="balance" className={tdCls + ' text-center ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td> : null
+    if (k === 'balance') return colOn('work', 'balance') ? <td key="balance" className={tdCls + ' text-center font-bold ' + (r.balance > 0 ? 'text-orange' : 'text-green')}>{r.balance}</td> : null
+    if (k === 'progress') { if (!colOn('work', 'progress')) return null; var pv = r.design > 0 ? Math.round(r.done / r.design * 100) : (r.done > 0 ? 100 : 0); return (<td key="progress" className={tdCls} style={colStyle('work', 'progress')}><div className="flex items-center gap-1.5"><span className={'text-[10px] font-bold w-8 text-right ' + pctColor(pv)}>{pv}%</span><div className="flex-1 min-w-[28px]">{bar(pv)}</div></div></td>) }
     if (k === 'remark') return colOn('work', 'remark') ? <td key="remark" className={tdCls} style={colStyle('work', 'remark')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={it.remark || ''} onChange={function(e) { updItem(it.id, { remark: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
     var cc = customById('work', k)
-    if (cc) { var v = (it.custom && it.custom[cc.id]) || ''; return <td key={cc.id} className={tdCls} style={colStyle('work', cc.id)}><input value={v} onChange={function(e) { var o = Object.assign({}, it.custom || {}); o[cc.id] = up(e.target.value); updItem(it.id, { custom: o }) }} placeholder="" className={inCls + ' w-full text-[10px] text-lgray'} /></td> }
+    if (cc) { var cv = (it.custom && it.custom[cc.id]); return <td key={cc.id} className={tdCls + (cc.type === 'checkbox' ? ' text-center' : '')} style={colStyle('work', cc.id)}>{customField(cc, cv, function(val) { var o = Object.assign({}, it.custom || {}); o[cc.id] = val; updItem(it.id, { custom: o }) })}</td> }
     return null
   }
   function ddcHeadMeta(k) { return { level: { l: 'LEVEL' }, zone: { l: 'ZONE' }, part: { l: 'PART' }, panelName: { l: 'PANEL NAME' }, location: { l: 'LOCATION' }, canopy: { l: 'CANOPY', x: ' text-center' }, ddcInstall: { l: 'DDC INSTALLATION', x: ' text-center' }, cablePulling: { l: 'CABLE PULLING', x: ' text-center' }, panelTerm: { l: 'PANEL TERMINATION', x: ' text-center' }, functionalTest: { l: 'FUNCTIONAL TEST', x: ' text-center' }, inspections: { l: 'INSPECTIONS' }, remarks: { l: 'REMARKS' } }[k] }
@@ -388,21 +401,31 @@ export default function ReportsPage(props) {
     if (k === 'ddcInstall') return colOn('ddc', 'ddcInstall') ? (<td key="ddcInstall" className={tdCls + ' text-center'}>
       <button onClick={function() { updPanel(p.id, { installed: !p.installed }) }} className={'w-5 h-5 rounded border text-[10px] font-bold transition ' + (p.installed ? 'bg-green border-green text-white' : 'border-border text-dgray hover:border-teal')}>{p.installed ? '✓' : ''}</button>
     </td>) : null
-    if (k === 'cablePulling') return colOn('ddc', 'cablePulling') ? <td key="cablePulling" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'cable_pulled'))}</td> : null
-    if (k === 'panelTerm') return colOn('ddc', 'panelTerm') ? <td key="panelTerm" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'term_ddc_side'))}</td> : null
-    if (k === 'functionalTest') return colOn('ddc', 'functionalTest') ? <td key="functionalTest" className={tdCls + ' text-center'}>{statCell(panelStat(p, 'functional_test'))}</td> : null
+    if (k === 'cablePulling') return colOn('ddc', 'cablePulling') ? <td key="cablePulling" className={tdCls + ' text-center'}>{ddcMode === 'install' ? statCheck(panelStat(p, 'cable_pulled')) : statCell(panelStat(p, 'cable_pulled'))}</td> : null
+    if (k === 'panelTerm') return colOn('ddc', 'panelTerm') ? <td key="panelTerm" className={tdCls + ' text-center'}>{ddcMode === 'install' ? statCheck(panelStat(p, 'term_ddc_side')) : statCell(panelStat(p, 'term_ddc_side'))}</td> : null
+    if (k === 'functionalTest') return colOn('ddc', 'functionalTest') ? <td key="functionalTest" className={tdCls + ' text-center'}>{ddcMode === 'install' ? statCheck(panelStat(p, 'functional_test')) : statCell(panelStat(p, 'functional_test'))}</td> : null
     if (k === 'inspections') return colOn('ddc', 'inspections') ? <td key="inspections" className={tdCls} style={colStyle('ddc', 'inspections')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={p.inspection || ''} onChange={function(e) { updPanel(p.id, { inspection: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-full text-[10px] text-teal resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
     if (k === 'remarks') return colOn('ddc', 'remarks') ? <td key="remarks" className={tdCls} style={colStyle('ddc', 'remarks')}><textarea ref={grow} onInput={function(e) { grow(e.target) }} rows={1} value={p.remarks || ''} onChange={function(e) { updPanel(p.id, { remarks: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic resize-none overflow-hidden leading-snug bg-transparent align-top'} /></td> : null
     var cc = customById('ddc', k)
-    if (cc) { var cv = (p.custom && p.custom[cc.id]) || ''; return <td key={cc.id} className={tdCls} style={colStyle('ddc', cc.id)}><input value={cv} onChange={function(e) { var o = Object.assign({}, p.custom || {}); o[cc.id] = up(e.target.value); updPanel(p.id, { custom: o }) }} placeholder="-" className={inCls + ' w-full text-[10px] text-lgray'} /></td> }
+    if (cc) { var cv = (p.custom && p.custom[cc.id]); return <td key={cc.id} className={tdCls + (cc.type === 'checkbox' ? ' text-center' : '')} style={colStyle('ddc', cc.id)}>{customField(cc, cv, function(val) { var o = Object.assign({}, p.custom || {}); o[cc.id] = val; updPanel(p.id, { custom: o }) })}</td> }
     return null
   }
   function addCustomCol(tbl) {
     var name = window.prompt('NEW COLUMN NAME:')
     if (!name || !name.trim()) return
+    var ty = up(window.prompt('COLUMN TYPE — TEXT / NUMBER / CHECKBOX:', 'TEXT') || 'TEXT').trim()
+    ty = (ty === 'NUMBER' || ty === 'CHECKBOX') ? ty.toLowerCase() : 'text'
     var cols = Object.assign({}, cfg.cols || {})
     var t = Object.assign({ hide: {}, w: {}, nowrap: {}, custom: [] }, cols[tbl] || {})
-    t.custom = (t.custom || []).concat([{ id: 'cc-' + Date.now(), label: up(name).trim() }])
+    t.custom = (t.custom || []).concat([{ id: 'cc-' + Date.now(), label: up(name).trim(), type: ty }])
+    cols[tbl] = t
+    setCfg('cols', cols)
+  }
+  function cycleCustomType(tbl, id) {
+    var order = ['text', 'number', 'checkbox']
+    var cols = Object.assign({}, cfg.cols || {})
+    var t = Object.assign({}, cols[tbl] || {})
+    t.custom = (t.custom || []).map(function(c) { if (c.id !== id) return c; return Object.assign({}, c, { type: order[(order.indexOf(c.type || 'text') + 1) % 3] }) })
     cols[tbl] = t
     setCfg('cols', cols)
   }
@@ -432,6 +455,7 @@ export default function ReportsPage(props) {
             return (
               <span key={cc.id} className="inline-flex items-center rounded overflow-hidden border border-purple/40">
                 <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase bg-purple/15 text-purple">{cc.label}</span>
+                <button onClick={function() { cycleCustomType(tbl, cc.id) }} title="COLUMN TYPE" className="px-1 py-0.5 text-[9px] font-bold bg-card2 text-lgray hover:text-white border-l border-border">{(cc.type || 'text') === 'checkbox' ? '☑' : (cc.type === 'number' ? '#' : 'T')}</button>
                 <button onClick={function() { delCustomCol(tbl, cc.id) }} className="px-1 py-0.5 text-[9px] bg-card2 text-dgray hover:text-red border-l border-border">✕</button>
               </span>
             )
@@ -454,6 +478,8 @@ export default function ReportsPage(props) {
     var next = Object.assign({}, cfg, { sections: {} })
     SECTION_DEFS.forEach(function(s) { next.sections[s.key] = on.indexOf(s.key) >= 0 })
     if (!cfg.titleTouched && PRESET_TITLES[name]) next.reportTitle = PRESET_TITLES[name]
+    var pv = { 'WEEKLY PROGRESS': 'install', 'DDC SCHEDULE': 'install', 'COMMISSIONING': 'commission', 'FULL REPORT': 'commission' }[name]
+    if (pv) next.ddcView = pv
     props.onConfig(next)
   }
   function saveCurrentPreset() {
@@ -617,9 +643,41 @@ export default function ReportsPage(props) {
   }
   function statCell(st) {
     if (st.total === 0) return <span className="text-dgray">—</span>
-    if (st.done >= st.total) return <span className="text-green font-bold">✓</span>
-    if (st.done > 0) return <span className="text-orange font-bold">{st.done}/{st.total}</span>
+    if (st.done >= st.total) return <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold bg-green/20 text-green rpt-fill">✓</span>
+    if (st.done > 0) return <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange/20 text-orange rpt-fill">{st.done}/{st.total}</span>
     return <span className="text-dgray">·</span>
+  }
+  function statCheck(st) {
+    if (st.total === 0) return <span className="text-dgray">—</span>
+    var done = st.done >= st.total
+    return <span className={'inline-block w-4 h-4 rounded border text-[9px] font-bold leading-4 text-center rpt-fill ' + (done ? 'bg-green border-green text-white' : 'border-border text-dgray')}>{done ? '✓' : ''}</span>
+  }
+  function ioList(p) {
+    var eqs = equipmentMap[p.id] || []
+    var rows = []
+    eqs.forEach(function(eq) { (eq.points || []).forEach(function(pt) { if (!pt.excluded) rows.push({ eq: eq, pt: pt }) }) })
+    if (rows.length === 0) return <div className="text-[10px] text-dgray uppercase py-1">NO IO POINTS LOGGED FOR THIS PANEL.</div>
+    return (
+      <div>
+        <div className="text-[9px] text-teal uppercase font-bold mb-1">IO POINTS — {p.name}</div>
+        <table className="w-full">
+          <thead><tr>
+            <th className={thCls}>EQUIPMENT</th><th className={thCls}>POINT</th><th className={thCls}>TYPE</th>
+            {IO_STAGES.map(function(s) { return <th key={s.k} className={thCls + ' text-center'}>{s.label}</th> })}
+          </tr></thead>
+          <tbody>
+            {rows.map(function(row, ri) {
+              return (<tr key={row.pt.id} className={'border-b border-border/20' + (ri % 2 ? ' bg-card2/20' : '')}>
+                <td className={tdCls + ' text-cyan'}>{row.eq.name}</td>
+                <td className={tdCls}>{row.pt.description}</td>
+                <td className={tdCls + ' text-dgray'}>{row.pt.type || '-'}</td>
+                {IO_STAGES.map(function(s) { return <td key={s.k} className={tdCls + ' text-center'}>{row.pt[s.k] ? <span className="text-green font-bold">✓</span> : <span className="text-dgray">·</span>}</td> })}
+              </tr>)
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
   }
   function statTxt(st) {
     if (st.total === 0) return ''
@@ -722,7 +780,12 @@ export default function ReportsPage(props) {
   function secTitle(key) {
     var def = SECTION_DEFS.find(function(s) { return s.key === key })
     var no = enabledKeys.indexOf(key) + 1
-    return <div className="text-[11px] font-extrabold text-teal uppercase tracking-widest mt-6 mb-2 border-b border-border pb-1">{no}. {def.label}</div>
+    return (
+      <div className="flex items-center gap-2 mt-6 mb-2 border-b border-border pb-1">
+        <span className="inline-block w-1.5 h-4 bg-teal rounded rpt-fill"></span>
+        <span className="text-[11px] font-extrabold text-teal uppercase tracking-widest">{no}. {def.label}</span>
+      </div>
+    )
   }
 
   // ─── Excel export ─────────────────────────────────────────
@@ -943,7 +1006,7 @@ export default function ReportsPage(props) {
                 {workItems.map(function(it, i) {
                   var r = workRow(it)
                   var rowOver = rowDrag && rowDrag.tbl === 'work' && rowDrag.overId === it.id && rowDrag.id !== it.id
-                  return (<tr key={it.id} data-rowid={it.id} data-rowtbl="work" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : '')}>
+                  return (<tr key={it.id} data-rowid={it.id} data-rowtbl="work" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : (i % 2 ? ' bg-card2/20' : ''))}>
                     <td className={tdCls + ' text-dgray'}>{i + 1}</td>
                     {orderedKeys('work').map(function(k) { return workCell(k, it, r) })}
                     {editWork && (<td className={tdCls + ' no-print whitespace-nowrap'}>
@@ -1020,8 +1083,13 @@ export default function ReportsPage(props) {
         {sectionOn('ddcSchedule') && panels.length > 0 && (
           <div>
             {secTitle('ddcSchedule')}
-            <div className="no-print flex items-center gap-3 mb-2">
+            <div className="no-print flex items-center gap-3 mb-2 flex-wrap">
               <button onClick={function() { setEditDdc(!editDdc) }} className={'px-3 py-1 rounded text-[9px] font-bold uppercase transition ' + (editDdc ? 'bg-orange text-white' : 'bg-orange/20 text-orange hover:bg-orange/30')}>{editDdc ? '✓ DONE' : '⚙ CUSTOMIZE COLUMNS'}</button>
+              <span className="inline-flex rounded overflow-hidden border border-border text-[9px] font-bold uppercase">
+                <button onClick={function() { setCfg('ddcView', 'install') }} className={'px-2.5 py-1 ' + (ddcMode === 'install' ? 'bg-teal text-white' : 'bg-card2 text-dgray hover:text-white')}>INSTALLATION</button>
+                <button onClick={function() { setCfg('ddcView', 'commission') }} className={'px-2.5 py-1 border-l border-border ' + (ddcMode === 'commission' ? 'bg-teal text-white' : 'bg-card2 text-dgray hover:text-white')}>COMMISSIONING</button>
+              </span>
+              <span className="text-[9px] text-dgray uppercase">{ddcMode === 'install' ? 'CHECKBOXES — DONE / NOT DONE' : 'IO COUNTS · CLICK ▸ ON A ROW FOR POINT-WISE TRACKING'}</span>
             </div>
             {editDdc && columnManager('ddc', DDC_COLS)}
             <div className="overflow-x-auto">
@@ -1034,10 +1102,13 @@ export default function ReportsPage(props) {
                   var lvl = up(p.floor || '')
                   var showLvl = !prevP || up(prevP.floor || '') !== lvl
                   var rowOver = rowDrag && rowDrag.tbl === 'ddc' && rowDrag.overId === p.id && rowDrag.id !== p.id
-                  return (<tr key={p.id} data-rowid={p.id} data-rowtbl="ddc" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : '')}>
-                    <td className={tdCls + ' text-dgray whitespace-nowrap'}>{editDdc && <span onPointerDown={function(e) { startRowDrag('ddc', p.id, e) }} onPointerMove={rowDragMove} onPointerUp={rowDragUp} className="cursor-grab text-dgray hover:text-teal mr-1 inline-block no-print" style={{ touchAction: 'none' }}>⠿</span>}{i + 1}</td>
+                  var expanded = ddcMode === 'commission' && collapsed['ddcio:' + p.id]
+                  var mainRow = (<tr key={p.id} data-rowid={p.id} data-rowtbl="ddc" className={'border-b border-border/30' + (rowOver ? ' bg-teal/10' : (i % 2 ? ' bg-card2/20' : ''))}>
+                    <td className={tdCls + ' text-dgray whitespace-nowrap'}>{editDdc && <span onPointerDown={function(e) { startRowDrag('ddc', p.id, e) }} onPointerMove={rowDragMove} onPointerUp={rowDragUp} className="cursor-grab text-dgray hover:text-teal mr-1 inline-block no-print" style={{ touchAction: 'none' }}>⠿</span>}{ddcMode === 'commission' && <button onClick={function() { toggleCollapse('ddcio:' + p.id) }} className="text-dgray hover:text-teal mr-1 no-print">{collapsed['ddcio:' + p.id] ? '▾' : '▸'}</button>}{i + 1}</td>
                     {orderedKeys('ddc').map(function(k) { return ddcCell(k, p, showLvl, lvl) })}
                   </tr>)
+                  if (!expanded) return mainRow
+                  return [mainRow, (<tr key={p.id + '-io'} className="bg-navy/40"><td colSpan={99} className="px-4 py-2">{ioList(p)}</td></tr>)]
                 })}
               </tbody></table>
             </div>
