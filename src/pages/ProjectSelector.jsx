@@ -170,6 +170,10 @@ export default function ProjectSelector(props) {
                         <span className="text-dgray">LOOPS </span>
                         <span className="text-cyan font-bold">{p.loopCount || 0}</span>
                       </div>
+                      <div>
+                        <span className="text-dgray">DEVICES </span>
+                        <span className="text-cyan font-bold">{p.deviceCount || 0}</span>
+                      </div>
                     </div>
                     <div className="text-[9px] text-dgray mt-2">UPDATED {formatDate(p.updated_at)}</div>
                   </button>

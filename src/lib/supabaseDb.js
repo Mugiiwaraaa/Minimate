@@ -14,16 +14,34 @@ export function listProjects(cb) {
     .order('updated_at', { ascending: false })
     .then(function(res) {
       if (res.error) { cb(res.error, null); return }
-      // Add summary stats from data for project cards
+      // Blob stats (panels/points still live in the blob)
       var projects = (res.data || []).map(function(p) {
         var d = p.data || {}
         return Object.assign({}, p, {
           panelCount: (d.panels || []).length,
           pointCount: countPoints(d),
-          loopCount: (d.loops || []).length
+          loopCount: (d.loops || []).length, // legacy fallback, overwritten below
+          deviceCount: 0
         })
       })
-      cb(null, projects)
+      if (projects.length === 0) { cb(null, projects); return }
+
+      // M6: loops/devices live in rows — count them there per project
+      var remaining = projects.length * 2
+      function done() {
+        remaining--
+        if (remaining === 0) cb(null, projects)
+      }
+      projects.forEach(function(p) {
+        supabase.from('loops').select('id', { count: 'exact', head: true }).eq('project_id', p.id).then(function(r) {
+          if (!r.error && typeof r.count === 'number') p.loopCount = r.count
+          done()
+        })
+        supabase.from('loop_devices').select('id', { count: 'exact', head: true }).eq('project_id', p.id).then(function(r) {
+          if (!r.error && typeof r.count === 'number') p.deviceCount = r.count
+          done()
+        })
+      })
     })
 }
 

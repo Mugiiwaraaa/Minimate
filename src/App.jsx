@@ -8,11 +8,13 @@ import PanelDetail from './pages/PanelDetail'
 import CommDevices from './pages/CommDevices'
 import DrawingsPage from './pages/DrawingsPage'
 import BlockersPage from './pages/BlockersPage'
+import ReportsPage from './pages/ReportsPage'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
 import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
+import { snapshotProgress } from './lib/reportStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
 
@@ -103,6 +105,9 @@ export default function App() {
   var gatewaysState = useState([]) // gateways (Modbus) + RTRs (BACnet MSTP/IP routers)
   var gateways = gatewaysState[0]
   var setGateways = gatewaysState[1]
+  var reportCfgState = useState({}) // report header + section toggles (per project)
+  var reportConfig = reportCfgState[0]
+  var setReportConfig = reportCfgState[1]
 
   // Import preview modal state
   var ipState = useState(null)
@@ -176,7 +181,8 @@ export default function App() {
       areaGroups: areaGroups,
       drawings: drawings,
       blockers: blockers,
-      gateways: gateways
+      gateways: gateways,
+      reportConfig: reportConfig
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -184,7 +190,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways])
+  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig])
 
   // Flush save before page unload
   useEffect(function() {
@@ -236,6 +242,7 @@ export default function App() {
       setDrawings(data.drawings || [])
       setBlockers(data.blockers || [])
       setGateways(data.gateways || [])
+      setReportConfig(data.reportConfig || {})
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
@@ -379,6 +386,7 @@ export default function App() {
       setDrawings(data.drawings || [])
       setBlockers(data.blockers || [])
       setGateways(data.gateways || [])
+      setReportConfig(data.reportConfig || {})
       setActiveProject(fullProject || project)
       activeProjectIdRef.current = (fullProject && fullProject.id) || null
       setLoadedVersion((fullProject && fullProject.version) || 0)
@@ -392,6 +400,7 @@ export default function App() {
             prevLoopsRef.current = rowResult.loops
             setLoops(rowResult.loops)
             autoBackup(fullProject.id, fullProject.name, Object.assign({}, data, { loops: rowResult.loops }))
+            snapshotProgress(fullProject.id, rowResult.loops) // R1: daily trend point
             // M6 P4: one-time scrub — old blobs still carry a stale loops
             // copy from before the cutover; save once without it
             if (data.loops && data.loops.length > 0) {
@@ -437,6 +446,7 @@ export default function App() {
     setDrawings([])
     setBlockers([])
     setGateways([])
+    setReportConfig({})
     undoRef.current = []
   }
 
@@ -1625,7 +1635,7 @@ export default function App() {
       {traceSession && (
         <TraceStudio file={traceSession.file} record={traceSession.record} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
       )}
-      <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6">
+      <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6 print-reset">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
           <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
@@ -1634,7 +1644,7 @@ export default function App() {
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
-          <Route path="/reports" element={<Placeholder title="Reports" desc="Auto-generated progress reports" />} />
+          <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} blockers={blockers} gateways={gateways} config={reportConfig} onConfig={setReportConfig} />} />
         </Routes>
       </div>
     </div>

@@ -39,7 +39,7 @@ export default function Sidebar(props) {
   }
 
   return (
-    <div>
+    <div className="no-print">
       {/* ─── Mobile top bar ─────────────────────────────── */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-12 bg-card2 border-b border-border flex items-center justify-between px-4 z-50">
         <button onClick={function(){ setIsOpen(!isOpen) }}

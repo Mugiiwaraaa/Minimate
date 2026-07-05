@@ -26,3 +26,31 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* ─── R1: print stylesheet — EXPORT PDF = clean paper report ─── */
+@media print {
+  body { background: #fff !important; }
+  .no-print { display: none !important; }
+  .print-reset { margin: 0 !important; padding: 0 !important; }
+  #report-body {
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+  #report-body, #report-body * {
+    color: #111 !important;
+    background: transparent !important;
+    border-color: #999 !important;
+    box-shadow: none !important;
+  }
+  #report-body .rpt-fill {
+    background: #0891B2 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #report-body table { page-break-inside: auto; }
+  #report-body tr { page-break-inside: avoid; }
+  #report-body textarea { border: 1px solid #ccc !important; }
+  @page { margin: 12mm; }
+}
