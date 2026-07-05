@@ -23,13 +23,26 @@ var SECTION_DEFS = [
   { key: 'workTable', label: 'WORK PROGRESS TABLE' },
   { key: 'pipeline', label: 'COMMISSIONING PIPELINE' },
   { key: 'areas', label: 'AREA-WISE PROGRESS' },
+  { key: 'ddcSchedule', label: 'DDC PANEL SCHEDULE', defaultOff: true },
   { key: 'gateways', label: 'GATEWAY / RTR SUMMARY' },
   { key: 'loopsReg', label: 'LOOP REGISTER' },
   { key: 'blockers', label: 'BLOCKERS / SITE CONSTRAINTS' },
   { key: 'wir', label: 'INSPECTION-READY' },
+  { key: 'commReg', label: 'COMMISSIONING REGISTER (PER DEVICE)', defaultOff: true },
   { key: 'trend', label: 'TREND & FORECAST' },
   { key: 'notes', label: 'NOTES' }
 ]
+
+// Report-type presets: one click flips the whole section set.
+// INSTALLATION reports = quantities over time; COMMISSIONING = asset status.
+var PRESETS = {
+  'WEEKLY PROGRESS': ['summary', 'workTable', 'pipeline', 'areas', 'trend', 'blockers', 'notes'],
+  'DDC SCHEDULE': ['ddcSchedule', 'notes'],
+  'COMMISSIONING': ['summary', 'loopsReg', 'wir', 'commReg', 'blockers', 'notes'],
+  'FULL REPORT': SECTION_DEFS.map(function(s) { return s.key })
+}
+
+var CANOPY_OPTS = ['N/A', 'REQUIRED', 'DONE']
 
 var stageWeights = { comm_cable: 25, control_cable: 25, continuity: 10, termination: 25, device_installed: 15, address_set: 0 }
 
@@ -77,7 +90,11 @@ export default function ReportsPage(props) {
     preparedBy: '', notes: '', sections: {}, workItems: null
   }, props.config || {})
   var sections = Object.assign({}, cfg.sections)
-  function sectionOn(key) { return sections[key] !== false } // default ON
+  function sectionOn(key) {
+    var def = SECTION_DEFS.find(function(s) { return s.key === key })
+    if (def && def.defaultOff) return sections[key] === true // long registers: opt-in
+    return sections[key] !== false // everything else: default ON
+  }
 
   var snapsState = useState([])
   var snapshots = snapsState[0]
@@ -106,6 +123,21 @@ export default function ReportsPage(props) {
     var next = Object.assign({}, cfg, { sections: Object.assign({}, sections) })
     next.sections[key] = !sectionOn(key)
     props.onConfig(next)
+  }
+
+  // Report-type presets: built-in + engineer-saved (per project)
+  function applyPreset(name) {
+    var on = PRESETS[name] || (cfg.presets || {})[name] || []
+    var next = Object.assign({}, cfg, { sections: {} })
+    SECTION_DEFS.forEach(function(s) { next.sections[s.key] = on.indexOf(s.key) >= 0 })
+    props.onConfig(next)
+  }
+  function saveCurrentPreset() {
+    var name = window.prompt('PRESET NAME (E.G. ADEK CLIENT FORMAT):')
+    if (!name || !name.trim()) return
+    var presets = Object.assign({}, cfg.presets || {})
+    presets[up(name).trim()] = enabledKeys.slice()
+    props.onConfig(Object.assign({}, cfg, { presets: presets }))
   }
 
   // ─── Aggregations ─────────────────────────────────────────
@@ -239,6 +271,43 @@ export default function ReportsPage(props) {
   function allDevicesWithLoop(fn) {
     loops.forEach(function(l) { (l.devices || []).forEach(function(d) { fn(d, l) }) })
   }
+
+  // ─── DDC PANEL SCHEDULE helpers ────────────────────────────
+  // Status cells DERIVE from the per-point IO checklists:
+  // all done = ✓ green · partial = n/m orange · none = · · no points = —
+  function panelStat(p, stageKey) {
+    var done = 0
+    var total = 0
+    ;(equipmentMap[p.id] || []).forEach(function(eq) {
+      ;(eq.points || []).forEach(function(pt) {
+        if (pt.excluded) return
+        var q = Number(pt.qty) || 1
+        total += q
+        if (pt[stageKey]) done += q
+      })
+    })
+    return { done: done, total: total }
+  }
+  function updPanel(id, patch) {
+    if (props.onUpdatePanels) props.onUpdatePanels(panels.map(function(p) { return p.id === id ? Object.assign({}, p, patch) : p }))
+  }
+  function statCell(st) {
+    if (st.total === 0) return <span className="text-dgray">—</span>
+    if (st.done >= st.total) return <span className="text-green font-bold">✓</span>
+    if (st.done > 0) return <span className="text-orange font-bold">{st.done}/{st.total}</span>
+    return <span className="text-dgray">·</span>
+  }
+  function statTxt(st) {
+    if (st.total === 0) return ''
+    if (st.done >= st.total) return '✓'
+    return st.done > 0 ? st.done + '/' + st.total : ''
+  }
+  var schedPanels = panels.slice().sort(function(a, b) {
+    var fa = up(a.floor || 'ZZZZ')
+    var fb = up(b.floor || 'ZZZZ')
+    if (fa !== fb) return fa < fb ? -1 : 1
+    return up(a.name || '') < up(b.name || '') ? -1 : 1
+  })
 
   // ─── AREA-WISE (location groups under floors) ──────────────
   var devInfo = {} // devId -> {dev, loop}
@@ -384,6 +453,13 @@ export default function ReportsPage(props) {
     })
     X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(areasSheet), 'AREAS')
 
+    // DDC Panel Schedule sheet (corporate format)
+    var ddcSheet = [['SR', 'LEVEL', 'ZONE', 'PART', 'PANEL NAME', 'LOCATION', 'CANOPY', 'DDC INSTALLATION', 'CABLE PULLING', 'PANEL TERMINATION', 'FUNCTIONAL TEST', 'INSPECTIONS', 'REMARKS']]
+    schedPanels.forEach(function(p, i) {
+      ddcSheet.push([i + 1, up(p.floor || ''), up(p.zone || ''), up(p.part || ''), p.name, p.location || '', p.canopy || 'N/A', p.installed ? '✓' : '', statTxt(panelStat(p, 'cable_pulled')), statTxt(panelStat(p, 'term_ddc_side')), statTxt(panelStat(p, 'functional_test')), up(p.inspection || ''), up(p.remarks || '')])
+    })
+    X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(ddcSheet), 'DDC SCHEDULE')
+
     var loopSheet = [['FLOOR', 'LOOP', 'GATEWAY', 'DDC REF', 'PROTOCOL', 'DEVICES', 'TERMINATED', 'INSTALLED', 'STATUS', '%']]
     loopRows.forEach(function(r) {
       loopSheet.push([r.loop.floor || '', r.loop.name, r.loop.gateway || '', r.loop.ddc_ref || '', r.loop.protocol || '', (r.loop.devices || []).length, r.term, r.inst, r.status, r.pct + '%'])
@@ -443,6 +519,16 @@ export default function ReportsPage(props) {
             <div><label className="text-[9px] text-dgray block mb-0.5">CONTRACTOR</label><input value={cfg.contractor} onChange={function(e) { setCfg('contractor', up(e.target.value)) }} placeholder="YOUR COMPANY" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
             <div><label className="text-[9px] text-dgray block mb-0.5">CLIENT/CONSULTANT</label><input value={cfg.client} onChange={function(e) { setCfg('client', up(e.target.value)) }} placeholder="CLIENT" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
             <div><label className="text-[9px] text-dgray block mb-0.5">PREPARED BY</label><input value={cfg.preparedBy} onChange={function(e) { setCfg('preparedBy', up(e.target.value)) }} placeholder="NAME" className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white uppercase outline-none focus:border-teal" /></div>
+          </div>
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-1.5">REPORT TYPE — ONE CLICK SETS THE SECTIONS</div>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {Object.keys(PRESETS).map(function(name) {
+              return <button key={name} onClick={function() { applyPreset(name) }} className="px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-card2 text-lgray hover:bg-teal/20 hover:text-teal transition">{name}</button>
+            })}
+            {Object.keys(cfg.presets || {}).map(function(name) {
+              return <button key={'c-' + name} onClick={function() { applyPreset(name) }} className="px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-purple/15 text-purple hover:bg-purple/30 transition">{name}</button>
+            })}
+            <button onClick={saveCurrentPreset} className="px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-card2 text-dgray hover:text-white transition">+ SAVE CURRENT AS PRESET</button>
           </div>
           <div className="text-[10px] text-dgray uppercase font-semibold mb-1.5">SECTIONS IN THIS REPORT (AUTO-NUMBERED)</div>
           <div className="flex flex-wrap gap-1.5">
@@ -617,6 +703,45 @@ export default function ReportsPage(props) {
           </div>
         )}
 
+        {sectionOn('ddcSchedule') && panels.length > 0 && (
+          <div>
+            {secTitle('ddcSchedule')}
+            <div className="overflow-x-auto">
+              <table className="w-full"><thead><tr className="border-b border-border">
+                <th className={thCls}>SR</th><th className={thCls}>LEVEL</th><th className={thCls}>ZONE</th><th className={thCls}>PART</th><th className={thCls}>PANEL NAME</th><th className={thCls}>LOCATION</th><th className={thCls + ' text-center'}>CANOPY</th><th className={thCls + ' text-center'}>DDC INSTALLATION</th><th className={thCls + ' text-center'}>CABLE PULLING</th><th className={thCls + ' text-center'}>PANEL TERMINATION</th><th className={thCls + ' text-center'}>FUNCTIONAL TEST</th><th className={thCls}>INSPECTIONS</th><th className={thCls}>REMARKS</th>
+              </tr></thead><tbody>
+                {schedPanels.map(function(p, i) {
+                  var prevP = schedPanels[i - 1]
+                  var lvl = up(p.floor || '')
+                  var showLvl = !prevP || up(prevP.floor || '') !== lvl
+                  return (<tr key={p.id} className="border-b border-border/30">
+                    <td className={tdCls + ' text-dgray'}>{i + 1}</td>
+                    <td className={tdCls + ' font-bold text-orange'}>{showLvl ? (lvl || '-') : ''}</td>
+                    <td className={tdCls}><input value={p.zone || ''} onChange={function(e) { updPanel(p.id, { zone: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-lgray'} /></td>
+                    <td className={tdCls}><input value={p.part || ''} onChange={function(e) { updPanel(p.id, { part: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-14 text-[11px] text-lgray'} /></td>
+                    <td className={tdCls + ' font-bold text-cyan'}>{p.name}</td>
+                    <td className={tdCls}>{p.location || '-'}</td>
+                    <td className={tdCls + ' text-center'}>
+                      <select value={p.canopy || 'N/A'} onChange={function(e) { updPanel(p.id, { canopy: e.target.value }) }} className="bg-transparent text-[10px] uppercase outline-none cursor-pointer text-lgray">
+                        {CANOPY_OPTS.map(function(c) { return <option key={c} value={c}>{c}</option> })}
+                      </select>
+                    </td>
+                    <td className={tdCls + ' text-center'}>
+                      <button onClick={function() { updPanel(p.id, { installed: !p.installed }) }} className={'w-5 h-5 rounded border text-[10px] font-bold transition ' + (p.installed ? 'bg-green border-green text-white' : 'border-border text-dgray hover:border-teal')}>{p.installed ? '✓' : ''}</button>
+                    </td>
+                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'cable_pulled'))}</td>
+                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'term_ddc_side'))}</td>
+                    <td className={tdCls + ' text-center'}>{statCell(panelStat(p, 'functional_test'))}</td>
+                    <td className={tdCls}><input value={p.inspection || ''} onChange={function(e) { updPanel(p.id, { inspection: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-20 text-[10px] text-teal'} /></td>
+                    <td className={tdCls}><input value={p.remarks || ''} onChange={function(e) { updPanel(p.id, { remarks: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full text-[10px] text-orange italic'} /></td>
+                  </tr>)
+                })}
+              </tbody></table>
+            </div>
+            <div className="text-[9px] text-dgray uppercase mt-1 no-print">CABLE PULLING / TERMINATION / FUNCTIONAL TEST DERIVE LIVE FROM IO POINT CHECKLISTS (✓ = ALL · N/M = PARTIAL) · ZONE, PART, CANOPY, INSTALLATION, INSPECTIONS, REMARKS EDIT HERE AND SAVE WITH THE PROJECT</div>
+          </div>
+        )}
+
         {sectionOn('gateways') && gateways.length > 0 && (
           <div>
             {secTitle('gateways')}
@@ -701,6 +826,31 @@ export default function ReportsPage(props) {
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {sectionOn('commReg') && (
+          <div>
+            {secTitle('commReg')}
+            <table className="w-full"><thead><tr className="border-b border-border">
+              <th className={thCls}>LOOP</th><th className={thCls}>EQUIP TAG</th><th className={thCls}>TYPE</th><th className={thCls}>ROOM</th><th className={thCls + ' text-center'}>ADDR</th>
+              {STAGES.map(function(s) { return <th key={s.k} className={thCls + ' text-center'}>{s.label}</th> })}
+              <th className={thCls}>REMARKS</th>
+            </tr></thead><tbody>
+              {loops.map(function(l) {
+                return (l.devices || []).map(function(d, di) {
+                  return (<tr key={d.id} className="border-b border-border/20">
+                    <td className={tdCls + ' text-dgray'}>{di === 0 ? l.name : ''}</td>
+                    <td className={tdCls + ' font-bold'}>{d.tag}</td>
+                    <td className={tdCls + ' text-purple'}>{d.device_type}</td>
+                    <td className={tdCls}>{d.room_name || '-'}</td>
+                    <td className={tdCls + ' text-center text-cyan'}>{d.address || '-'}</td>
+                    {STAGES.map(function(s) { return <td key={s.k} className={tdCls + ' text-center'}>{d[s.k] ? <span className="text-green font-bold">✓</span> : <span className="text-dgray">·</span>}</td> })}
+                    <td className={tdCls + ' text-orange italic text-[10px]'}>{d.remarks || ''}</td>
+                  </tr>)
+                })
+              })}
+            </tbody></table>
           </div>
         )}
 
