@@ -87,6 +87,7 @@ export default function DocumentsPage(props) {
 
   var thc = 'text-[9px] text-dgray text-left px-2 py-1.5 uppercase'
   var tdc = 'text-[11px] px-2 py-1.5 uppercase'
+  var inCls = 'bg-transparent border border-transparent rounded px-1 py-0.5 uppercase outline-none focus:border-teal focus:bg-navy'
 
   function num(n) { return (n == null || n === '') ? '' : ('' + n) }
 
