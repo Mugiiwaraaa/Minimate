@@ -11,7 +11,7 @@ import BlockersPage from './pages/BlockersPage'
 import ReportsPage from './pages/ReportsPage'
 import DocumentsPage from './pages/DocumentsPage'
 import GlobalImport from './components/GlobalImport'
-import { ingestFile } from './lib/docStore'
+import { listDocuments, archiveDocument } from './lib/docStore'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
@@ -120,7 +120,15 @@ export default function App() {
   var incomingEstState = useState(null) // estimate file handed to DocumentsPage
   var incomingEst = incomingEstState[0]
   var setIncomingEst = incomingEstState[1]
+  var docsState = useState([]) // R2 document register (library)
+  var documents = docsState[0]
+  var setDocuments = docsState[1]
   var navigate = useNavigate()
+  useEffect(function() {
+    var pid = activeProject && activeProject.id
+    if (!pid) { setDocuments([]); return }
+    listDocuments(pid).then(function(d) { setDocuments(d || []) }).catch(function() { setDocuments([]) })
+  }, [activeProject && activeProject.id])
 
   // Import preview modal state
   var ipState = useState(null)
@@ -801,6 +809,11 @@ export default function App() {
   function routeImport(file, dest) {
     setGImpFile(null)
     if (!file) return
+    // archive EVERY import into the library register (best-effort)
+    if (activeProject) {
+      archiveDocument(activeProject, file, documents, { docType: dest === 'drawing' ? 'DRAWING' : 'OTHER', title: file.name, source: 'IMPORT' })
+        .then(function(doc) { if (doc) setDocuments(function(prev) { return prev.concat([doc]) }) }).catch(function() {})
+    }
     if (dest === 'drawing') {
       importFileIdRef.current++
       var item = { id: 'if-' + importFileIdRef.current, file: file, kind: isPdf(file) ? null : FILE_KINDS.MARKED_PHOTO }
@@ -817,9 +830,7 @@ export default function App() {
     }
     if (dest === 'data') { handleImportFile({ target: { files: [file], value: '' } }); return }
     if (dest === 'estimate') { setIncomingEst(file); navigate('/documents'); return }
-    try {
-      if (activeProject) ingestFile(activeProject, file, [], { docType: 'OTHER', title: file.name, source: 'IMPORT' }).then(function() {}).catch(function() {})
-    } catch (err) {}
+    // 'library' — the archive above is the whole action
   }
 
   function handleDrawingFiles(e) {
@@ -1725,7 +1736,7 @@ export default function App() {
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
-          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
+          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />

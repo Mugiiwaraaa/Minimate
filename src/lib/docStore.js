@@ -290,8 +290,18 @@ function ingestFile(project, file, existingDocs, opts) {
   })
 }
 
+/* Archive an import into the library in one call: hash + (upload) + register
+   number + register row. Best-effort; resolves with the doc (or null on fail). */
+function archiveDocument(project, file, existingDocs, opts) {
+  return ingestFile(project, file, existingDocs || [], opts || {}).then(function(doc) {
+    assignRegister(project, existingDocs || [], doc)
+    doc.status = 'PROCESSED'
+    return upsertDocument(project.id, doc).then(function() { return doc })
+  })
+}
+
 export {
-  BUCKET, TYPE_ABBR, DOC_TYPE_LABELS, ROUTABLE_TYPES,
+  BUCKET, TYPE_ABBR, DOC_TYPE_LABELS, ROUTABLE_TYPES, archiveDocument,
   docId, projectCode, floorCode, makeRegisterNo, nextSeq, nextRevision,
   assignRegister, makeRevisionMeta,
   uploadBytes, signedUrl, deleteBytes,

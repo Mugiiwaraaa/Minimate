@@ -8,7 +8,6 @@
 
 import { useState, useEffect } from 'react'
 import { sheetList, parseEstimate, KIND_LABELS } from '../lib/estimateParser'
-import { ingestFile } from '../lib/docStore'
 
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
 
@@ -77,13 +76,6 @@ export default function DocumentsPage(props) {
       sheets: parsed.sheets
     }
     if (props.onUpdateScope) props.onUpdateScope(next)
-    // best-effort archive of the original file (never blocks the save)
-    try {
-      if (props.project && window._estFile) {
-        ingestFile(props.project, window._estFile, [], { docType: 'OTHER', title: fileName, source: 'ESTIMATE IMPORT' })
-          .then(function() {}).catch(function() {})
-      }
-    } catch (e) {}
     setBusy('SAVED TO ESTIMATE SCOPE')
     setTimeout(function() { setBusy('') }, 2500)
   }
@@ -342,7 +334,27 @@ export default function DocumentsPage(props) {
       {view === 'drawings' && (props.drawingsElement || <div className="text-[11px] text-dgray uppercase">DRAWINGS SECTION.</div>)}
 
       {view === 'library' && (
-        <div className="bg-card rounded-xl border border-border p-4 text-[11px] text-dgray uppercase leading-relaxed">DOCUMENT REGISTER — IMPORTED ORIGINALS (ESTIMATES, DRAWINGS, SCHEDULES) APPEAR HERE ONCE THE documents TABLE + STORAGE BUCKET ARE SET UP (RUN THE SQL IN docStore.js). YOUR EXISTING DRAWINGS ARE UNDER THE DRAWINGS TAB — UNCHANGED.</div>
+        <div className="bg-card rounded-xl border border-border p-4">
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-2">DOCUMENT REGISTER — EVERY IMPORTED ORIGINAL</div>
+          {(props.documents || []).length === 0 ? (
+            <div className="text-[11px] text-dgray uppercase leading-relaxed">NO DOCUMENTS YET. IMPORTS REGISTER HERE ONCE THE documents TABLE + STORAGE BUCKET SQL (IN docStore.js) IS RUN IN SUPABASE. EXISTING DRAWINGS ARE UNDER THE DRAWINGS TAB — UNCHANGED.</div>
+          ) : (
+            <table className="w-full"><thead><tr className="border-b border-border">
+              <th className={thc}>REGISTER NO</th><th className={thc}>TYPE</th><th className={thc}>TITLE</th><th className={thc + ' text-center'}>REV</th><th className={thc}>STATUS</th><th className={thc}>DATE</th>
+            </tr></thead><tbody>
+              {props.documents.map(function(d, i) {
+                return (<tr key={d.id || i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+                  <td className={tdc + ' font-bold text-cyan'}>{d.register_no || '—'}</td>
+                  <td className={tdc + ' text-purple text-[10px]'}>{d.doc_type}</td>
+                  <td className={tdc}>{d.title || d.file_name}</td>
+                  <td className={tdc + ' text-center'}>{d.revision}</td>
+                  <td className={tdc + ' text-[10px] ' + (d.status === 'PROCESSED' ? 'text-green' : 'text-orange')}>{d.status}</td>
+                  <td className={tdc + ' text-dgray text-[10px]'}>{(d.created_at || '').substring(0, 10)}</td>
+                </tr>)
+              })}
+            </tbody></table>
+          )}
+        </div>
       )}
     </div>
   )
