@@ -9,7 +9,7 @@
 import { useState, useEffect } from 'react'
 import { sheetList, parseEstimate, KIND_LABELS } from '../lib/estimateParser'
 import { DOC_TYPE_LABELS } from '../lib/docStore'
-import IoListPage from './IoListPage'
+import DocGrid from '../components/DocGrid'
 
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
 
@@ -343,7 +343,11 @@ export default function DocumentsPage(props) {
             <div className="text-[11px] uppercase"><span className="text-dgray">OPEN: </span><span className="font-bold text-cyan">{openDoc.register_no || openDoc.file_name}</span><span className="text-dgray"> · {openDoc.title}</span></div>
             <button onClick={function() { setOpenDoc(null) }} className="px-3 py-1.5 bg-card2 text-dgray text-[10px] font-semibold rounded uppercase hover:text-white">← BACK TO LIBRARY</button>
           </div>
-          <IoListPage panels={props.panels} equipmentMap={props.equipmentMap} onUpdatePoint={props.onUpdatePoint} />
+          <DocGrid table={(openDoc.extracted && openDoc.extracted.table) || { columns: [], rows: [] }} onChange={function(t) {
+            var nd = Object.assign({}, openDoc, { extracted: Object.assign({}, openDoc.extracted || {}, { table: t }) })
+            setOpenDoc(nd)
+            if (props.onUpdateDoc) props.onUpdateDoc(nd)
+          }} />
         </div>
       )}
 

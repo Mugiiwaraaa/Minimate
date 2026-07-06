@@ -807,13 +807,34 @@ export default function App() {
     if (e && e.target) e.target.value = ''
     if (f) setGImpFile(f)
   }
+  function fileToTable(file, cb) {
+    if (!window.XLSX) { cb(null); return }
+    var fr = new FileReader()
+    fr.onload = function() {
+      try {
+        var wb = window.XLSX.read(new Uint8Array(fr.result), { type: 'array' })
+        var aoa = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+        var hi = 0
+        for (var i = 0; i < aoa.length; i++) { if (aoa[i].some(function(c) { return ('' + c).trim() !== '' })) { hi = i; break } }
+        var columns = (aoa[hi] || []).map(function(c) { return ('' + (c == null ? '' : c)).toUpperCase() })
+        var rows = aoa.slice(hi + 1).filter(function(row) { return row.some(function(c) { return ('' + c).trim() !== '' }) }).map(function(row) { return columns.map(function(v, ci) { return row[ci] == null ? '' : ('' + row[ci]) }) })
+        cb({ columns: columns, rows: rows })
+      } catch (e) { cb(null) }
+    }
+    fr.onerror = function() { cb(null) }
+    fr.readAsArrayBuffer(file)
+  }
   function routeImport(file, dest) {
     setGImpFile(null)
     if (!file) return
     // archive EVERY import into the library register (best-effort)
     if (activeProject) {
-      archiveDocument(activeProject, file, documents, { docType: dest === 'drawing' ? 'DRAWING' : 'OTHER', title: file.name, source: 'IMPORT' })
-        .then(function(doc) { if (doc) setDocuments(function(prev) { return prev.concat([doc]) }) }).catch(function() {})
+      var docType = dest === 'drawing' ? 'DRAWING' : 'OTHER'
+      var doArchive = function(table) {
+        archiveDocument(activeProject, file, documents, { docType: docType, title: file.name, source: 'IMPORT', extracted: table ? { table: table } : {} })
+          .then(function(doc) { if (doc) setDocuments(function(prev) { return prev.concat([doc]) }) }).catch(function() {})
+      }
+      if (/\.(xlsx|xls|csv)$/i.test(file.name || '')) { fileToTable(file, doArchive) } else { doArchive(null) }
     }
     if (dest === 'drawing') {
       importFileIdRef.current++

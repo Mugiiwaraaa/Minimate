@@ -278,7 +278,7 @@ function ingestFile(project, file, existingDocs, opts) {
         file_size: file.size || 0,
         source: opts.source || 'IMPORT',
         remarks: dupe ? 'DUPLICATE OF ' + (dupe.register_no || dupe.file_name) : '',
-        extracted: {},
+        extracted: opts.extracted || {},
         created_at: new Date().toISOString(),
         _duplicateOf: dupe ? dupe.id : null
       }
