@@ -580,6 +580,11 @@ export default function App() {
     })
   }, [])
 
+  var handleUpdatePanelEquipment = useCallback(function(panelId, newEqs) {
+    pushUndo()
+    setEquipmentMap(function(prev) { var next = Object.assign({}, prev); next[panelId] = newEqs; return next })
+  }, [])
+
   function handleDeletePanel(panelId) {
     pushUndo()
     setPanels(function(prev) { return prev.filter(function(p) { return p.id !== panelId }) })
@@ -1781,7 +1786,7 @@ export default function App() {
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
-          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
+          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />
