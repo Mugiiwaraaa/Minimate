@@ -6,7 +6,7 @@ var nav = [
     { to: '/', icon: '\u{1F4CA}', label: 'DASHBOARD' },
     { to: '/panels', icon: '\u{1F532}', label: 'DDC PANELS', badge: null },
     { to: '/field-devices', icon: '\u{1F517}', label: 'FIELD DEVICES' },
-    { to: '/drawings', icon: '\u{1F4D0}', label: 'DRAWINGS' },
+    { to: '/documents', icon: '\u{1F4C1}', label: 'DOCUMENTS' },
     { to: '/tasks', icon: '✅', label: 'TASKS' },
   ]},
   { section: 'PROJECT', items: [
@@ -30,7 +30,7 @@ export default function Sidebar(props) {
   // Close sidebar on import (mobile)
   function handleImport(e) {
     setIsOpen(false)
-    if (props.onImportFile) props.onImportFile(e)
+    if (props.onGlobalImport) props.onGlobalImport(e)
   }
 
   function handleSwitch() {
@@ -103,19 +103,12 @@ export default function Sidebar(props) {
         <div className="mt-auto">
           <div className="px-4 pb-3">
             <label className="flex items-center gap-2 px-3 py-2 bg-orange/10 border border-orange/30 rounded-lg hover:bg-orange/20 transition cursor-pointer group">
-              <span className="text-sm">+</span>
-              <span className="text-[11px] text-orange font-semibold uppercase">IMPORT EXCEL</span>
-              <input type="file" accept=".xlsx,.xls,.csv,.docx,.doc,.pdf" onChange={handleImport} className="hidden"/>
+              <span className="text-sm">⬆</span>
+              <span className="text-[11px] text-orange font-semibold uppercase">IMPORT</span>
+              <span className="ml-auto text-[8px] text-dgray uppercase">ANY FILE</span>
+              <input type="file" accept=".xlsx,.xls,.csv,.docx,.doc,.pdf,.png,.jpg,.jpeg" onChange={handleImport} className="hidden"/>
             </label>
           </div>
-          {props.onImportDrawing && (
-            <div className="px-4 pb-3">
-              <button onClick={function(){if(props.onImportDrawing)props.onImportDrawing();setIsOpen(false)}} className="w-full flex items-center gap-2 px-3 py-2 bg-teal/10 border border-teal/30 rounded-lg hover:bg-teal/20 transition cursor-pointer">
-                <span className="text-sm">📐</span>
-                <span className="text-[11px] text-teal font-semibold uppercase">IMPORT DRAWINGS</span>
-              </button>
-            </div>
-          )}
           {props.onExportProject && (
             <div className="px-4 pb-3 flex gap-2">
               <button onClick={function(){props.onExportProject();setIsOpen(false)}} title="DOWNLOAD A JSON BACKUP OF THIS PROJECT" className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 bg-card border border-border rounded-lg hover:border-teal/50 transition text-[10px] text-dgray hover:text-white uppercase font-semibold">

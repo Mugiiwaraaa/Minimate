@@ -1,0 +1,349 @@
+/* --- DocumentsPage.jsx --- R2 Documents library + Estimate engine ---
+   Estimate section lives inside the doc library, tied to the doc engine.
+   Flow: import design-estimate file -> sheet picker (suggested pre-ticked)
+   -> parse (estimateParser) -> confirm-first review -> SAVE to Estimate/Scope
+   (data.estimateScope, the "as-designed" layer). Original file archived via
+   docStore when Supabase is configured. Standalone cable/BOQ/containment/
+   schedule files import the same way (kind-based). */
+
+import { useState, useEffect } from 'react'
+import { sheetList, parseEstimate, KIND_LABELS } from '../lib/estimateParser'
+import { ingestFile } from '../lib/docStore'
+
+function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
+
+export default function DocumentsPage(props) {
+  // props: project, projectName, scope, onUpdateScope
+  var scope = props.scope || {}
+  var wbState = useState(null); var wb = wbState[0]; var setWb = wbState[1]
+  var sheetsState = useState([]); var sheets = sheetsState[0]; var setSheets = sheetsState[1]
+  var selState = useState({}); var sel = selState[0]; var setSel = selState[1]
+  var parsedState = useState(null); var parsed = parsedState[0]; var setParsed = parsedState[1]
+  var tabState = useState(0); var tab = tabState[0]; var setTab = tabState[1]
+  var fileState = useState(''); var fileName = fileState[0]; var setFileName = fileState[1]
+  var busyState = useState(''); var busy = busyState[0]; var setBusy = busyState[1]
+  var openState = useState({}); var opened = openState[0]; var setOpened = openState[1]
+  var viewState = useState('estimate'); var view = viewState[0]; var setView = viewState[1]
+
+  // Estimate file handed in by the global import router
+  useEffect(function() {
+    if (props.incomingFile) {
+      setView('estimate')
+      processFile(props.incomingFile)
+      if (props.onConsumedIncoming) props.onConsumedIncoming()
+    }
+  }, [props.incomingFile])
+
+  function processFile(file) {
+    if (!file) return
+    if (!window.XLSX) { setBusy('SPREADSHEET LIBRARY NOT LOADED — RELOAD THE PAGE'); return }
+    setBusy('READING ' + up(file.name) + ' ...'); setParsed(null)
+    var reader = new FileReader()
+    reader.onload = function() {
+      try {
+        var book = window.XLSX.read(new Uint8Array(reader.result), { type: 'array' })
+        var list = sheetList(book)
+        var pre = {}
+        list.forEach(function(s) { if (s.suggested) pre[s.name] = true })
+        setWb(book); setSheets(list); setSel(pre); setFileName(file.name); setBusy('')
+        window._estFile = file // held for archive on save
+      } catch (err) { setBusy('COULD NOT READ FILE: ' + err) }
+    }
+    reader.onerror = function() { setBusy('COULD NOT READ FILE') }
+    reader.readAsArrayBuffer(file)
+  }
+
+  function toggleSheet(name) {
+    var next = Object.assign({}, sel); next[name] = !next[name]; setSel(next)
+  }
+
+  function doParse() {
+    if (!wb) return
+    var chosen = Object.keys(sel).filter(function(k) { return sel[k] })
+    setBusy('PARSING ' + chosen.length + ' SHEET(S) ...')
+    setTimeout(function() {
+      try {
+        var res = parseEstimate(wb, chosen)
+        setParsed(res); setTab(0); setBusy('')
+      } catch (err) { setBusy('PARSE FAILED: ' + err) }
+    }, 20)
+  }
+
+  function saveScope() {
+    if (!parsed) return
+    var next = {
+      fileName: fileName,
+      importedAt: new Date().toISOString(),
+      sheets: parsed.sheets
+    }
+    if (props.onUpdateScope) props.onUpdateScope(next)
+    // best-effort archive of the original file (never blocks the save)
+    try {
+      if (props.project && window._estFile) {
+        ingestFile(props.project, window._estFile, [], { docType: 'OTHER', title: fileName, source: 'ESTIMATE IMPORT' })
+          .then(function() {}).catch(function() {})
+      }
+    } catch (e) {}
+    setBusy('SAVED TO ESTIMATE SCOPE')
+    setTimeout(function() { setBusy('') }, 2500)
+  }
+
+  function toggleOpen(k) { var n = Object.assign({}, opened); n[k] = !n[k]; setOpened(n) }
+
+  var thc = 'text-[9px] text-dgray text-left px-2 py-1.5 uppercase'
+  var tdc = 'text-[11px] px-2 py-1.5 uppercase'
+
+  function num(n) { return (n == null || n === '') ? '' : ('' + n) }
+
+  function renderSheet(sh) {
+    var d = sh.data || {}
+    if (sh.kind === 'io_summary') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>QTY</th><th className={thc + ' text-center'}>POINTS</th><th className={thc}>TAGS</th>
+        </tr></thead><tbody>
+          {(d.equipment || []).map(function(e, i) {
+            var key = 'io' + i
+            var isOpen = opened[key]
+            var rows = [(
+              <tr key={key} className={'border-b border-border/30 cursor-pointer hover:bg-card2/40' + (i % 2 ? ' bg-card2/20' : '')} onClick={function() { toggleOpen(key) }}>
+                <td className={tdc + ' font-bold text-cyan'}><span className="text-dgray mr-1">{isOpen ? '▾' : '▸'}</span>{e.type}</td>
+                <td className={tdc + ' text-center'}>{e.qty}</td>
+                <td className={tdc + ' text-center font-bold text-teal'}>{e.points.length}</td>
+                <td className={tdc + ' text-dgray text-[10px]'}>{e.tags}</td>
+              </tr>
+            )]
+            if (isOpen) {
+              rows.push(
+                <tr key={key + 'p'} className="bg-navy/40"><td colSpan={4} className="px-4 py-2">
+                  <table className="w-full"><tbody>
+                    {e.points.map(function(p, pi) {
+                      var types = Object.keys(p.pts).map(function(k) { return k + (p.pts[k] > 1 ? '×' + p.pts[k] : '') }).join(' / ')
+                      return (<tr key={pi} className="border-b border-border/20">
+                        <td className={tdc}>{p.desc}</td>
+                        <td className={tdc + ' text-teal font-bold w-24'}>{types}</td>
+                        <td className={tdc + ' text-dgray text-[10px]'}>{(p.devices || []).join(', ')}</td>
+                      </tr>)
+                    })}
+                  </tbody></table>
+                </td></tr>
+              )
+            }
+            return rows
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'ddc') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>QTY</th><th className={thc + ' text-center'}>TOTAL</th><th className={thc + ' text-center'}>DI</th><th className={thc + ' text-center'}>DO</th><th className={thc + ' text-center'}>AI</th><th className={thc + ' text-center'}>AO</th><th className={thc}>CONTROLLERS</th>
+        </tr></thead><tbody>
+          {(d.rows || []).map(function(r, i) {
+            return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+              <td className={tdc + ' font-bold text-cyan'}>{r.equipment}</td>
+              <td className={tdc + ' text-center'}>{r.qty}</td>
+              <td className={tdc + ' text-center font-bold text-teal'}>{r.total}</td>
+              <td className={tdc + ' text-center'}>{num(r.di)}</td><td className={tdc + ' text-center'}>{num(r.do)}</td>
+              <td className={tdc + ' text-center'}>{num(r.ai)}</td><td className={tdc + ' text-center'}>{num(r.ao)}</td>
+              <td className={tdc + ' text-[10px] text-purple'}>{(r.controllers || []).map(function(c) { return c.type + (c.qty > 1 ? '×' + c.qty : '') }).join(', ')}</td>
+            </tr>)
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'analysis') {
+      return (
+        <div>
+          <div className="text-[9px] text-dgray uppercase mb-1">PRICING CAPTURED, HELD FOR FINANCE (NOT SHOWN)</div>
+          <table className="w-full"><thead><tr className="border-b border-border">
+            <th className={thc}>MODEL</th><th className={thc}>ORDER CODE</th><th className={thc}>DESCRIPTION</th><th className={thc + ' text-center'}>QTY</th><th className={thc + ' text-center'}>SPARES</th>
+          </tr></thead><tbody>
+            {(d.items || []).map(function(it, i) {
+              return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+                <td className={tdc + ' font-bold text-cyan'}>{it.model}</td>
+                <td className={tdc + ' text-dgray'}>{it.orderCode}</td>
+                <td className={tdc}>{it.description}</td>
+                <td className={tdc + ' text-center font-bold'}>{it.qty}</td>
+                <td className={tdc + ' text-center text-dgray'}>{num(it.spares)}</td>
+              </tr>)
+            })}
+          </tbody></table>
+        </div>
+      )
+    }
+    if (sh.kind === 'boq') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>GROUP</th><th className={thc}>MODEL</th><th className={thc}>DESCRIPTION</th><th className={thc + ' text-center'}>QTY</th><th className={thc + ' text-center'}>UNIT</th>
+        </tr></thead><tbody>
+          {(d.items || []).map(function(it, i) {
+            return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+              <td className={tdc + ' text-orange text-[10px]'}>{it.group}</td>
+              <td className={tdc + ' font-bold text-cyan'}>{it.model}</td>
+              <td className={tdc}>{it.description}</td>
+              <td className={tdc + ' text-center font-bold'}>{it.qty}</td>
+              <td className={tdc + ' text-center text-dgray'}>{it.unit}</td>
+            </tr>)
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'cables') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>DEVICE / CIRCUIT</th><th className={thc}>MODEL</th><th className={thc}>WIRE</th><th className={thc + ' text-center'}>POINTS</th><th className={thc + ' text-center'}>TOTAL M</th>
+        </tr></thead><tbody>
+          {(d.rows || []).map(function(r, i) {
+            return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+              <td className={tdc + ' font-bold text-cyan'}>{r.device}</td>
+              <td className={tdc + ' text-dgray'}>{r.model}</td>
+              <td className={tdc + ' text-[10px]'}>{r.wireType}</td>
+              <td className={tdc + ' text-center'}>{num(r.points)}</td>
+              <td className={tdc + ' text-center font-bold text-teal'}>{num(r.totalLength)}</td>
+            </tr>)
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'equipment') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>GROUP</th><th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>QTY</th><th className={thc + ' text-center'}>CTRL</th><th className={thc + ' text-center'}>MON</th><th className={thc + ' text-center'}>INT</th>
+        </tr></thead><tbody>
+          {(d.rows || []).map(function(r, i) {
+            function mk(b) { return b ? <span className="text-green font-bold">✓</span> : <span className="text-dgray">·</span> }
+            return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+              <td className={tdc + ' text-orange text-[10px]'}>{r.group}</td>
+              <td className={tdc + ' font-bold text-cyan'}>{r.equipment}</td>
+              <td className={tdc + ' text-center font-bold'}>{r.qty}</td>
+              <td className={tdc + ' text-center'}>{mk(r.control)}</td>
+              <td className={tdc + ' text-center'}>{mk(r.monitor)}</td>
+              <td className={tdc + ' text-center'}>{mk(r.integration)}</td>
+            </tr>)
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'model_numbers') {
+      return (
+        <table className="w-full"><thead><tr className="border-b border-border">
+          <th className={thc}>MODEL</th><th className={thc}>DESCRIPTION</th>
+        </tr></thead><tbody>
+          {(d.catalog || []).map(function(c, i) {
+            return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+              <td className={tdc + ' font-bold text-cyan'}>{c.model}</td><td className={tdc}>{c.description}</td>
+            </tr>)
+          })}
+        </tbody></table>
+      )
+    }
+    if (sh.kind === 'containment') {
+      var sm = d.summary || {}
+      return (
+        <div className="flex flex-wrap gap-2">
+          {Object.keys(sm).map(function(k) {
+            return (<div key={k} className="bg-card2 rounded-lg px-3 py-2"><div className="text-[9px] text-dgray uppercase">{k}</div><div className="text-lg font-extrabold text-teal">{sm[k]}</div></div>)
+          })}
+        </div>
+      )
+    }
+    // generic schedule
+    var hdr = d.header || []
+    return (
+      <table className="w-full"><thead><tr className="border-b border-border">
+        {hdr.map(function(h, i) { return <th key={i} className={thc}>{h}</th> })}
+      </tr></thead><tbody>
+        {(d.rows || []).slice(0, 300).map(function(r, i) {
+          return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
+            {hdr.map(function(h, ci) { return <td key={ci} className={tdc}>{num(r[ci])}</td> })}
+          </tr>)
+        })}
+      </tbody></table>
+    )
+  }
+
+  var savedSheets = scope.sheets || []
+
+  return (
+    <div className="p-4 md:p-6 max-w-[1200px] mx-auto">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
+        <h1 className="text-lg md:text-xl font-bold uppercase">DOCUMENTS <span className="text-dgray font-normal text-xs ml-2">ESTIMATE ENGINE + LIBRARY</span></h1>
+        <div className="text-[10px] text-dgray uppercase">USE THE <span className="text-orange font-bold">IMPORT</span> BUTTON (SIDEBAR) TO ADD FILES</div>
+      </div>
+
+      <div className="flex gap-1.5 mb-4 border-b border-border pb-2">
+        {['estimate', 'drawings', 'library'].map(function(v) {
+          var labels = { estimate: 'ESTIMATE ENGINE', drawings: 'DRAWINGS', library: 'DOCUMENT LIBRARY' }
+          return <button key={v} onClick={function() { setView(v) }} className={'px-3 py-1.5 rounded text-[10px] font-bold uppercase transition ' + (view === v ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{labels[v]}</button>
+        })}
+      </div>
+
+      {view === 'estimate' && busy && <div className="mb-3 text-[11px] text-teal uppercase font-semibold">{busy}</div>}
+
+      {/* Sheet picker */}
+      {view === 'estimate' && sheets.length > 0 && !parsed && (
+        <div className="bg-card rounded-xl border border-border p-4 mb-4">
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-2">{up(fileName)} — CHOOSE SHEETS TO IMPORT (USEFUL ONES PRE-TICKED)</div>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {sheets.map(function(s) {
+              var on = !!sel[s.name]
+              var dead = s.kind === 'io_cust' || s.kind === 'other'
+              return (
+                <button key={s.name} onClick={function() { toggleSheet(s.name) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase transition text-left ' + (on ? 'bg-teal/20 text-teal' : (dead ? 'bg-card2 text-dgray/60 line-through' : 'bg-card2 text-dgray hover:text-white'))}>
+                  {on ? '✓ ' : ''}{s.name} <span className="text-[8px] opacity-70">· {s.label}</span>
+                </button>
+              )
+            })}
+          </div>
+          <button onClick={doParse} className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase">PARSE SELECTED →</button>
+        </div>
+      )}
+
+      {/* Review */}
+      {view === 'estimate' && parsed && parsed.sheets.length > 0 && (
+        <div className="bg-card rounded-xl border border-border p-4 mb-4">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="text-[10px] text-dgray uppercase font-semibold">REVIEW — {up(fileName)} · CONFIRM BEFORE SAVING TO SCOPE</div>
+            <div className="flex gap-2">
+              <button onClick={function() { setParsed(null) }} className="px-3 py-1.5 bg-card2 text-dgray text-[10px] font-semibold rounded uppercase hover:text-white">← BACK</button>
+              <button onClick={saveScope} className="px-4 py-1.5 bg-green/20 text-green text-[11px] font-bold rounded uppercase hover:bg-green/30">✓ SAVE TO ESTIMATE SCOPE</button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mb-3 border-b border-border pb-2">
+            {parsed.sheets.map(function(s, i) {
+              return <button key={i} onClick={function() { setTab(i) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase transition ' + (tab === i ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{s.label}</button>
+            })}
+          </div>
+          <div className="overflow-x-auto">{parsed.sheets[tab] && renderSheet(parsed.sheets[tab])}</div>
+        </div>
+      )}
+
+      {/* Current saved scope */}
+      {view === 'estimate' && (
+      <div className="bg-card rounded-xl border border-border p-4">
+        <div className="text-[10px] text-dgray uppercase font-semibold mb-2">ESTIMATE SCOPE (AS-DESIGNED)</div>
+        {savedSheets.length === 0 ? (
+          <div className="text-[11px] text-dgray uppercase">NO ESTIMATE SAVED YET — USE THE IMPORT BUTTON IN THE SIDEBAR TO ADD A DESIGN ESTIMATE.</div>
+        ) : (
+          <div>
+            <div className="text-[11px] uppercase mb-2"><span className="text-dgray">SOURCE: </span><span className="font-bold text-cyan">{up(scope.fileName)}</span><span className="text-dgray"> · SAVED {scope.importedAt ? scope.importedAt.substring(0, 10) : ''}</span></div>
+            <div className="flex flex-wrap gap-2">
+              {savedSheets.map(function(s, i) {
+                var count = s.data && (s.data.equipment || s.data.rows || s.data.items || s.data.catalog || []).length
+                return (<div key={i} className="bg-card2 rounded-lg px-3 py-2"><div className="text-[9px] text-dgray uppercase">{s.label}</div><div className="text-sm font-extrabold text-teal">{count != null ? count : '✓'} <span className="text-[9px] text-dgray font-normal">{count != null ? 'ROWS' : ''}</span></div></div>)
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
+      {view === 'drawings' && (props.drawingsElement || <div className="text-[11px] text-dgray uppercase">DRAWINGS SECTION.</div>)}
+
+      {view === 'library' && (
+        <div className="bg-card rounded-xl border border-border p-4 text-[11px] text-dgray uppercase leading-relaxed">DOCUMENT REGISTER — IMPORTED ORIGINALS (ESTIMATES, DRAWINGS, SCHEDULES) APPEAR HERE ONCE THE documents TABLE + STORAGE BUCKET ARE SET UP (RUN THE SQL IN docStore.js). YOUR EXISTING DRAWINGS ARE UNDER THE DRAWINGS TAB — UNCHANGED.</div>
+      )}
+    </div>
+  )
+}

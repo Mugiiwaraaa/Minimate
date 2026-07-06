@@ -9,6 +9,9 @@ import CommDevices from './pages/CommDevices'
 import DrawingsPage from './pages/DrawingsPage'
 import BlockersPage from './pages/BlockersPage'
 import ReportsPage from './pages/ReportsPage'
+import DocumentsPage from './pages/DocumentsPage'
+import GlobalImport from './components/GlobalImport'
+import { ingestFile } from './lib/docStore'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
@@ -108,6 +111,16 @@ export default function App() {
   var reportCfgState = useState({}) // report header + section toggles (per project)
   var reportConfig = reportCfgState[0]
   var setReportConfig = reportCfgState[1]
+  var estScopeState = useState({}) // R2 estimate/design scope (as-designed layer)
+  var estimateScope = estScopeState[0]
+  var setEstimateScope = estScopeState[1]
+  var gImpState = useState(null) // R2 global import: file awaiting route confirmation
+  var gImpFile = gImpState[0]
+  var setGImpFile = gImpState[1]
+  var incomingEstState = useState(null) // estimate file handed to DocumentsPage
+  var incomingEst = incomingEstState[0]
+  var setIncomingEst = incomingEstState[1]
+  var navigate = useNavigate()
 
   // Import preview modal state
   var ipState = useState(null)
@@ -182,7 +195,8 @@ export default function App() {
       drawings: drawings,
       blockers: blockers,
       gateways: gateways,
-      reportConfig: reportConfig
+      reportConfig: reportConfig,
+      estimateScope: estimateScope
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -190,7 +204,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig])
+  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope])
 
   // Flush save before page unload
   useEffect(function() {
@@ -268,6 +282,7 @@ export default function App() {
       setBlockers(data.blockers || [])
       setGateways(data.gateways || [])
       setReportConfig(data.reportConfig || {})
+      setEstimateScope(data.estimateScope || {})
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
@@ -412,6 +427,7 @@ export default function App() {
       setBlockers(data.blockers || [])
       setGateways(data.gateways || [])
       setReportConfig(data.reportConfig || {})
+      setEstimateScope(data.estimateScope || {})
       setActiveProject(fullProject || project)
       activeProjectIdRef.current = (fullProject && fullProject.id) || null
       setLoadedVersion((fullProject && fullProject.version) || 0)
@@ -774,6 +790,36 @@ export default function App() {
 
   function handleDrawingImport() {
     setDrawingImport({ step: 'select', files: [], progress: [], result: null, error: null })
+  }
+
+  // ── R2 global import: one button, classify -> confirm -> route ──
+  function handleGlobalImport(e) {
+    var f = e && e.target && e.target.files && e.target.files[0]
+    if (e && e.target) e.target.value = ''
+    if (f) setGImpFile(f)
+  }
+  function routeImport(file, dest) {
+    setGImpFile(null)
+    if (!file) return
+    if (dest === 'drawing') {
+      importFileIdRef.current++
+      var item = { id: 'if-' + importFileIdRef.current, file: file, kind: isPdf(file) ? null : FILE_KINDS.MARKED_PHOTO }
+      setDrawingImport({ step: 'select', files: [item], progress: [], result: null, error: null })
+      if (isPdf(file)) {
+        classifyFile(file).then(function(kind) {
+          setDrawingImport(function(prev) {
+            if (!prev) return prev
+            return Object.assign({}, prev, { files: prev.files.map(function(it) { return (it.id === item.id && it.kind === null) ? Object.assign({}, it, { kind: kind }) : it }) })
+          })
+        })
+      }
+      return
+    }
+    if (dest === 'data') { handleImportFile({ target: { files: [file], value: '' } }); return }
+    if (dest === 'estimate') { setIncomingEst(file); navigate('/documents'); return }
+    try {
+      if (activeProject) ingestFile(activeProject, file, [], { docType: 'OTHER', title: file.name, source: 'IMPORT' }).then(function() {}).catch(function() {})
+    } catch (err) {}
   }
 
   function handleDrawingFiles(e) {
@@ -1626,7 +1672,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-navy text-white">
-      <Sidebar projectName={projectName} onImportFile={handleImportFile} onImportDrawing={handleDrawingImport} onSwitchProject={handleSwitchProject} onExportProject={handleExportProject} onRestoreProject={handleRestoreProject} isDemo={isDemo} />
+      <Sidebar projectName={projectName} onGlobalImport={handleGlobalImport} onSwitchProject={handleSwitchProject} onExportProject={handleExportProject} onRestoreProject={handleRestoreProject} isDemo={isDemo} />
       {canUndo && (<button onClick={handleUndo} className="fixed top-14 md:top-3 right-4 z-40 bg-card2 border border-border text-dgray hover:text-white hover:border-teal w-8 h-8 rounded-lg text-sm flex items-center justify-center transition" title="UNDO (CTRL+Z)">↩</button>)}
 
       {/* Stale build: block-until-refresh banner */}
@@ -1665,6 +1711,10 @@ export default function App() {
       )}
       {renderImportModal()}
       {renderDrawingModal()}
+      {gImpFile && (
+        <GlobalImport file={gImpFile} onRoute={routeImport} onClose={function() { setGImpFile(null) }} />
+      )}
+
       {traceSession && (
         <TraceStudio file={traceSession.file} record={traceSession.record} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
       )}
@@ -1675,6 +1725,7 @@ export default function App() {
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
+          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />
