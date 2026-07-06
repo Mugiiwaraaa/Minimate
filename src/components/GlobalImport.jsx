@@ -9,6 +9,7 @@
 
 import { useState, useEffect } from 'react'
 import { sheetList } from '../lib/estimateParser'
+import { looksLikeTermination } from '../lib/terminationParser'
 
 function isImg(f) { return /^image\//.test(f.type || '') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name || '') }
 function isPdfF(f) { return f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '') }
@@ -16,7 +17,8 @@ function isXls(f) { return /\.(xlsx|xls|csv)$/i.test(f.name || '') || /sheet|exc
 
 var DESTS = [
   { key: 'drawing', label: 'DRAWING → TRACE STUDIO', hint: 'SHOP DRAWING TO PIN & TRACE' },
-  { key: 'data', label: 'IO / SCHEDULE → PANELS', hint: 'IO LIST, TERMINATION, FCU/VAV SCHEDULE' },
+  { key: 'data', label: 'IO / SCHEDULE → PANELS', hint: 'IO LIST, FCU/VAV SCHEDULE' },
+  { key: 'termination', label: 'TERMINATION → DDC PINS', hint: 'PER-DDC PIN/CABLE TERMINATION SHEET' },
   { key: 'estimate', label: 'DESIGN ESTIMATE → SCOPE', hint: 'MULTI-SHEET BUDGET / ESTIMATE WORKBOOK' },
   { key: 'library', label: 'LIBRARY (ARCHIVE ONLY)', hint: 'KEEP THE FILE, EXTRACT NOTHING' }
 ]
@@ -38,6 +40,7 @@ export default function GlobalImport(props) {
         try {
           if (!window.XLSX) { setDest('data'); setNote('SPREADSHEET — ROUTE TO PANELS'); return }
           var wb = window.XLSX.read(new Uint8Array(reader.result), { type: 'array' })
+          if (looksLikeTermination(wb)) { setDest('termination'); setNote('TERMINATION SHEET DETECTED — PER-DDC PIN/CABLE'); return }
           var list = sheetList(wb)
           var est = list.filter(function(s) { return s.kind === 'io_summary' || s.kind === 'ddc' || s.kind === 'analysis' || s.kind === 'boq' }).length
           if (est >= 2) { setDest('estimate'); setNote('DESIGN ESTIMATE DETECTED — ' + list.length + ' SHEETS, ' + est + ' ESTIMATE SHEETS') }

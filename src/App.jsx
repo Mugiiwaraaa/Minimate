@@ -11,7 +11,8 @@ import BlockersPage from './pages/BlockersPage'
 import ReportsPage from './pages/ReportsPage'
 import DocumentsPage from './pages/DocumentsPage'
 import GlobalImport from './components/GlobalImport'
-import { listDocuments, archiveDocument } from './lib/docStore'
+import { listDocuments, archiveDocument, upsertDocument, deleteDocument } from './lib/docStore'
+import { parseTermination, applyTermination } from './lib/terminationParser'
 import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
@@ -828,9 +829,32 @@ export default function App() {
       }
       return
     }
+    if (dest === 'termination') {
+      if (!window.XLSX) { alert('SPREADSHEET LIBRARY NOT LOADED — RELOAD'); return }
+      var trd = new FileReader()
+      trd.onload = function() {
+        try {
+          var wbk = window.XLSX.read(new Uint8Array(trd.result), { type: 'array' })
+          var parsed = parseTermination(wbk)
+          var res = applyTermination(terminationMap, panels, parsed)
+          setTerminationMap(res.terminationMap)
+          alert('TERMINATION IMPORTED — ' + res.matched.length + ' DDC MATCHED' + (res.unmatched.length ? '; UNMATCHED: ' + res.unmatched.join(', ') : ''))
+        } catch (err) { alert('TERMINATION IMPORT FAILED: ' + err) }
+      }
+      trd.readAsArrayBuffer(file)
+      return
+    }
     if (dest === 'data') { handleImportFile({ target: { files: [file], value: '' } }); return }
     if (dest === 'estimate') { setIncomingEst(file); navigate('/documents'); return }
     // 'library' — the archive above is the whole action
+  }
+  function updateDoc(doc) {
+    setDocuments(function(prev) { return prev.map(function(d) { return d.id === doc.id ? doc : d }) })
+    if (activeProject) upsertDocument(activeProject.id, doc).catch(function() {})
+  }
+  function deleteDoc(id) {
+    setDocuments(function(prev) { return prev.filter(function(d) { return d.id !== id }) })
+    if (activeProject) deleteDocument(activeProject.id, id).catch(function() {})
   }
 
   function handleDrawingFiles(e) {
@@ -1736,7 +1760,7 @@ export default function App() {
           <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
-          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
+          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />

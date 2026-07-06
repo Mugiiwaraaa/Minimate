@@ -8,6 +8,8 @@
 
 import { useState, useEffect } from 'react'
 import { sheetList, parseEstimate, KIND_LABELS } from '../lib/estimateParser'
+import { DOC_TYPE_LABELS } from '../lib/docStore'
+import IoListPage from './IoListPage'
 
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
 
@@ -23,6 +25,7 @@ export default function DocumentsPage(props) {
   var busyState = useState(''); var busy = busyState[0]; var setBusy = busyState[1]
   var openState = useState({}); var opened = openState[0]; var setOpened = openState[1]
   var viewState = useState('estimate'); var view = viewState[0]; var setView = viewState[1]
+  var openDocState = useState(null); var openDoc = openDocState[0]; var setOpenDoc = openDocState[1]
 
   // Estimate file handed in by the global import router
   useEffect(function() {
@@ -333,26 +336,47 @@ export default function DocumentsPage(props) {
 
       {view === 'drawings' && (props.drawingsElement || <div className="text-[11px] text-dgray uppercase">DRAWINGS SECTION.</div>)}
 
-      {view === 'library' && (
+      {view === 'library' && openDoc && (
+        <div className="bg-card rounded-xl border border-border p-4 mb-4">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div className="text-[11px] uppercase"><span className="text-dgray">OPEN: </span><span className="font-bold text-cyan">{openDoc.register_no || openDoc.file_name}</span><span className="text-dgray"> · {openDoc.title}</span></div>
+            <button onClick={function() { setOpenDoc(null) }} className="px-3 py-1.5 bg-card2 text-dgray text-[10px] font-semibold rounded uppercase hover:text-white">← BACK TO LIBRARY</button>
+          </div>
+          <IoListPage panels={props.panels} equipmentMap={props.equipmentMap} onUpdatePoint={props.onUpdatePoint} />
+        </div>
+      )}
+
+      {view === 'library' && !openDoc && (
         <div className="bg-card rounded-xl border border-border p-4">
           <div className="text-[10px] text-dgray uppercase font-semibold mb-2">DOCUMENT REGISTER — EVERY IMPORTED ORIGINAL</div>
           {(props.documents || []).length === 0 ? (
             <div className="text-[11px] text-dgray uppercase leading-relaxed">NO DOCUMENTS YET. IMPORTS REGISTER HERE ONCE THE documents TABLE + STORAGE BUCKET SQL (IN docStore.js) IS RUN IN SUPABASE. EXISTING DRAWINGS ARE UNDER THE DRAWINGS TAB — UNCHANGED.</div>
           ) : (
-            <table className="w-full"><thead><tr className="border-b border-border">
-              <th className={thc}>REGISTER NO</th><th className={thc}>TYPE</th><th className={thc}>TITLE</th><th className={thc + ' text-center'}>REV</th><th className={thc}>STATUS</th><th className={thc}>DATE</th>
+            <div>
+            <div className="text-[9px] text-dgray uppercase mb-1 no-print">CLICK A DOCUMENT NAME TO OPEN · OTHER FIELDS EDIT INLINE</div>
+            <div className="overflow-x-auto"><table className="w-full"><thead><tr className="border-b border-border">
+              <th className={thc}>REGISTER NO</th><th className={thc}>TYPE</th><th className={thc}>TITLE</th><th className={thc}>FLOOR</th><th className={thc + ' text-center'}>REV</th><th className={thc}>STATUS</th><th className={thc}>REMARKS</th><th className={thc}>DATE</th><th className={thc + ' no-print'}></th>
             </tr></thead><tbody>
               {props.documents.map(function(d, i) {
+                function upd(patch) { if (props.onUpdateDoc) props.onUpdateDoc(Object.assign({}, d, patch)) }
                 return (<tr key={d.id || i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '')}>
-                  <td className={tdc + ' font-bold text-cyan'}>{d.register_no || '—'}</td>
-                  <td className={tdc + ' text-purple text-[10px]'}>{d.doc_type}</td>
-                  <td className={tdc}>{d.title || d.file_name}</td>
-                  <td className={tdc + ' text-center'}>{d.revision}</td>
+                  <td className={tdc}><input value={d.register_no || ''} onChange={function(e) { upd({ register_no: up(e.target.value) }) }} className={inCls + ' w-32 text-[11px] font-bold text-cyan'} /></td>
+                  <td className={tdc}>
+                    <select value={d.doc_type || 'OTHER'} onChange={function(e) { upd({ doc_type: e.target.value }) }} className="bg-navy border border-border rounded px-1 py-0.5 text-[10px] text-purple uppercase outline-none cursor-pointer">
+                      {Object.keys(DOC_TYPE_LABELS).map(function(k) { return <option key={k} value={k}>{DOC_TYPE_LABELS[k]}</option> })}
+                    </select>
+                  </td>
+                  <td className={tdc}><button onClick={function() { setOpenDoc(d) }} className="text-left text-[11px] text-white hover:text-teal underline decoration-dotted underline-offset-2 min-w-[180px]" title="OPEN DOCUMENT">{d.title || d.file_name || 'UNTITLED'}</button></td>
+                  <td className={tdc}><input value={d.floor || ''} onChange={function(e) { upd({ floor: up(e.target.value) }) }} placeholder="-" className={inCls + ' w-16 text-[11px] text-orange'} /></td>
+                  <td className={tdc + ' text-center'}><input value={d.revision || ''} onChange={function(e) { upd({ revision: up(e.target.value) }) }} className={inCls + ' w-10 text-center text-[11px]'} /></td>
                   <td className={tdc + ' text-[10px] ' + (d.status === 'PROCESSED' ? 'text-green' : 'text-orange')}>{d.status}</td>
-                  <td className={tdc + ' text-dgray text-[10px]'}>{(d.created_at || '').substring(0, 10)}</td>
+                  <td className={tdc}><input value={d.remarks || ''} onChange={function(e) { upd({ remarks: up(e.target.value) }) }} placeholder="" className={inCls + ' w-full min-w-[120px] text-[10px] text-orange italic'} /></td>
+                  <td className={tdc + ' text-dgray text-[10px] whitespace-nowrap'}>{(d.created_at || '').substring(0, 10)}</td>
+                  <td className={tdc + ' no-print whitespace-nowrap'}><button onClick={function() { if (props.onDeleteDoc && window.confirm('DELETE ' + (d.register_no || d.file_name) + ' FROM THE REGISTER?')) props.onDeleteDoc(d.id) }} className="text-dgray hover:text-red px-0.5">✕</button></td>
                 </tr>)
               })}
-            </tbody></table>
+            </tbody></table></div>
+            </div>
           )}
         </div>
       )}
