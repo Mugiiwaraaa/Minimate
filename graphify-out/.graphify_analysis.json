@@ -1,0 +1,531 @@
+{
+  "communities": {
+    "0": [
+      "src_app",
+      "src_app_addrnum",
+      "src_app_app",
+      "src_app_makeloopdevice",
+      "src_app_placeholder",
+      "src_app_sortdevicesbyaddress",
+      "src_components_sidebar",
+      "src_components_sidebar_sidebar",
+      "src_lib_docstore_listdocuments",
+      "src_lib_supabase",
+      "src_lib_supabasedb",
+      "src_lib_supabasedb_attemptsave",
+      "src_lib_supabasedb_autobackup",
+      "src_lib_supabasedb_countpoints",
+      "src_lib_supabasedb_createproject",
+      "src_lib_supabasedb_deleteproject",
+      "src_lib_supabasedb_finishsave",
+      "src_lib_supabasedb_flushpendingsave",
+      "src_lib_supabasedb_flushsave",
+      "src_lib_supabasedb_harddeleteproject",
+      "src_lib_supabasedb_listarchivedprojects",
+      "src_lib_supabasedb_listprojects",
+      "src_lib_supabasedb_loadproject",
+      "src_lib_supabasedb_merge3fields",
+      "src_lib_supabasedb_mergebyid",
+      "src_lib_supabasedb_mergeequipmap",
+      "src_lib_supabasedb_mergeprojectdata",
+      "src_lib_supabasedb_onremotedata",
+      "src_lib_supabasedb_onsaveconflict",
+      "src_lib_supabasedb_prunebackups",
+      "src_lib_supabasedb_restoreproject",
+      "src_lib_supabasedb_saveprojectdata",
+      "src_lib_supabasedb_saveprojectmeta",
+      "src_lib_supabasedb_setloadeddata",
+      "src_lib_supabasedb_setloadedversion",
+      "src_lib_supabasedb_subscribetoproject",
+      "src_lib_supabasedb_unsubscribefromproject",
+      "src_main",
+      "src_pages_blockerspage",
+      "src_pages_blockerspage_blockerspage",
+      "src_pages_blockerspage_up",
+      "src_pages_projectselector",
+      "src_pages_projectselector_projectselector"
+    ],
+    "1": [
+      "image_floorplan",
+      "index_html",
+      "readme",
+      "setup_md",
+      "src_app_jsx",
+      "src_assets_hero_png",
+      "src_components_progressbar",
+      "src_components_progressbar_progressbar",
+      "src_components_statusbadge",
+      "src_components_statusbadge_statusbadge",
+      "src_lib_controllermodules",
+      "src_lib_controllermodules_generatepinlayout",
+      "src_lib_controllermodules_js",
+      "src_lib_demodata_js",
+      "src_lib_smartparser_js",
+      "src_lib_supabase_js",
+      "src_lib_supabasedb_js",
+      "src_main_jsx",
+      "src_pages_commloops",
+      "src_pages_commloops_commloops",
+      "src_pages_commloops_generateid",
+      "src_pages_dashboard",
+      "src_pages_dashboard_calcfdpct",
+      "src_pages_dashboard_dashboard",
+      "src_pages_dashboard_statcard",
+      "src_pages_fielddevices",
+      "src_pages_fielddevices_fdlabels",
+      "src_pages_fielddevices_fdstages",
+      "src_pages_fielddevices_fielddevices",
+      "src_pages_paneldetail",
+      "src_pages_paneldetail_autogrow",
+      "src_pages_paneldetail_autoshrink",
+      "src_pages_paneldetail_paneldetail",
+      "src_pages_paneldetail_up",
+      "src_pages_panelslist",
+      "src_pages_panelslist_getpanelstatus",
+      "src_pages_panelslist_getprogress",
+      "src_pages_panelslist_panelslist",
+      "src_pages_panelslist_stagechip",
+      "supabase_schema_sql"
+    ],
+    "2": [
+      "src_lib_analyzers_cadpdf",
+      "src_lib_analyzers_cadpdf_analyzecadpdf",
+      "src_lib_analyzers_photo",
+      "src_lib_analyzers_photo_analyzephoto",
+      "src_lib_analyzers_photo_analyzephotobase64",
+      "src_lib_analyzers_pinextract",
+      "src_lib_analyzers_pinextract_cleantag",
+      "src_lib_analyzers_pinextract_extractpins",
+      "src_lib_analyzers_sequence",
+      "src_lib_analyzers_sequence_analyzesequence",
+      "src_lib_analyzers_sequence_buildsequenceprompt",
+      "src_lib_analyzers_sequence_cleantag",
+      "src_lib_analyzers_sequence_dedupeseam",
+      "src_lib_geminiclient",
+      "src_lib_geminiclient_callgeminiraw",
+      "src_lib_geminiclient_callgeminiwithfile",
+      "src_lib_geminiclient_callgeminiwithimage",
+      "src_lib_geminiclient_compressimage",
+      "src_lib_geminiclient_extractjson",
+      "src_lib_geminiclient_normalizekeys",
+      "src_lib_geminiclient_repairjson",
+      "src_lib_geminiclient_uploadtogemini",
+      "src_lib_importengine",
+      "src_lib_importengine_classifyfile",
+      "src_lib_importengine_cleantag",
+      "src_lib_importengine_ispdf",
+      "src_lib_importengine_mergeresults",
+      "src_lib_importengine_rasterizepdfpages",
+      "src_lib_importengine_runimportsession"
+    ],
+    "3": [
+      "src_lib_loopstore",
+      "src_lib_loopstore_devicefieldskey",
+      "src_lib_loopstore_devicerowtodevice",
+      "src_lib_loopstore_devicetorow",
+      "src_lib_loopstore_diffloops",
+      "src_lib_loopstore_drainnow",
+      "src_lib_loopstore_ensurebackfill",
+      "src_lib_loopstore_fetchloopdevices",
+      "src_lib_loopstore_flushloopops",
+      "src_lib_loopstore_isownecho",
+      "src_lib_loopstore_loadloops",
+      "src_lib_loopstore_loopfieldskey",
+      "src_lib_loopstore_looprowtoloop",
+      "src_lib_loopstore_looptorow",
+      "src_lib_loopstore_notewrites",
+      "src_lib_loopstore_queuesize",
+      "src_lib_loopstore_rowstoloops",
+      "src_lib_loopstore_rowtodevice",
+      "src_lib_loopstore_runbatch",
+      "src_lib_loopstore_stablerowkey",
+      "src_lib_loopstore_stableval",
+      "src_lib_loopstore_subscribeloops",
+      "src_lib_loopstore_syncloops",
+      "src_lib_loopstore_throwiferror",
+      "src_lib_loopstore_unsubscribeloops"
+    ],
+    "4": [
+      "package",
+      "package_dependencies",
+      "package_dependencies_react",
+      "package_dependencies_react_dom",
+      "package_dependencies_react_router_dom",
+      "package_dependencies_supabase_supabase_js",
+      "package_devdependencies",
+      "package_devdependencies_oxlint",
+      "package_devdependencies_tailwindcss",
+      "package_devdependencies_tailwindcss_vite",
+      "package_devdependencies_types_react",
+      "package_devdependencies_types_react_dom",
+      "package_devdependencies_vite",
+      "package_devdependencies_vitejs_plugin_react",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_build",
+      "package_scripts_dev",
+      "package_scripts_lint",
+      "package_scripts_preview",
+      "package_type",
+      "package_version"
+    ],
+    "5": [
+      "src_lib_docstore",
+      "src_lib_docstore_archivedocument",
+      "src_lib_docstore_assignregister",
+      "src_lib_docstore_deletebytes",
+      "src_lib_docstore_deletedocument",
+      "src_lib_docstore_docid",
+      "src_lib_docstore_doctorow",
+      "src_lib_docstore_findbyhash",
+      "src_lib_docstore_floorcode",
+      "src_lib_docstore_ingestfile",
+      "src_lib_docstore_makeregisterno",
+      "src_lib_docstore_makerevisionmeta",
+      "src_lib_docstore_nextrevision",
+      "src_lib_docstore_nextseq",
+      "src_lib_docstore_pad3",
+      "src_lib_docstore_projectcode",
+      "src_lib_docstore_safename",
+      "src_lib_docstore_signedurl",
+      "src_lib_docstore_up",
+      "src_lib_docstore_uploadbytes",
+      "src_lib_docstore_upsertdocument"
+    ],
+    "6": [
+      "src_lib_estimateparser",
+      "src_lib_estimateparser_aoaof",
+      "src_lib_estimateparser_cs",
+      "src_lib_estimateparser_findheaderrow",
+      "src_lib_estimateparser_isnumstr",
+      "src_lib_estimateparser_istotalcell",
+      "src_lib_estimateparser_marked",
+      "src_lib_estimateparser_parseanalysis",
+      "src_lib_estimateparser_parseboq",
+      "src_lib_estimateparser_parsecables",
+      "src_lib_estimateparser_parsecontainment",
+      "src_lib_estimateparser_parseddc",
+      "src_lib_estimateparser_parseequipment",
+      "src_lib_estimateparser_parseestimate",
+      "src_lib_estimateparser_parsegeneric",
+      "src_lib_estimateparser_parseiosummary",
+      "src_lib_estimateparser_parsemodelnumbers",
+      "src_lib_estimateparser_parsesheet",
+      "src_lib_estimateparser_rowtext",
+      "src_lib_estimateparser_tonum"
+    ],
+    "7": [
+      "src_components_tracestudio",
+      "src_components_tracestudio_isimagefile",
+      "src_components_tracestudio_nid",
+      "src_components_tracestudio_perpdist",
+      "src_components_tracestudio_rdp",
+      "src_components_tracestudio_straightenpolyline",
+      "src_components_tracestudio_tracestudio",
+      "src_components_tracestudio_up",
+      "src_components_tracestudio_upkeep",
+      "src_lib_filestore",
+      "src_lib_filestore_getfile",
+      "src_lib_filestore_hasfile",
+      "src_lib_filestore_hashfile",
+      "src_lib_filestore_opendb",
+      "src_lib_filestore_putfile",
+      "src_pages_drawingspage",
+      "src_pages_drawingspage_drawingspage",
+      "src_pages_drawingspage_up"
+    ],
+    "8": [
+      "src_components_globalimport",
+      "src_components_globalimport_globalimport",
+      "src_components_globalimport_isimg",
+      "src_components_globalimport_ispdff",
+      "src_components_globalimport_isxls",
+      "src_lib_estimateparser_classifysheet",
+      "src_lib_estimateparser_sheetlist",
+      "src_lib_terminationparser",
+      "src_lib_terminationparser_aoaof",
+      "src_lib_terminationparser_applytermination",
+      "src_lib_terminationparser_cs",
+      "src_lib_terminationparser_isddcsheet",
+      "src_lib_terminationparser_ispincell",
+      "src_lib_terminationparser_looksliketermination",
+      "src_lib_terminationparser_parsetermination",
+      "src_lib_terminationparser_parseterminationsheet",
+      "src_lib_terminationparser_sectionfor"
+    ],
+    "9": [
+      "src_lib_smartparser",
+      "src_lib_smartparser_cleanstr",
+      "src_lib_smartparser_detectsheettype",
+      "src_lib_smartparser_extractpdftext",
+      "src_lib_smartparser_extractwordtext",
+      "src_lib_smartparser_gid",
+      "src_lib_smartparser_panelslug",
+      "src_lib_smartparser_parseddcpanelschedule",
+      "src_lib_smartparser_parseddcterminationsheets",
+      "src_lib_smartparser_parseequiptags",
+      "src_lib_smartparser_parsefcuschedule",
+      "src_lib_smartparser_parseiolist",
+      "src_lib_smartparser_parsetextforpanels",
+      "src_lib_smartparser_smartparse",
+      "src_lib_smartparser_up"
+    ],
+    "10": [
+      "src_lib_reportstore",
+      "src_lib_reportstore_computeforecast",
+      "src_lib_reportstore_countstages",
+      "src_lib_reportstore_fetchsnapshots",
+      "src_lib_reportstore_snapshotprogress",
+      "src_pages_reportspage",
+      "src_pages_reportspage_fmtdate",
+      "src_pages_reportspage_reportspage",
+      "src_pages_reportspage_up",
+      "src_pages_reportspage_upkeep",
+      "src_pages_reportspage_weightedpct",
+      "src_pages_reportspage_wid"
+    ],
+    "11": [
+      "src_lib_drawingparser",
+      "src_lib_drawingparser_callgeminiraw",
+      "src_lib_drawingparser_callgeminiwithfile",
+      "src_lib_drawingparser_callgeminiwithimage",
+      "src_lib_drawingparser_combineresults",
+      "src_lib_drawingparser_compressimage",
+      "src_lib_drawingparser_extractjson",
+      "src_lib_drawingparser_normalizekeys",
+      "src_lib_drawingparser_parsedrawings",
+      "src_lib_drawingparser_repairjson",
+      "src_lib_drawingparser_uploadtogemini"
+    ],
+    "12": [
+      "src_pages_commdevices",
+      "src_pages_commdevices_addrnum",
+      "src_pages_commdevices_autogrow",
+      "src_pages_commdevices_autoshrink",
+      "src_pages_commdevices_calcweightedpct",
+      "src_pages_commdevices_commdevices",
+      "src_pages_commdevices_gid",
+      "src_pages_commdevices_sortdevsbyaddr",
+      "src_pages_commdevices_stagecount",
+      "src_pages_commdevices_stgbtn",
+      "src_pages_commdevices_up"
+    ],
+    "13": [
+      "src_components_docgrid",
+      "src_components_docgrid_docgrid",
+      "src_components_docgrid_up",
+      "src_pages_documentspage",
+      "src_pages_documentspage_documentspage",
+      "src_pages_documentspage_up",
+      "src_pages_iolistpage",
+      "src_pages_iolistpage_iolistpage",
+      "src_pages_iolistpage_nid",
+      "src_pages_iolistpage_up"
+    ],
+    "14": [
+      "oxlintrc",
+      "oxlintrc_plugins",
+      "oxlintrc_rules",
+      "oxlintrc_rules_react_only_export_components",
+      "oxlintrc_rules_react_rules_of_hooks",
+      "oxlintrc_schema"
+    ],
+    "15": [
+      "vercel",
+      "vercel_rewrites"
+    ],
+    "16": [
+      "public_favicon_svg"
+    ],
+    "17": [
+      "public_icons_svg"
+    ],
+    "18": [
+      "src_assets_react_svg"
+    ],
+    "19": [
+      "src_assets_vite_svg"
+    ],
+    "20": [
+      "src_index_css"
+    ],
+    "21": [
+      "src_lib_demodata"
+    ],
+    "22": [
+      "vite_config"
+    ]
+  },
+  "cohesion": {
+    "0": 0.09413067552602436,
+    "1": 0.07307692307692308,
+    "2": 0.15270935960591134,
+    "3": 0.16333333333333333,
+    "4": 0.08695652173913043,
+    "5": 0.18571428571428572,
+    "6": 0.26842105263157895,
+    "7": 0.19607843137254902,
+    "8": 0.21323529411764705,
+    "9": 0.3333333333333333,
+    "10": 0.3333333333333333,
+    "11": 0.36363636363636365,
+    "12": 0.23636363636363636,
+    "13": 0.3111111111111111,
+    "14": 0.3333333333333333,
+    "15": 1.0,
+    "16": 1.0,
+    "17": 1.0,
+    "18": 1.0,
+    "19": 1.0,
+    "20": 1.0,
+    "21": 1.0,
+    "22": 1.0
+  },
+  "gods": [
+    {
+      "id": "src_app_jsx",
+      "label": "App.jsx Main Application",
+      "degree": 16
+    },
+    {
+      "id": "src_lib_smartparser_smartparse",
+      "label": "smartParse()",
+      "degree": 11
+    },
+    {
+      "id": "src_lib_estimateparser_cs",
+      "label": "cS()",
+      "degree": 10
+    },
+    {
+      "id": "src_lib_geminiclient_callgeminiwithimage",
+      "label": "callGeminiWithImage()",
+      "degree": 9
+    },
+    {
+      "id": "src_pages_reportspage_reportspage",
+      "label": "ReportsPage()",
+      "degree": 9
+    },
+    {
+      "id": "src_lib_estimateparser_isnumstr",
+      "label": "isNumStr()",
+      "degree": 8
+    },
+    {
+      "id": "src_lib_estimateparser_tonum",
+      "label": "toNum()",
+      "degree": 8
+    },
+    {
+      "id": "src_lib_smartparser_up",
+      "label": "up()",
+      "degree": 8
+    },
+    {
+      "id": "src_app_app",
+      "label": "App()",
+      "degree": 7
+    },
+    {
+      "id": "src_components_globalimport_globalimport",
+      "label": "GlobalImport()",
+      "degree": 7
+    }
+  ],
+  "surprises": [
+    {
+      "source": "README - React + Vite Template",
+      "target": "App.jsx Main Application",
+      "source_files": [
+        "README.md",
+        "src/App.jsx"
+      ],
+      "confidence": "INFERRED",
+      "relation": "references",
+      "why": "inferred connection - not explicitly stated in source; crosses file types (doc ↔ code); connects across different repos/directories; peripheral node `README - React + Vite Template` unexpectedly reaches hub `App.jsx Main Application`"
+    },
+    {
+      "source": "Annotated Building Floor Plan with Highlighted Cable Routing Loops",
+      "target": "Smart Excel Parser",
+      "source_files": [
+        "20260413_112718.jpg.jpeg",
+        "src/lib/smartParser.js"
+      ],
+      "confidence": "AMBIGUOUS",
+      "relation": "conceptually_related_to",
+      "why": "ambiguous connection - not explicitly stated in source; crosses file types (code ↔ image); connects across different repos/directories"
+    },
+    {
+      "source": "Minimate Setup Guide",
+      "target": "Supabase Client Initialization",
+      "source_files": [
+        "SETUP.md",
+        "src/lib/supabase.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "crosses file types (doc ↔ code); connects across different repos/directories"
+    },
+    {
+      "source": "Minimate Setup Guide",
+      "target": "Supabase Database Schema",
+      "source_files": [
+        "SETUP.md",
+        "supabase/schema.sql"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "crosses file types (doc ↔ code); connects across different repos/directories"
+    },
+    {
+      "source": "index.html Entry Point",
+      "target": "main.jsx Entry Point",
+      "source_files": [
+        "index.html",
+        "src/main.jsx"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "crosses file types (doc ↔ code); connects across different repos/directories"
+    }
+  ],
+  "questions": [
+    {
+      "type": "ambiguous_edge",
+      "question": "What is the exact relationship between `Smart Excel Parser` and `Annotated Building Floor Plan with Highlighted Cable Routing Loops`?",
+      "why": "Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `App.jsx Main Application` connect `App Entry & UI Components` to `App Core & Device Sidebar`, `Comm Devices Stage UI`?",
+      "why": "High betweenness centrality (0.068) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `smartParse()` connect `Smart Document Parser` to `App Core & Device Sidebar`?",
+      "why": "High betweenness centrality (0.024) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `StatusBadge()` connect `App Entry & UI Components` to `Comm Devices Stage UI`?",
+      "why": "High betweenness centrality (0.016) - this node is a cross-community bridge."
+    },
+    {
+      "type": "verify_inferred",
+      "question": "Are the 7 inferred relationships involving `App.jsx Main Application` (e.g. with `README - React + Vite Template` and `ProgressBar.jsx`) actually correct?",
+      "why": "`App.jsx Main Application` has 7 INFERRED edges - model-reasoned connections that need verification."
+    },
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `$schema`, `plugins`, `react/rules-of-hooks` to the rest of the system?",
+      "why": "37 weakly-connected nodes found - possible documentation gaps or missing edges."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `App Core & Device Sidebar` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.09413067552602436 - nodes in this community are weakly interconnected."
+    }
+  ]
+}
