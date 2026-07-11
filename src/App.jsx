@@ -9,6 +9,8 @@ import CommDevices from './pages/CommDevices'
 import DrawingsPage from './pages/DrawingsPage'
 import BlockersPage from './pages/BlockersPage'
 import ReportsPage from './pages/ReportsPage'
+import { lazy, Suspense } from 'react'
+const GridSpike = lazy(() => import('./pages/GridSpike')) // ponytail: S1 spike route — remove with the bake-off; lazy so a spike crash can't blank the app
 import DocumentsPage from './pages/DocumentsPage'
 import GlobalImport from './components/GlobalImport'
 import { listDocuments, archiveDocument, upsertDocument, deleteDocument } from './lib/docStore'
@@ -1788,6 +1790,7 @@ export default function App() {
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
+          <Route path="/grid-spike" element={<Suspense fallback={<div className="text-dgray text-xs uppercase mt-20 text-center">LOADING GRID SPIKE...</div>}><GridSpike /></Suspense>} />
           <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
           <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />
         </Routes>

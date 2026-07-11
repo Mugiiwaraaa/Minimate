@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-07-10T18:44:49.004Z",
+  "projectRoot": "D:\\personal\\ControlSystems\\automatex-app",
+  "structure": {
+    "hasPackageJson": true,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1783709089004
+}

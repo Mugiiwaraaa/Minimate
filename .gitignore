@@ -25,3 +25,6 @@ dist-ssr
 
 # Environment variables
 .env
+
+# Obsidian vault (project second brain — notes, not app code)
+Minimate/
