@@ -46,7 +46,7 @@ export default function GridSpike() {
             SHEETGRID <span className="text-dgray text-xs font-normal ml-2">IN-HOUSE · 5,000 ROWS · V0.2</span>
           </h1>
           <div className="text-[10px] text-dgray uppercase">
-            FILL: DRAG=COPY · CTRL+DRAG=SERIES · CTRL+ENTER ROW BELOW · CTRL+SHIFT+ENTER ABOVE · CTRL+DEL DELETE ROWS · CTRL+SHIFT+K NEW COLUMN · DRAG HEADER EDGES TO RESIZE
+            FILL: DRAG=COPY · CTRL+DRAG=SERIES · CTRL+ENTER ROW BELOW · CTRL+SHIFT+ENTER ABOVE · CTRL+DEL DELETE ROWS · DRAG HEADER TO REORDER · RIGHT-CLICK HEADER = INSERT/DELETE COL · DRAG HEADER EDGE = RESIZE
           </div>
         </div>
         <div className="flex items-center gap-2">

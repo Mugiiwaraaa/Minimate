@@ -44,6 +44,8 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
   const [editing, setEditing] = useState(null)
   const [fillTo, setFillTo] = useState(null)
   const [widths, setWidths] = useState(() => columns.map((c) => c.width || 120))
+  const [colOver, setColOver] = useState(null)
+  const [menu, setMenu] = useState(null)
   const undoRef = useRef([])
   const dragRef = useRef(null) // 'select' | 'fill' | {resize}
   const fillModRef = useRef(false)
@@ -124,14 +126,28 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
     setSel({ r, c: sel.c }); setAnchor({ r, c: sel.c })
   }
 
-  const insertColumn = () => {
-    if (!onColumnsChange || !sel) return
+  const insertColAt = (at) => {
+    if (!onColumnsChange) return
     const id = 'col_' + Date.now()
     const nextCols = columns.slice()
-    nextCols.splice(sel.c + 1, 0, { id, title: 'NEW COLUMN', width: 120, type: 'text' })
-    setWidths((w) => { const nw = w.slice(); nw.splice(sel.c + 1, 0, 120); return nw })
+    nextCols.splice(at, 0, { id, title: 'NEW COLUMN', width: 120, type: 'text' })
+    setWidths((w) => { const nw = w.slice(); nw.splice(at, 0, 120); return nw })
     onColumnsChange(nextCols)
     commitRows(rows.map((row) => ({ ...row, [id]: '' })))
+  }
+  const insertColumn = () => { if (sel) insertColAt(sel.c + 1) }
+  const deleteColAt = (c) => {
+    if (!onColumnsChange || columns.length <= 1) return
+    const id = columns[c].id
+    setWidths((w) => w.filter((_, i) => i !== c))
+    onColumnsChange(columns.filter((_, i) => i !== c))
+    commitRows(rows.map((row) => { const n = { ...row }; delete n[id]; return n }))
+  }
+  const moveColumn = (from, to) => {
+    if (!onColumnsChange || to == null || from === to) return
+    const nc = columns.slice(); const [m] = nc.splice(from, 1); nc.splice(to, 0, m)
+    setWidths((w) => { const nw = w.slice(); const [wm] = nw.splice(from, 1); nw.splice(to, 0, wm); return nw })
+    onColumnsChange(nc)
   }
 
   // ─── clipboard ─────────────────────────────────────────────
@@ -197,11 +213,14 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
       const patch = { ...next[r] }
       for (let c = rg.c1; c <= rg.c2; c++) {
         const col = columns[c]
-        if (series && col.type === 'number') {
-          const first = Number(rows[rg.r1][col.id]) || 0
-          const last = Number(rows[rg.r2][col.id]) || 0
-          const stride = srcLen > 1 ? (last - first) / (srcLen - 1) : 1
-          patch[col.id] = down ? last + stride * (step + 1) : first - stride * (step + 1)
+        const firstN = Number(rows[rg.r1][col.id])
+        const numeric = series && String(rows[rg.r1][col.id] ?? '') !== '' && Number.isFinite(firstN)
+        if (numeric) {
+          const lastN = Number(rows[rg.r2][col.id])
+          const last = Number.isFinite(lastN) ? lastN : firstN
+          const stride = srcLen > 1 ? (last - firstN) / (srcLen - 1) : 1
+          const val = down ? last + stride * (step + 1) : firstN - stride * (step + 1)
+          patch[col.id] = col.type === 'number' ? val : String(val)
         } else {
           const src = rows[rg.r1 + (((down ? r : rg.r2 - (rg.r1 - r)) - rg.r1) % srcLen + srcLen) % srcLen]
           patch[col.id] = src[col.id]
@@ -259,13 +278,15 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
 
   const onMouseDown = (e) => {
     if (e.target.closest('input,select')) return // let editors own text selection
-    if (e.target.dataset.fill) { dragRef.current = 'fill'; e.preventDefault(); return }
+    if (e.target.dataset.fill) { dragRef.current = 'fill'; fillModRef.current = e.ctrlKey || e.metaKey; e.preventDefault(); return }
     if (e.target.dataset.resize !== undefined) {
       const c = Number(e.target.dataset.resize)
       dragRef.current = { resize: c, startX: e.clientX, startW: widths[c] }
       e.preventDefault()
       return
     }
+    const head = e.target.closest('[data-colhead]')
+    if (head) { dragRef.current = { colFrom: Number(head.dataset.colhead) }; e.preventDefault(); return }
     const cell = cellFromEvent(e)
     if (!cell) return
     if (editing) commitEdit(null)
@@ -288,6 +309,12 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
       setWidths((ws) => ws.map((x, i) => (i === d.resize ? w : x)))
       return
     }
+    if (d.colFrom !== undefined) {
+      const t = document.elementFromPoint(e.clientX, e.clientY)
+      const h = t && t.closest ? t.closest('[data-colhead]') : null
+      setColOver(h ? Number(h.dataset.colhead) : null)
+      return
+    }
     if (e.ctrlKey || e.metaKey) fillModRef.current = true
     const cell = cellFromEvent(e)
     if (!cell) return
@@ -297,10 +324,13 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
 
   useEffect(() => {
     const up = (e) => {
-      if (dragRef.current === 'fill' && fillTo != null) applyFill(fillTo, e.ctrlKey || e.metaKey || fillModRef.current)
+      const d = dragRef.current
+      if (d === 'fill' && fillTo != null) applyFill(fillTo, e.ctrlKey || e.metaKey || fillModRef.current)
+      else if (d && d.colFrom !== undefined && colOver != null) moveColumn(d.colFrom, colOver)
       dragRef.current = null
       fillModRef.current = false
       setFillTo(null)
+      setColOver(null)
     }
     window.addEventListener('mouseup', up)
     return () => window.removeEventListener('mouseup', up)
@@ -331,8 +361,8 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
           <div className="flex sticky top-0 z-10 bg-card2 border-b border-border" style={{ height: HEADER_H }}>
             <div className="shrink-0 border-r border-border/50 text-[9px] text-dgray flex items-center justify-center" style={{ width: 44 }}>#</div>
             {columns.map((col, c) => (
-              <div key={col.id} className="shrink-0 border-r border-border/50 px-2 flex items-center text-[10px] font-bold text-lgray uppercase relative" style={{ width: widths[c] }}>
-                <span className="truncate">{col.title}</span>
+              <div key={col.id} data-colhead={c} onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, c }) }} title="DRAG TO REORDER · RIGHT-CLICK TO INSERT / DELETE" className={'shrink-0 border-r border-border/50 px-2 flex items-center text-[10px] font-bold text-lgray uppercase relative cursor-grab ' + (colOver === c && dragRef.current && dragRef.current.colFrom !== undefined ? 'bg-teal/30' : '')} style={{ width: widths[c] }}>
+                <span className="truncate pointer-events-none">{col.title}</span>
                 <span data-resize={c} className="absolute right-0 top-0 h-full w-[6px] cursor-col-resize hover:bg-teal/50" />
               </div>
             ))}
@@ -404,6 +434,16 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
           </div>
         </div>
       </div>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onMouseDown={() => setMenu(null)} />
+          <div className="fixed z-50 bg-card2 border border-border rounded-md shadow-lg text-[10px] uppercase py-1" style={{ left: menu.x, top: menu.y }}>
+            <button onMouseDown={(e) => { e.stopPropagation(); insertColAt(menu.c); setMenu(null) }} className="block w-full text-left px-3 py-1.5 text-lgray hover:bg-teal/20 hover:text-white">INSERT COLUMN LEFT</button>
+            <button onMouseDown={(e) => { e.stopPropagation(); insertColAt(menu.c + 1); setMenu(null) }} className="block w-full text-left px-3 py-1.5 text-lgray hover:bg-teal/20 hover:text-white">INSERT COLUMN RIGHT</button>
+            <button onMouseDown={(e) => { e.stopPropagation(); deleteColAt(menu.c); setMenu(null) }} className="block w-full text-left px-3 py-1.5 text-red/80 hover:bg-red/20 hover:text-white">DELETE COLUMN</button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
