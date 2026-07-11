@@ -1,7 +1,32 @@
 /* --- datasetStore.js --- S2 dataset model with revisions ---
    Working copy (revision_number=0) is mutable with optimistic version lock.
    ISSUE operation creates immutable snapshot (revision_number >= 1).
-   Per-dataset realtime scope. */
+   Per-dataset realtime scope. Provenance via source_doc_id -> documents.id.
+
+   RLS is OPEN until R3 auth (USING true), same as every other table.
+
+   ============ RUN THIS SQL IN SUPABASE ONCE ============
+   create table if not exists public.datasets (
+     project_id      text not null,
+     id              text not null,
+     revision_number int not null default 0,
+     kind            text default 'generic',
+     name            text default '',
+     columns         jsonb default '[]'::jsonb,
+     rows            jsonb default '[]'::jsonb,
+     source_doc_id   text,
+     version         int not null default 1,
+     created_at      timestamptz default now(),
+     updated_at      timestamptz default now(),
+     primary key (project_id, id, revision_number)
+   );
+   alter table public.datasets enable row level security;
+   create policy datasets_open on public.datasets
+     for all using (true) with check (true);
+
+   -- Add to realtime publication for per-dataset subscriptions
+   alter publication supabase_realtime add table public.datasets;
+   ======================================================== */
 
 import { supabase, isDemo } from './supabase'
 

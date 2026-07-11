@@ -2,5 +2,12 @@
   "enabledPlugins": {
     "ponytail@ponytail": true,
     "claude-mem@thedotmack": true
+  },
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:20128/v1",
+    "ANTHROPIC_AUTH_TOKEN": "sk-5fa6f1b4a0e5f198-41hm9k-ee2b52ae",
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_MODEL": "my-test",
+    "ANTHROPIC_SMALL_FAST_MODEL": "my-test"
   }
 }

@@ -584,7 +584,14 @@ export default function App() {
 
   var handleUpdatePanelEquipment = useCallback(function(panelId, newEqs) {
     pushUndo()
-    setEquipmentMap(function(prev) { var next = Object.assign({}, prev); next[panelId] = newEqs; return next })
+    setEquipmentMap(function(prev) {
+      var next = Object.assign({}, prev)
+      next[panelId] = newEqs
+      return next
+    })
+    // Debounced save (1.5s) handles persistence. No flush — that would
+    // block the UI on every fill-drag cell. Deletes also survive via the
+    // beforeunload flush and the debounced save effect.
   }, [])
 
   function handleDeletePanel(panelId) {
@@ -1785,7 +1792,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
           <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
-          <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
+          <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
           <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
           <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />

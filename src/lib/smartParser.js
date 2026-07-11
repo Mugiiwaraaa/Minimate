@@ -152,7 +152,7 @@ function parseIOList(wb, sheetName, existingPanels, existingEquipMap) {
     var numUnits = tags.length || g.qty || 1
 
     tags.forEach(function(tag) {
-      var eq = { id: gid('eq'), name: tag, equipment_ids: tag, qty: 1, points: [] }
+      var eq = { id: gid('eq'), name: tag, equipment_ids: g.idsStr || tag, qty: 1, group_qty: g.qty, points: [] }
       g.pointRows.forEach(function(pr) {
         var types = [
           { type: 'DI', total: pr.di },

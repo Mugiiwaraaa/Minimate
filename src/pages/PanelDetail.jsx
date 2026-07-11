@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
+import IoSheetGrid from '../components/IoSheetGrid'
 
 var stages = ['cable_pulled','cable_continuity','term_ddc_side','term_field_side','functional_test']
 var stageLabels = {
@@ -21,6 +22,7 @@ export default function PanelDetail(props) {
   var equipmentMap = props.equipmentMap
   var terminationMap = props.terminationMap || {}
   var onUpdatePoint = props.onUpdatePoint
+  var onUpdateEquipment = props.onUpdateEquipment
   var onUpdateTermination = props.onUpdateTermination
   var onDeletePanel = props.onDeletePanel
   var navigate = useNavigate()
@@ -195,153 +197,23 @@ export default function PanelDetail(props) {
 
   // ─── IO List View ─────────────────────────────────────────
   function renderIOView() {
-    return (
-      <div>
-        <div className="grid grid-cols-3 md:grid-cols-5 gap-2 mb-5">
-          {stages.map(function(s) {
-            var done = activePoints.filter(function(p) { return p[s] }).length
-            var total = activePoints.length
-            var pct = total > 0 ? Math.round(done / total * 100) : 0
-            var color = pct >= 100 ? 'text-green' : pct > 0 ? 'text-cyan' : 'text-dgray'
-            return (
-              <div key={s} className="bg-card rounded-lg p-3 border border-border text-center">
-                <div className="text-[10px] text-dgray tracking-wide">{stageLabels[s]}</div>
-                <div className={'text-lg font-bold ' + color}>{done}/{total}</div>
-                <div className="text-[10px] text-dgray">{pct}%</div>
-              </div>
-            )
-          })}
+    if (equipment.length === 0) {
+      return (
+        <div className="bg-card rounded-xl border border-border p-8 text-center">
+          <div className="text-dgray text-sm">NO IO LIST UPLOADED FOR THIS PANEL YET.</div>
+          <div className="text-[11px] text-dgray mt-1">IMPORT AN IO LIST EXCEL FROM THE SIDEBAR.</div>
         </div>
-
-        {equipment.map(function(eq) {
-          var eqActivePts = (eq.points || []).filter(function(p) { return !p.excluded })
-          var eqDonePts = eqActivePts.filter(function(p) { return p.functional_test })
-          return (
-            <div key={eq.id} className="bg-card rounded-xl border border-border mb-4 overflow-hidden">
-              <div className="bg-card2 px-4 py-2.5 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {editing === 'eq-name:' + eq.id ? (
-                    <input autoFocus value={editVal}
-                      onChange={function(e) { setEditVal(e.target.value) }}
-                      onBlur={function() { saveEdit(eq.id, null) }}
-                      onKeyDown={function(e) { handleEditKeyDown(e, eq.id, null) }}
-                      style={{textTransform:'uppercase'}}
-                      className="bg-navy border border-teal rounded px-2 py-0.5 text-sm font-bold text-white outline-none w-64" />
-                  ) : (
-                    <span className="text-sm font-bold cursor-pointer hover:text-cyan transition"
-                      onClick={function() { startEdit('eq-name', eq.id, eq.name) }}
-                      title="CLICK TO EDIT">{eq.name}</span>
-                  )}
-                  {editing === 'eq-ids:' + eq.id ? (
-                    <input autoFocus value={editVal}
-                      onChange={function(e) { setEditVal(e.target.value) }}
-                      onBlur={function() { saveEdit(eq.id, null) }}
-                      onKeyDown={function(e) { handleEditKeyDown(e, eq.id, null) }}
-                      style={{textTransform:'uppercase'}}
-                      className="bg-navy border border-teal rounded px-2 py-0.5 text-xs text-dgray outline-none w-48" />
-                  ) : (
-                    <span className="text-xs text-dgray cursor-pointer hover:text-cyan transition"
-                      onClick={function() { startEdit('eq-ids', eq.id, eq.equipment_ids) }}
-                      title="CLICK TO EDIT IDS">{eq.equipment_ids || '(NO IDS)'}</span>
-                  )}
-                  <span className="text-[10px] text-dgray">QTY: {eq.qty}</span>
-                </div>
-                <div className="text-[10px] text-dgray">
-                  {eqDonePts.length}/{eqActivePts.length} COMPLETE
-                </div>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border/50">
-                      <th className="text-[10px] font-semibold text-dgray text-center px-1 py-2 w-8"></th>
-                      <th className="text-[10px] font-semibold text-dgray text-left px-3 py-2">DESCRIPTION</th>
-                      <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-14">TYPE</th>
-                      <th className="text-[10px] font-semibold text-dgray text-center px-2 py-2 w-10">QTY</th>
-                      {stages.map(function(s) {
-                        return <th key={s} className="text-[10px] font-semibold text-dgray text-center px-1 py-2 w-16">{stageLabels[s]}</th>
-                      })}
-                      <th className="text-[10px] font-semibold text-dgray text-left px-2 py-2 w-40">REMARKS</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(eq.points || []).map(function(pt) {
-                      var isExcluded = pt.excluded
-                      var rowClass = 'border-b border-border/20 align-top ' + (isExcluded ? 'bg-red/5' : 'hover:bg-teal/4')
-                      return (
-                        <tr key={pt.id} className={rowClass}>
-                          <td className="text-center px-1 py-2">
-                            <input type="checkbox" checked={!isExcluded}
-                              onChange={function() { handleToggleExclude(eq.id, pt.id) }}
-                              className="w-3.5 h-3.5 accent-teal cursor-pointer"
-                              title={isExcluded ? 'RE-INCLUDE THIS POINT' : 'EXCLUDE THIS POINT'} />
-                          </td>
-                          <td className="text-xs px-3 py-2">
-                            {editing === 'pt-desc:' + pt.id ? (
-                              <input autoFocus value={editVal}
-                                onChange={function(e) { setEditVal(e.target.value) }}
-                                onBlur={function() { saveEdit(eq.id, pt.id) }}
-                                onKeyDown={function(e) { handleEditKeyDown(e, eq.id, pt.id) }}
-                                style={{textTransform:'uppercase'}}
-                                className="bg-navy border border-teal rounded px-2 py-0.5 text-xs text-white outline-none w-full" />
-                            ) : (
-                              <span className={'cursor-pointer hover:text-cyan transition ' + (isExcluded ? 'line-through text-dgray' : '')}
-                                onClick={function() { startEdit('pt-desc', pt.id, pt.description) }}
-                                title="CLICK TO EDIT">{pt.description}</span>
-                            )}
-                          </td>
-                          <td className="text-[10px] text-center px-2 py-2">
-                            <span className="bg-card2 px-1.5 py-0.5 rounded text-dgray">{pt.type || '-'}</span>
-                          </td>
-                          <td className="text-xs text-center px-2 py-2">{pt.qty}</td>
-                          {stages.map(function(s) {
-                            var checked = pt[s]
-                            var idx = stages.indexOf(s)
-                            var prevDone = idx === 0 || pt[stages[idx - 1]]
-                            return (
-                              <td key={s} className="text-center px-1 py-2">
-                                {isExcluded ? (
-                                  <span className="text-dgray text-[10px]">--</span>
-                                ) : (
-                                  <button
-                                    onClick={function() { handleToggle(eq.id, pt.id, s) }}
-                                    disabled={!prevDone && !checked}
-                                    className={'w-6 h-6 rounded border-2 text-[10px] font-bold transition ' + (
-                                      checked ? 'bg-green border-green text-white'
-                                        : prevDone ? 'border-border hover:border-teal text-transparent hover:text-dgray cursor-pointer'
-                                        : 'border-border/30 text-transparent cursor-not-allowed opacity-30'
-                                    )}>{'!'}</button>
-                                )}
-                              </td>
-                            )
-                          })}
-                          <td className="px-2 py-2">
-                            <textarea rows="1" title={pt.exclude_remark || ''} value={pt.exclude_remark || ''}
-                              onChange={function(e) { handleRemarkChange(eq.id, pt.id, e.target.value) }}
-                              onInput={autoGrow} onFocus={autoGrow}
-                              onBlur={autoShrink}
-                              placeholder={isExcluded ? 'REASON FOR EXCLUSION...' : ''}
-                              style={{textTransform:'uppercase',resize:'none',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}
-                              className="bg-transparent border border-transparent focus:border-teal text-[10px] text-orange italic outline-none w-full rounded px-1 py-0.5 placeholder:text-dgray/50" />
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )
-        })}
-
-        {equipment.length === 0 && (
-          <div className="bg-card rounded-xl border border-border p-8 text-center">
-            <div className="text-dgray text-sm">NO IO LIST UPLOADED FOR THIS PANEL YET.</div>
-            <div className="text-[11px] text-dgray mt-1">IMPORT AN IO LIST EXCEL FROM THE SIDEBAR.</div>
-          </div>
-        )}
-      </div>
+      )
+    }
+    return (
+      <IoSheetGrid
+        eqs={equipment}
+        panelId={panelId}
+        onUpdateEquipment={onUpdateEquipment}
+        onUndo={props.onUndo}
+        height={440}
+        compact
+      />
     )
   }
 
