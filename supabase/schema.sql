@@ -69,3 +69,40 @@ alter table projects enable row level security;
 -- Allow all operations with anon key
 create policy "Allow all for now" on projects
   for all using (true) with check (true);
+
+-- ============================================================
+-- S2 — DATASETS TABLE (typed tabular datasets with revisions)
+-- ============================================================
+-- Each dataset tracks: working copy (mutable) + issued snapshots (immutable)
+-- revision_number = 0 is working copy, >= 1 are issued revisions
+-- Composite PK ensures one working copy + many issued revisions per dataset
+
+create table datasets (
+  project_id uuid not null references projects(id) on delete cascade,
+  id text not null,  -- stable dataset ID across all revisions
+  revision_number int not null default 0,  -- 0 = working copy, 1+ = issued
+  kind text not null check (kind in ('IO_SUMMARY','CABLE_TAKEOFF','BOQ','ESTIMATE','CUSTOM')),
+  name text not null,
+  columns jsonb not null default '[]'::jsonb,  -- [{name, type, ...}]
+  rows jsonb not null default '[]'::jsonb,  -- actual data rows
+  source_doc_id text,  -- provenance link to documents.id
+  version int not null default 1,  -- optimistic lock (working copy only)
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (project_id, id, revision_number)
+);
+
+-- Indexes for common queries
+create index idx_datasets_project on datasets(project_id);
+create index idx_datasets_working_copy on datasets(project_id, id) where revision_number = 0;
+create index idx_datasets_kind on datasets(project_id, kind);
+
+-- Auto-update updated_at on working copy edits
+create trigger set_datasets_updated_at before update on datasets
+  for each row when (new.revision_number = 0)
+  execute procedure update_updated_at();
+
+-- RLS: same as projects for now
+alter table datasets enable row level security;
+create policy "Allow all for now" on datasets
+  for all using (true) with check (true);
