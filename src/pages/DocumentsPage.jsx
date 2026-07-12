@@ -7,7 +7,7 @@
    schedule files import the same way (kind-based). */
 
 import { useState, useEffect } from 'react'
-import { sheetList, parseEstimate, KIND_LABELS } from '../lib/estimateParser'
+import { sheetList, parseSheet, aoaOf } from '../lib/estimateParser'
 import { DOC_TYPE_LABELS } from '../lib/docStore'
 import DocGrid from '../components/DocGrid'
 import IoListPage from './IoListPage'
@@ -63,13 +63,28 @@ export default function DocumentsPage(props) {
   function doParse() {
     if (!wb) return
     var chosen = Object.keys(sel).filter(function(k) { return sel[k] })
-    setBusy('PARSING ' + chosen.length + ' SHEET(S) ...')
-    setTimeout(function() {
-      try {
-        var res = parseEstimate(wb, chosen)
-        setParsed(res); setTab(0); setBusy('')
-      } catch (err) { setBusy('PARSE FAILED: ' + err) }
-    }, 20)
+    var byName = {}; sheetList(wb).forEach(function(m) { byName[m.name] = m })
+    // skip io_cust/other same as the old parseEstimate() did
+    var queue = chosen.filter(function(name) {
+      var m = byName[name]; return m && m.kind !== 'io_cust' && m.kind !== 'other'
+    })
+    var out = []
+    // one sheet per macrotask so a big workbook (real files run 5-6MB+) never
+    // blocks the main thread long enough to trip Chrome's Page Unresponsive check
+    function step(i) {
+      if (i >= queue.length) { setParsed({ sheets: out }); setTab(0); setBusy(''); return }
+      var meta = byName[queue[i]]
+      setBusy('PARSING SHEET ' + (i + 1) + '/' + queue.length + ': ' + up(meta.name) + ' ...')
+      setTimeout(function() {
+        try {
+          var rows = aoaOf(wb.Sheets[meta.name])
+          out.push({ name: meta.name, kind: meta.kind, label: meta.label, data: parseSheet(meta.kind, rows) })
+          step(i + 1)
+        } catch (err) { setBusy('PARSE FAILED ON ' + meta.name + ': ' + err) }
+      }, 20)
+    }
+    setBusy('PARSING ' + queue.length + ' SHEET(S) ...')
+    setTimeout(function() { step(0) }, 20)
   }
 
   function saveScope() {
