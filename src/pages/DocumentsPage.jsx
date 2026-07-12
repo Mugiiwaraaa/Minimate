@@ -37,19 +37,23 @@ export default function DocumentsPage(props) {
     if (props.onUpdateScope) props.onUpdateScope(next)
   }
 
-  function matchEquipment(siteName, estimateName) {
+  function matchEquipment(siteName, estimateName, keepSelection) {
     var next = Object.assign({}, scope, { aliases: Object.assign({}, scope.aliases || {}, (function() { var o = {}; o[up(siteName)] = estimateName; return o })()) })
     if (props.onUpdateScope) props.onUpdateScope(next)
-    setMatchSel(null)
+    if (!keepSelection) setMatchSel(null)
   }
 
   function clickEstimateItem(name) {
+    // Site item was pre-selected -> one-shot match (a site item maps to one estimate name).
     if (matchSel && matchSel.type === 'site') { matchEquipment(matchSel.name, name); return }
     setMatchSel(matchSel && matchSel.type === 'estimate' && matchSel.name === name ? null : { type: 'estimate', name: name })
   }
 
   function clickSiteItem(name) {
-    if (matchSel && matchSel.type === 'estimate') { matchEquipment(name, matchSel.name); return }
+    // Estimate item was pre-selected -> STAYS selected after matching, so multiple site
+    // instances of the same real-world type (HRAHU-1, HRAHU-2, ...) can be linked to it in
+    // one sequence of clicks instead of re-selecting the estimate item every time.
+    if (matchSel && matchSel.type === 'estimate') { matchEquipment(name, matchSel.name, true); return }
     setMatchSel(matchSel && matchSel.type === 'site' && matchSel.name === name ? null : { type: 'site', name: name })
   }
 
@@ -416,7 +420,7 @@ export default function DocumentsPage(props) {
         <div className="bg-card rounded-xl border border-border p-4 mt-4">
           <div className="flex items-center justify-between mb-1">
             <div className="text-[10px] text-dgray uppercase font-semibold">ESTIMATE VS AS-PER-SITE</div>
-            {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH ON THE OTHER SIDE <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
+            {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH(ES) ON THE OTHER SIDE{matchSel.type === 'estimate' ? ' (STAYS SELECTED FOR MULTIPLE SITE ITEMS)' : ''} <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
           </div>
           <div className="text-[9px] text-dgray uppercase mb-3">CLICK AN ITEM ON EACH SIDE TO LINK THEM AS THE SAME EQUIPMENT (NAMING DIFFERENCE) · ✕ DISMISSES AN ESTIMATE ITEM YOU DON'T NEED TO TRACK</div>
           {(function() {

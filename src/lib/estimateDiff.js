@@ -17,8 +17,13 @@
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase().trim() }
 
 // estimateRows: [{equipment, qty}] (dataset's flattened rows, qty = total points for that type)
-// equipmentMap: {panelId: [{id, name, points: [{qty}, ...]}]} (live, from App state — every
-//   panel's equipment is aggregated by name regardless of which panel it's under)
+// equipmentMap: {panelId: [{id, name, estimateType, points: [{qty}, ...]}]} (live, from App
+//   state — every panel's equipment is aggregated ACROSS PANELS by base type before
+//   comparing. Matched by eq.estimateType when present (equipment added via the estimate
+//   picker — each physical unit is its own row, e.g. "HRAHU-1".."HRAHU-5", but they all
+//   carry estimateType:"HRAHU" so they aggregate back into one comparable total), falling
+//   back to eq.name for manually-typed or smartParser-imported equipment that has no
+//   estimateType.
 // aliases: {SITE_NAME_UPPER: 'Estimate Name'} — manual reconciliation for equipment named
 //   differently on site vs in the design (e.g. "SPF" on site == "STAIRCASE PRESSURIZATION
 //   FAN" in the estimate). Resolved BEFORE matching, in both directions.
@@ -31,8 +36,9 @@ function diffEstimateVsSite(estimateRows, equipmentMap, aliases, dismissed) {
   var liveByName = {}
   Object.keys(equipmentMap || {}).forEach(function(pid) {
     ;(equipmentMap[pid] || []).forEach(function(eq) {
-      var rawKey = up(eq.name)
-      var resolvedName = aliases[rawKey] || eq.name
+      var baseName = eq.estimateType || eq.name
+      var rawKey = up(baseName)
+      var resolvedName = aliases[rawKey] || baseName
       var key = up(resolvedName)
       var pts = (eq.points || []).reduce(function(s, p) { return s + (Number(p.qty) || 1) }, 0)
       if (!liveByName[key]) liveByName[key] = { name: resolvedName, points: 0 }
@@ -83,39 +89,54 @@ function flattenIoSummaryForDataset(ioSummaryEquipment) {
 var _idc = 0
 function nid(p) { _idc++; return p + '-' + Date.now() + '-' + _idc }
 
-// Convert ONE parseIoSummary() equipment entry into a real panel-equipment
-// object matching IoSheetGrid's shape ({id, name, group_qty, points: [{id,
-// description, type, qty, ...stage flags}]}) — used by the "+ ADD FROM
-// ESTIMATE" picker in PanelDetail.jsx so the engineer can pick a known
-// equipment type instead of typing one from scratch. Point quantities are
-// TOTALS (per-unit count x qty), matching how IoSheetGrid's own _qty scaling
-// interprets stored point quantities (see applyOps in IoSheetGrid.jsx).
+// Convert ONE parseIoSummary() equipment entry into an ARRAY of qty SEPARATE
+// panel-equipment objects (e.g. picking "HRAHU x2" produces "HRAHU-1" AND
+// "HRAHU-2" as two independent rows) — used by the "+ ADD FROM ESTIMATE"
+// picker in PanelDetail.jsx. Each physical unit needs its OWN row: cable
+// pull/continuity/termination/test are tracked per unit during commissioning,
+// so one row with a "qty" multiplier (the original design) can't represent
+// "unit 1 done, unit 2 not done" — this mirrors how smartParser.js's real
+// IO List import already splits a qty>1 group into one row per unit
+// (parseIOList's flushGroup/parseEquipTags). Each row carries
+// estimateType: estEq.type so diffEstimateVsSite can aggregate all of a
+// type's units back into one comparable total regardless of which panel(s)
+// they ended up on.
+//
+// startIndex numbers the created units (default 1) — pass
+// (already-allocated count for this type) + 1 so e.g. adding 2 more CAHUs
+// after 2 already exist produces CAHU-3/CAHU-4, not a colliding CAHU-1/CAHU-2.
 // overrideQty lets the engineer add PART of the estimate's total qty to this
 // panel (e.g. 2 of 6 CAHUs — the rest likely belong on other panels);
-// defaults to the estimate's full qty when omitted. Note: IO_COLUMNS has no
-// PWM column (only DI/DO/AI/AO/SI) — a PWM point still gets created here
-// (data isn't lost) but won't show under any column in the grid, a
+// defaults to the estimate's full qty when omitted. Point quantities are
+// PER-UNIT (not multiplied — each unit is its own row now). Note: IO_COLUMNS
+// has no PWM column (only DI/DO/AI/AO/SI) — a PWM point still gets created
+// here (data isn't lost) but won't show under any column in the grid, a
 // pre-existing grid limitation.
-function estimateEquipmentToPanelEquipment(estEq, overrideQty) {
+function estimateEquipmentToPanelEquipment(estEq, overrideQty, startIndex) {
   var qty = Number(overrideQty != null ? overrideQty : estEq.qty) || 1
-  var points = []
-  ;(estEq.points || []).forEach(function(pt) {
-    var t = pt.pts || {}
-    var types = [['DI', t.DI], ['DO', t.DO], ['PWM', t.PWM], ['AI', t.AI], ['AO', t.AO], ['INT', t.INT]]
-    types.forEach(function(pair) {
-      var n = pair[1]
-      if (!n) return
-      points.push({
-        id: nid('pt'), description: pt.desc || '', type: pair[0], qty: n * qty,
-        cable_pulled: false, cable_continuity: false, term_ddc_side: false,
-        term_field_side: false, functional_test: false
+  var start = Number(startIndex) || 1
+  var units = []
+  for (var i = 0; i < qty; i++) {
+    var points = []
+    ;(estEq.points || []).forEach(function(pt) {
+      var t = pt.pts || {}
+      var types = [['DI', t.DI], ['DO', t.DO], ['PWM', t.PWM], ['AI', t.AI], ['AO', t.AO], ['INT', t.INT]]
+      types.forEach(function(pair) {
+        var n = pair[1]
+        if (!n) return
+        points.push({
+          id: nid('pt'), description: pt.desc || '', type: pair[0], qty: n,
+          cable_pulled: false, cable_continuity: false, term_ddc_side: false,
+          term_field_side: false, functional_test: false
+        })
       })
     })
-  })
-  if (points.length === 0) {
-    points.push({ id: nid('pt'), description: '', type: '', qty: 0, cable_pulled: false, cable_continuity: false, term_ddc_side: false, term_field_side: false, functional_test: false })
+    if (points.length === 0) {
+      points.push({ id: nid('pt'), description: '', type: '', qty: 0, cable_pulled: false, cable_continuity: false, term_ddc_side: false, term_field_side: false, functional_test: false })
+    }
+    units.push({ id: nid('eq'), name: estEq.type + '-' + (start + i), estimateType: estEq.type, points: points })
   }
-  return { id: nid('eq'), name: estEq.type, group_qty: qty, points: points }
+  return units
 }
 
 export { diffEstimateVsSite, flattenIoSummaryForDataset, estimateEquipmentToPanelEquipment }

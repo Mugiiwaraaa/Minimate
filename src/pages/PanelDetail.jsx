@@ -49,8 +49,22 @@ export default function PanelDetail(props) {
   var qtyOverrides = qtyOverridesState[0]
   var setQtyOverrides = qtyOverridesState[1]
 
+  // Count of INSTANCES already added for each estimate type, across ALL
+  // panels (not a qty sum — each physical unit is its own row now, keyed by
+  // estimateType so units like "HRAHU-1"/"HRAHU-2" both count toward "HRAHU").
+  // Used both to default the picker's qty input to what's left to allocate,
+  // and to number newly-added units so they don't collide with existing ones.
+  var allocatedByType = {}
+  Object.keys(equipmentMap).forEach(function(pid) {
+    ;(equipmentMap[pid] || []).forEach(function(eq) {
+      var k = up(eq.estimateType || eq.name)
+      allocatedByType[k] = (allocatedByType[k] || 0) + 1
+    })
+  })
+
   function addFromEstimate(estEq, qty) {
-    onUpdateEquipment(panelId, equipment.concat([estimateEquipmentToPanelEquipment(estEq, qty)]))
+    var startIndex = (allocatedByType[up(estEq.type)] || 0) + 1
+    onUpdateEquipment(panelId, equipment.concat(estimateEquipmentToPanelEquipment(estEq, qty, startIndex)))
     // Picker stays open — adding several equipment types in one sitting is the common case.
   }
 
@@ -223,16 +237,6 @@ export default function PanelDetail(props) {
     // button isn't conditional on having rows already, so a brand-new panel
     // (Design Engine's manual-authoring path) can add its first equipment
     // right here instead of being told to import a file it doesn't have.
-    // Total qty of each estimate type already added across ALL panels — used
-    // to default the picker's qty input to what's LEFT to allocate, so
-    // adding e.g. 2 of 6 CAHUs to this panel leaves 4 suggested next time.
-    var allocatedByType = {}
-    Object.keys(equipmentMap).forEach(function(pid) {
-      ;(equipmentMap[pid] || []).forEach(function(eq) {
-        var k = up(eq.name)
-        allocatedByType[k] = (allocatedByType[k] || 0) + (Number(eq.group_qty) || 1)
-      })
-    })
     var filteredEstimate = estimateEquipment.filter(function(estEq) {
       return !pickerSearch || up(estEq.type).indexOf(up(pickerSearch)) >= 0
     })
