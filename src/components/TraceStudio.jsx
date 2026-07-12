@@ -1,13 +1,18 @@
 /* --- TraceStudio.jsx --- v2 --- In-app loop tracing on the drawing ---
    The core inversion: AI locates, human traces, code resolves.
    v2 adds: mobile toolbar, richer pins (serial/address/room), text picking
-   (PDF text layer OR AI crop-read on scans/images), right-drag pan while
-   tracing, image file support, orthogonal stroke straightening, zone
-   rectangles, cable remarks between devices, reopen/edit saved drawings. */
+   (PDF text layer; scans/images require typing manually), right-drag pan
+   while tracing, image file support, orthogonal stroke straightening, zone
+   rectangles, cable remarks between devices, reopen/edit saved drawings.
+
+   AI PINS (auto-locate) and crop-read (AI text-pick on scans) REMOVED
+   2026-07-12 — a week of live field testing found them not worth using,
+   supervisors trace/tag fine by hand. Room left open for future AI
+   re-integration: ../lib/analyzers/pinExtract.js and ../lib/geminiClient.js
+   are untouched, this file just no longer calls them. See MINIMATE-HANDOFF.md
+   update log 2026-07-12 for the decision. */
 
 import { useState, useEffect, useRef } from 'react'
-import { extractPins } from '../lib/analyzers/pinExtract'
-import { callGeminiWithImage } from '../lib/geminiClient'
 import { putFile } from '../lib/fileStore'
 
 var LOOP_COLORS = ['#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899']
@@ -82,15 +87,6 @@ function straightenPolyline(points, tolDeg) {
   return out
 }
 
-/* Prompt for reading ONE small cropped label from a scan */
-var CROP_READ_PROMPT = [
-  'This is a small cropped region of a technical building drawing.',
-  'Read the printed text in the crop. Return ONLY what is actually printed.',
-  'If there are multiple short lines, join them with a single space.',
-  'Do NOT invent, complete, or extrapolate text.',
-  '{"text":"FCU-28-02"}'
-].join('\n')
-
 export default function TraceStudio(props) {
   // props: file (File), record (optional saved drawing to re-edit),
   //        onCancel(), onComplete(result, drawingRecord)
@@ -137,9 +133,6 @@ export default function TraceStudio(props) {
   var activeLoopState = useState(null)
   var activeLoopId = activeLoopState[0]
   var setActiveLoopId = activeLoopState[1]
-  var aiBusyState = useState(false)
-  var aiBusy = aiBusyState[0]
-  var setAiBusy = aiBusyState[1]
   var aiMsgState = useState('')
   var aiMsg = aiMsgState[0]
   var setAiMsg = aiMsgState[1]
@@ -587,13 +580,13 @@ export default function TraceStudio(props) {
     return found
   }
 
-  // ─── Text picking (text layer OR AI crop-read) ─────────────
+  // ─── Text picking (PDF text layer only — see file header) ──
   function pickTextAt(pagePt) {
     var pf = pickRef.current
     if (!pf) return
     var page = pageRef.current
 
-    // 1) Text layer: nearest item wins (instant, free)
+    // Text layer: nearest item wins (instant, free)
     var items = textItemsRef.current.filter(function(t) { return t.page === page })
     if (items.length >= 25) {
       var best = null
@@ -612,40 +605,10 @@ export default function TraceStudio(props) {
       return
     }
 
-    // 2) Scan/image: crop around the tap and AI-read the pixels
-    var img = pageImgRef.current
-    if (!img) return
-    var apiKey = localStorage.getItem('minimate_gemini_key') || ''
-    if (!apiKey) { setPickField(null); setAiMsg('NO GEMINI KEY — SET IT VIA IMPORT DRAWINGS'); return }
-
-    var cw = 440
-    var ch = 220
-    var x0 = Math.max(0, Math.min(img.width - cw, pagePt.x - cw / 2))
-    var y0 = Math.max(0, Math.min(img.height - ch, pagePt.y - ch / 2))
-    var c = document.createElement('canvas')
-    c.width = cw * 2
-    c.height = ch * 2
-    var cctx = c.getContext('2d')
-    cctx.imageSmoothingEnabled = false
-    cctx.drawImage(img, x0, y0, cw, ch, 0, 0, cw * 2, ch * 2)
-    var base64 = c.toDataURL('image/jpeg', 0.92).split(',')[1]
-
+    // No text layer on this drawing (scan/image) — type it manually
     setPickField(null)
-    setAiBusy(true)
-    setAiMsg('AI READING LABEL FROM PIXELS...')
-    callGeminiWithImage(apiKey, CROP_READ_PROMPT, base64, 'image/jpeg', null)
-      .then(function(res) {
-        setAiBusy(false)
-        var text = res && res.text ? up(res.text) : ''
-        if (!text || res.parse_error) { setAiMsg('COULD NOT READ TEXT THERE — ZOOM IN OR TYPE IT'); return }
-        updatePin(pf.pinId, pickPatch(pf.field, text))
-        setAiMsg('READ FROM DRAWING: ' + text)
-        setEditPinId(pf.pinId)
-      })
-      .catch(function(err) {
-        setAiBusy(false)
-        setAiMsg('READ FAILED: ' + up(err.message).substring(0, 100))
-      })
+    setAiMsg('NO TEXT LAYER ON THIS DRAWING — TYPE IT IN')
+    setEditPinId(pf.pinId)
   }
 
   function pickPatch(field, raw) {
@@ -997,59 +960,6 @@ export default function TraceStudio(props) {
     scheduleHiRes()
   }
 
-  // ─── AI pin extraction ─────────────────────────────────────
-  function runAiPins() {
-    var img = pageImgRef.current
-    if (!img || aiBusy) return
-    var apiKey = localStorage.getItem('minimate_gemini_key') || ''
-    if (!apiKey) { setAiMsg('NO GEMINI KEY — SET IT VIA IMPORT DRAWINGS FIRST'); return }
-
-    var maxDim = 3000
-    var k = Math.min(maxDim / img.width, maxDim / img.height, 1)
-    var c = document.createElement('canvas')
-    c.width = Math.round(img.width * k)
-    c.height = Math.round(img.height * k)
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height)
-    var base64 = c.toDataURL('image/jpeg', 0.85).split(',')[1]
-
-    setAiBusy(true)
-    setAiMsg('AI LOCATING DEVICE TAGS...')
-    extractPins(base64, apiKey, function(msg) { setAiMsg(up(msg)) })
-      .then(function(res) {
-        var existing = {}
-        pinsRef.current.forEach(function(p) { existing[p.tag] = true })
-        var page = pageRef.current
-        var added = 0
-        var newPins = pinsRef.current.slice()
-        res.pins.forEach(function(p) {
-          if (existing[p.tag]) return
-          newPins.push({
-            id: nid('pin'),
-            tag: p.tag,
-            serial: '',
-            address: '',
-            thermostat: p.thermostat,
-            room: p.room,
-            x: p.x,
-            y: p.y,
-            source: 'ai',
-            page: page
-          })
-          added++
-        })
-        pinsRef.current = newPins
-        setPins(newPins)
-        if (res.floor && !meta.floor) setMeta(Object.assign({}, meta, { floor: res.floor }))
-        setAiBusy(false)
-        setAiMsg(added + ' PINS PLACED — DRAG MISPLACED PINS TO FIX, TAP TO EDIT')
-        requestDraw()
-      })
-      .catch(function(err) {
-        setAiBusy(false)
-        setAiMsg('AI FAILED: ' + up(err.message).substring(0, 120))
-      })
-  }
-
   // ─── Pin / zone / remark helpers ───────────────────────────
   function updatePin(pinId, fields) {
     pinsRef.current = pinsRef.current.map(function(p) {
@@ -1273,9 +1183,6 @@ export default function TraceStudio(props) {
           </span>
         )}
         <div className="flex-1"></div>
-        <button onClick={runAiPins} disabled={aiBusy || loading} className={'px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition ' + (aiBusy ? 'bg-card2 text-dgray cursor-wait' : 'bg-orange/20 text-orange hover:bg-orange/30')}>
-          {aiBusy ? 'AI...' : '✨ AI PINS'}
-        </button>
         <button onClick={handleDone} disabled={tracedCount === 0} className={'px-4 py-1.5 rounded-md text-[10px] font-bold uppercase transition ' + (tracedCount > 0 ? 'bg-teal text-white hover:bg-teal/80' : 'bg-card2 text-dgray cursor-not-allowed')}>
           DONE ({tracedCount})
         </button>
@@ -1286,7 +1193,7 @@ export default function TraceStudio(props) {
       )}
       {pickField && (
         <div className="px-3 py-1.5 bg-teal/20 border-b border-teal text-[10px] text-teal font-bold uppercase">
-          TAP THE TEXT ON THE DRAWING TO FILL {pickField.field === 'tag' ? 'EQUIPMENT NAME' : pickField.field.toUpperCase()} {hasTextLayer ? '(TEXT LAYER)' : '(AI READS THE PIXELS)'}
+          TAP THE TEXT ON THE DRAWING TO FILL {pickField.field === 'tag' ? 'EQUIPMENT NAME' : pickField.field.toUpperCase()} {hasTextLayer ? '(TEXT LAYER)' : '(NO TEXT LAYER — TYPE MANUALLY)'}
           <button onClick={function() { setPickField(null) }} className="ml-3 text-white/70 hover:text-white">CANCEL</button>
         </div>
       )}
