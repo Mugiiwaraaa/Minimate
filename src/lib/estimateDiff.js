@@ -69,4 +69,39 @@ function flattenIoSummaryForDataset(ioSummaryEquipment) {
   })
 }
 
-export { diffEstimateVsSite, flattenIoSummaryForDataset }
+var _idc = 0
+function nid(p) { _idc++; return p + '-' + Date.now() + '-' + _idc }
+
+// Convert ONE parseIoSummary() equipment entry into a real panel-equipment
+// object matching IoSheetGrid's shape ({id, name, group_qty, points: [{id,
+// description, type, qty, ...stage flags}]}) — used by the "+ ADD FROM
+// ESTIMATE" picker in PanelDetail.jsx so the engineer can pick a known
+// equipment type instead of typing one from scratch. Point quantities are
+// TOTALS (per-unit count x estEq.qty), matching how IoSheetGrid's own _qty
+// scaling interprets stored point quantities (see applyOps in
+// IoSheetGrid.jsx). Note: IO_COLUMNS has no PWM column (only DI/DO/AI/AO/SI)
+// — a PWM point still gets created here (data isn't lost) but won't show
+// under any column in the grid, a pre-existing grid limitation.
+function estimateEquipmentToPanelEquipment(estEq) {
+  var qty = Number(estEq.qty) || 1
+  var points = []
+  ;(estEq.points || []).forEach(function(pt) {
+    var t = pt.pts || {}
+    var types = [['DI', t.DI], ['DO', t.DO], ['PWM', t.PWM], ['AI', t.AI], ['AO', t.AO], ['INT', t.INT]]
+    types.forEach(function(pair) {
+      var n = pair[1]
+      if (!n) return
+      points.push({
+        id: nid('pt'), description: pt.desc || '', type: pair[0], qty: n * qty,
+        cable_pulled: false, cable_continuity: false, term_ddc_side: false,
+        term_field_side: false, functional_test: false
+      })
+    })
+  })
+  if (points.length === 0) {
+    points.push({ id: nid('pt'), description: '', type: '', qty: 0, cable_pulled: false, cable_continuity: false, term_ddc_side: false, term_field_side: false, functional_test: false })
+  }
+  return { id: nid('eq'), name: estEq.type, group_qty: qty, points: points }
+}
+
+export { diffEstimateVsSite, flattenIoSummaryForDataset, estimateEquipmentToPanelEquipment }

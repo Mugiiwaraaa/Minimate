@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
 import IoSheetGrid from '../components/IoSheetGrid'
+import { estimateEquipmentToPanelEquipment } from '../lib/estimateDiff'
 
 var stages = ['cable_pulled','cable_continuity','term_ddc_side','term_field_side','functional_test']
 var stageLabels = {
@@ -31,6 +32,21 @@ export default function PanelDetail(props) {
   var panel = panels.find(function(p) { return p.id === panelId })
   var equipment = equipmentMap[panelId] || []
   var termData = terminationMap[panelId] || null
+
+  // Design Engine: equipment types from the saved design estimate (I-O Summary
+  // sheet), offered as a picker so the engineer can pick a known type instead
+  // of typing "NEW EQUIPMENT" from scratch every time.
+  var estimateScope = props.estimateScope || {}
+  var ioSummarySheet = (estimateScope.sheets || []).filter(function(s) { return s.kind === 'io_summary' })[0]
+  var estimateEquipment = (ioSummarySheet && ioSummarySheet.data && ioSummarySheet.data.equipment) || []
+  var showPickerState = useState(false)
+  var showPicker = showPickerState[0]
+  var setShowPicker = showPickerState[1]
+
+  function addFromEstimate(estEq) {
+    onUpdateEquipment(panelId, equipment.concat([estimateEquipmentToPanelEquipment(estEq)]))
+    setShowPicker(false)
+  }
 
   var viewState = useState('io')
   var view = viewState[0]
@@ -201,15 +217,41 @@ export default function PanelDetail(props) {
     // button isn't conditional on having rows already, so a brand-new panel
     // (Design Engine's manual-authoring path) can add its first equipment
     // right here instead of being told to import a file it doesn't have.
+    var onSiteNames = {}
+    Object.keys(equipmentMap).forEach(function(pid) {
+      ;(equipmentMap[pid] || []).forEach(function(eq) { onSiteNames[up(eq.name)] = true })
+    })
     return (
-      <IoSheetGrid
-        eqs={equipment}
-        panelId={panelId}
-        onUpdateEquipment={onUpdateEquipment}
-        onUndo={props.onUndo}
-        height={440}
-        compact
-      />
+      <div>
+        {estimateEquipment.length > 0 && (
+          <div className="relative mb-2">
+            <button onClick={function() { setShowPicker(!showPicker) }} className="text-[11px] text-cyan hover:text-white font-medium uppercase">+ ADD FROM ESTIMATE ▾</button>
+            {showPicker && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={function() { setShowPicker(false) }} />
+                <div className="absolute z-20 mt-1 bg-card2 border border-border rounded-lg shadow-lg max-h-64 overflow-y-auto w-72">
+                  {estimateEquipment.map(function(estEq, i) {
+                    var already = onSiteNames[up(estEq.type)]
+                    return (
+                      <button key={i} onClick={function() { addFromEstimate(estEq) }} className={'block w-full text-left px-3 py-1.5 text-[11px] uppercase hover:bg-teal/20 hover:text-white ' + (already ? 'text-dgray' : 'text-lgray')}>
+                        {estEq.type} <span className="text-[9px] opacity-60">× {estEq.qty}{already ? ' · ON SITE' : ''}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        <IoSheetGrid
+          eqs={equipment}
+          panelId={panelId}
+          onUpdateEquipment={onUpdateEquipment}
+          onUndo={props.onUndo}
+          height={estimateEquipment.length > 0 ? 400 : 440}
+          compact
+        />
+      </div>
     )
   }
 
