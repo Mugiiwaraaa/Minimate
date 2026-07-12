@@ -30,6 +30,28 @@ export default function DocumentsPage(props) {
   var viewState = useState('estimate'); var view = viewState[0]; var setView = viewState[1]
   var openDocState = useState(null); var openDoc = openDocState[0]; var setOpenDoc = openDocState[1]
   var estDatasetState = useState(null); var estDataset = estDatasetState[0]; var setEstDataset = estDatasetState[1]
+  var matchSelState = useState(null); var matchSel = matchSelState[0]; var setMatchSel = matchSelState[1] // {type:'estimate'|'site', name}
+
+  function dismissEstimateItem(name) {
+    var next = Object.assign({}, scope, { dismissed: Object.assign({}, scope.dismissed || {}, (function() { var o = {}; o[up(name)] = true; return o })()) })
+    if (props.onUpdateScope) props.onUpdateScope(next)
+  }
+
+  function matchEquipment(siteName, estimateName) {
+    var next = Object.assign({}, scope, { aliases: Object.assign({}, scope.aliases || {}, (function() { var o = {}; o[up(siteName)] = estimateName; return o })()) })
+    if (props.onUpdateScope) props.onUpdateScope(next)
+    setMatchSel(null)
+  }
+
+  function clickEstimateItem(name) {
+    if (matchSel && matchSel.type === 'site') { matchEquipment(matchSel.name, name); return }
+    setMatchSel(matchSel && matchSel.type === 'estimate' && matchSel.name === name ? null : { type: 'estimate', name: name })
+  }
+
+  function clickSiteItem(name) {
+    if (matchSel && matchSel.type === 'estimate') { matchEquipment(name, matchSel.name); return }
+    setMatchSel(matchSel && matchSel.type === 'site' && matchSel.name === name ? null : { type: 'site', name: name })
+  }
 
   // Estimate file handed in by the global import router
   useEffect(function() {
@@ -392,9 +414,13 @@ export default function DocumentsPage(props) {
           against — see estimateDiff.js). */}
       {view === 'estimate' && estDataset && (
         <div className="bg-card rounded-xl border border-border p-4 mt-4">
-          <div className="text-[10px] text-dgray uppercase font-semibold mb-3">ESTIMATE VS AS-PER-SITE</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[10px] text-dgray uppercase font-semibold">ESTIMATE VS AS-PER-SITE</div>
+            {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH ON THE OTHER SIDE <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
+          </div>
+          <div className="text-[9px] text-dgray uppercase mb-3">CLICK AN ITEM ON EACH SIDE TO LINK THEM AS THE SAME EQUIPMENT (NAMING DIFFERENCE) · ✕ DISMISSES AN ESTIMATE ITEM YOU DON'T NEED TO TRACK</div>
           {(function() {
-            var diff = diffEstimateVsSite(estDataset.rows, props.equipmentMap || {})
+            var diff = diffEstimateVsSite(estDataset.rows, props.equipmentMap || {}, scope.aliases || {}, scope.dismissed || {})
             var nothingToShow = diff.missingOnSite.length === 0 && diff.notInEstimate.length === 0 && diff.mismatched.length === 0
             if (nothingToShow) return <div className="text-[11px] text-green uppercase">✓ SITE MATCHES THE DESIGN ESTIMATE — NOTHING OUTSTANDING</div>
             return (
@@ -403,7 +429,15 @@ export default function DocumentsPage(props) {
                   <div>
                     <div className="text-[9px] text-orange uppercase font-semibold mb-1">IN ESTIMATE, NOT BUILT ON SITE YET ({diff.missingOnSite.length})</div>
                     <div className="flex flex-wrap gap-1.5">
-                      {diff.missingOnSite.map(function(d, i) { return <span key={i} className="text-[10px] bg-orange/10 text-orange px-2 py-1 rounded uppercase">{d.equipment}</span> })}
+                      {diff.missingOnSite.map(function(d, i) {
+                        var sel = matchSel && matchSel.type === 'estimate' && matchSel.name === d.equipment
+                        return (
+                          <span key={i} className={'text-[10px] px-2 py-1 rounded uppercase flex items-center gap-1 ' + (sel ? 'bg-teal text-white' : 'bg-orange/10 text-orange hover:bg-orange/20')}>
+                            <button onClick={function() { clickEstimateItem(d.equipment) }} title="CLICK TO MATCH WITH A SITE ITEM">{d.equipment}</button>
+                            <button onClick={function() { dismissEstimateItem(d.equipment) }} title="DISMISS — DON'T TRACK THIS" className="opacity-60 hover:opacity-100">✕</button>
+                          </span>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -411,7 +445,12 @@ export default function DocumentsPage(props) {
                   <div>
                     <div className="text-[9px] text-cyan uppercase font-semibold mb-1">ON SITE, NOT IN THE DESIGN ESTIMATE ({diff.notInEstimate.length})</div>
                     <div className="flex flex-wrap gap-1.5">
-                      {diff.notInEstimate.map(function(d, i) { return <span key={i} className="text-[10px] bg-cyan/10 text-cyan px-2 py-1 rounded uppercase">{d.equipment}</span> })}
+                      {diff.notInEstimate.map(function(d, i) {
+                        var sel = matchSel && matchSel.type === 'site' && matchSel.name === d.equipment
+                        return (
+                          <button key={i} onClick={function() { clickSiteItem(d.equipment) }} title="CLICK TO MATCH WITH AN ESTIMATE ITEM" className={'text-[10px] px-2 py-1 rounded uppercase ' + (sel ? 'bg-teal text-white' : 'bg-cyan/10 text-cyan hover:bg-cyan/20')}>{d.equipment}</button>
+                        )
+                      })}
                     </div>
                   </div>
                 )}

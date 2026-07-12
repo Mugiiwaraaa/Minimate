@@ -19,13 +19,23 @@ function up(v) { return ('' + (v == null ? '' : v)).toUpperCase().trim() }
 // estimateRows: [{equipment, qty}] (dataset's flattened rows, qty = total points for that type)
 // equipmentMap: {panelId: [{id, name, points: [{qty}, ...]}]} (live, from App state — every
 //   panel's equipment is aggregated by name regardless of which panel it's under)
-function diffEstimateVsSite(estimateRows, equipmentMap) {
+// aliases: {SITE_NAME_UPPER: 'Estimate Name'} — manual reconciliation for equipment named
+//   differently on site vs in the design (e.g. "SPF" on site == "STAIRCASE PRESSURIZATION
+//   FAN" in the estimate). Resolved BEFORE matching, in both directions.
+// dismissed: {ESTIMATE_NAME_UPPER: true} — estimate items the engineer confirmed don't need
+//   tracking (descoped, duplicate, etc.) — excluded entirely, not just hidden.
+function diffEstimateVsSite(estimateRows, equipmentMap, aliases, dismissed) {
+  aliases = aliases || {}
+  dismissed = dismissed || {}
+
   var liveByName = {}
   Object.keys(equipmentMap || {}).forEach(function(pid) {
     ;(equipmentMap[pid] || []).forEach(function(eq) {
-      var key = up(eq.name)
+      var rawKey = up(eq.name)
+      var resolvedName = aliases[rawKey] || eq.name
+      var key = up(resolvedName)
       var pts = (eq.points || []).reduce(function(s, p) { return s + (Number(p.qty) || 1) }, 0)
-      if (!liveByName[key]) liveByName[key] = { name: eq.name, points: 0 }
+      if (!liveByName[key]) liveByName[key] = { name: resolvedName, points: 0 }
       liveByName[key].points += pts
     })
   })
@@ -33,6 +43,7 @@ function diffEstimateVsSite(estimateRows, equipmentMap) {
   var estByName = {}
   ;(estimateRows || []).forEach(function(r) {
     var key = up(r.equipment)
+    if (dismissed[key]) return
     if (!estByName[key]) estByName[key] = { name: r.equipment, points: 0 }
     estByName[key].points += Number(r.qty) || 1
   })
@@ -77,13 +88,16 @@ function nid(p) { _idc++; return p + '-' + Date.now() + '-' + _idc }
 // description, type, qty, ...stage flags}]}) — used by the "+ ADD FROM
 // ESTIMATE" picker in PanelDetail.jsx so the engineer can pick a known
 // equipment type instead of typing one from scratch. Point quantities are
-// TOTALS (per-unit count x estEq.qty), matching how IoSheetGrid's own _qty
-// scaling interprets stored point quantities (see applyOps in
-// IoSheetGrid.jsx). Note: IO_COLUMNS has no PWM column (only DI/DO/AI/AO/SI)
-// — a PWM point still gets created here (data isn't lost) but won't show
-// under any column in the grid, a pre-existing grid limitation.
-function estimateEquipmentToPanelEquipment(estEq) {
-  var qty = Number(estEq.qty) || 1
+// TOTALS (per-unit count x qty), matching how IoSheetGrid's own _qty scaling
+// interprets stored point quantities (see applyOps in IoSheetGrid.jsx).
+// overrideQty lets the engineer add PART of the estimate's total qty to this
+// panel (e.g. 2 of 6 CAHUs — the rest likely belong on other panels);
+// defaults to the estimate's full qty when omitted. Note: IO_COLUMNS has no
+// PWM column (only DI/DO/AI/AO/SI) — a PWM point still gets created here
+// (data isn't lost) but won't show under any column in the grid, a
+// pre-existing grid limitation.
+function estimateEquipmentToPanelEquipment(estEq, overrideQty) {
+  var qty = Number(overrideQty != null ? overrideQty : estEq.qty) || 1
   var points = []
   ;(estEq.points || []).forEach(function(pt) {
     var t = pt.pts || {}

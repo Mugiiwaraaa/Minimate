@@ -42,10 +42,16 @@ export default function PanelDetail(props) {
   var showPickerState = useState(false)
   var showPicker = showPickerState[0]
   var setShowPicker = showPickerState[1]
+  var pickerSearchState = useState('')
+  var pickerSearch = pickerSearchState[0]
+  var setPickerSearch = pickerSearchState[1]
+  var qtyOverridesState = useState({}) // { estimateType: current input value } — lets partial qty (e.g. 2 of 6) be added
+  var qtyOverrides = qtyOverridesState[0]
+  var setQtyOverrides = qtyOverridesState[1]
 
-  function addFromEstimate(estEq) {
-    onUpdateEquipment(panelId, equipment.concat([estimateEquipmentToPanelEquipment(estEq)]))
-    setShowPicker(false)
+  function addFromEstimate(estEq, qty) {
+    onUpdateEquipment(panelId, equipment.concat([estimateEquipmentToPanelEquipment(estEq, qty)]))
+    // Picker stays open — adding several equipment types in one sitting is the common case.
   }
 
   var viewState = useState('io')
@@ -217,9 +223,18 @@ export default function PanelDetail(props) {
     // button isn't conditional on having rows already, so a brand-new panel
     // (Design Engine's manual-authoring path) can add its first equipment
     // right here instead of being told to import a file it doesn't have.
-    var onSiteNames = {}
+    // Total qty of each estimate type already added across ALL panels — used
+    // to default the picker's qty input to what's LEFT to allocate, so
+    // adding e.g. 2 of 6 CAHUs to this panel leaves 4 suggested next time.
+    var allocatedByType = {}
     Object.keys(equipmentMap).forEach(function(pid) {
-      ;(equipmentMap[pid] || []).forEach(function(eq) { onSiteNames[up(eq.name)] = true })
+      ;(equipmentMap[pid] || []).forEach(function(eq) {
+        var k = up(eq.name)
+        allocatedByType[k] = (allocatedByType[k] || 0) + (Number(eq.group_qty) || 1)
+      })
+    })
+    var filteredEstimate = estimateEquipment.filter(function(estEq) {
+      return !pickerSearch || up(estEq.type).indexOf(up(pickerSearch)) >= 0
     })
     return (
       <div>
@@ -229,15 +244,28 @@ export default function PanelDetail(props) {
             {showPicker && (
               <>
                 <div className="fixed inset-0 z-10" onClick={function() { setShowPicker(false) }} />
-                <div className="absolute z-20 mt-1 bg-card2 border border-border rounded-lg shadow-lg max-h-64 overflow-y-auto w-72">
-                  {estimateEquipment.map(function(estEq, i) {
-                    var already = onSiteNames[up(estEq.type)]
-                    return (
-                      <button key={i} onClick={function() { addFromEstimate(estEq) }} className={'block w-full text-left px-3 py-1.5 text-[11px] uppercase hover:bg-teal/20 hover:text-white ' + (already ? 'text-dgray' : 'text-lgray')}>
-                        {estEq.type} <span className="text-[9px] opacity-60">× {estEq.qty}{already ? ' · ON SITE' : ''}</span>
-                      </button>
-                    )
-                  })}
+                <div className="absolute z-20 mt-1 bg-card2 border border-border rounded-lg shadow-lg w-80">
+                  <div className="p-2 border-b border-border">
+                    <input autoFocus value={pickerSearch} onChange={function(e) { setPickerSearch(e.target.value) }} placeholder="SEARCH EQUIPMENT..." style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1 text-[11px] text-white outline-none focus:border-teal placeholder:text-dgray" onClick={function(e) { e.stopPropagation() }} />
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {filteredEstimate.length === 0 && <div className="px-3 py-2 text-[10px] text-dgray uppercase">NO MATCHES</div>}
+                    {filteredEstimate.map(function(estEq, i) {
+                      var allocated = allocatedByType[up(estEq.type)] || 0
+                      var remaining = Math.max(0, estEq.qty - allocated)
+                      var defaultQty = remaining > 0 ? remaining : estEq.qty
+                      var qtyVal = qtyOverrides[estEq.type] != null ? qtyOverrides[estEq.type] : defaultQty
+                      return (
+                        <div key={i} className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-teal/10">
+                          <div className="flex-1 min-w-0 text-[11px] uppercase text-lgray truncate">
+                            {estEq.type} <span className="text-[9px] opacity-60">({allocated}/{estEq.qty} ALLOCATED)</span>
+                          </div>
+                          <input type="number" min="1" value={qtyVal} onClick={function(e) { e.stopPropagation() }} onChange={function(e) { setQtyOverrides(Object.assign({}, qtyOverrides, { [estEq.type]: e.target.value })) }} className="w-12 bg-navy border border-border rounded px-1 py-0.5 text-[10px] text-cyan text-center outline-none focus:border-teal" />
+                          <button onClick={function() { addFromEstimate(estEq, Number(qtyVal) || 1) }} title="ADD TO THIS PANEL" className="px-2 py-0.5 bg-teal/20 text-teal text-[10px] font-bold rounded hover:bg-teal/30 shrink-0">+</button>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               </>
             )}
