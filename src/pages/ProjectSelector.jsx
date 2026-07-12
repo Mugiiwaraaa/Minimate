@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { isDemo } from '../lib/supabase'
-import { listProjects, createProject, listArchivedProjects, restoreProject, hardDeleteProject } from '../lib/supabaseDb'
+import { listProjects, createProject, listArchivedProjects, restoreProject, hardDeleteProject, deleteProject } from '../lib/supabaseDb'
 
 export default function ProjectSelector(props) {
   var onSelectProject = props.onSelectProject
@@ -51,6 +51,14 @@ export default function ProjectSelector(props) {
     })
     listArchivedProjects(function(err, data) {
       if (!err) setArchived(data || [])
+    })
+  }
+
+  function handleArchive(p) {
+    if (!window.confirm('ARCHIVE "' + p.name + '"? YOU CAN RESTORE IT LATER FROM ARCHIVED PROJECTS BELOW.')) return
+    deleteProject(p.id, function(err) {
+      if (err) { setError(err.message); return }
+      refreshLists()
     })
   }
 
@@ -153,9 +161,13 @@ export default function ProjectSelector(props) {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
               {projects.map(function(p) {
                 return (
-                  <button key={p.id} onClick={function(){ onSelectProject(p) }}
-                    className="bg-card rounded-xl border border-border hover:border-teal p-5 text-left transition group">
-                    <div className="text-sm font-bold text-white group-hover:text-cyan transition mb-1">{p.name}</div>
+                  <div key={p.id} role="button" tabIndex={0}
+                    onClick={function(){ onSelectProject(p) }}
+                    onKeyDown={function(e){ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectProject(p) } }}
+                    className="bg-card rounded-xl border border-border hover:border-teal p-5 text-left transition group cursor-pointer relative">
+                    <button onClick={function(e){ e.stopPropagation(); handleArchive(p) }} title="ARCHIVE PROJECT"
+                      className="absolute top-3 right-3 text-[9px] text-red/30 hover:text-red transition">X</button>
+                    <div className="text-sm font-bold text-white group-hover:text-cyan transition mb-1 pr-4">{p.name}</div>
                     <div className="text-[10px] text-dgray mb-3">{p.client || 'NO CLIENT'}{p.location ? ' — ' + p.location : ''}</div>
                     <div className="flex gap-3 text-[10px]">
                       <div>
@@ -176,7 +188,7 @@ export default function ProjectSelector(props) {
                       </div>
                     </div>
                     <div className="text-[9px] text-dgray mt-2">UPDATED {formatDate(p.updated_at)}</div>
-                  </button>
+                  </div>
                 )
               })}
 
