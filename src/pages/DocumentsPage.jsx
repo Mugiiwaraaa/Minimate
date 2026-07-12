@@ -11,6 +11,8 @@ import { sheetList, parseSheet, aoaOf } from '../lib/estimateParser'
 import { DOC_TYPE_LABELS } from '../lib/docStore'
 import DocGrid from '../components/DocGrid'
 import IoListPage from './IoListPage'
+import { getWorkingCopy, updateWorkingCopy } from '../lib/datasetStore'
+import { flattenIoSummaryForDataset, diffEstimateVsSite } from '../lib/estimateDiff'
 
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
 
@@ -27,6 +29,7 @@ export default function DocumentsPage(props) {
   var openState = useState({}); var opened = openState[0]; var setOpened = openState[1]
   var viewState = useState('estimate'); var view = viewState[0]; var setView = viewState[1]
   var openDocState = useState(null); var openDoc = openDocState[0]; var setOpenDoc = openDocState[1]
+  var estDatasetState = useState(null); var estDataset = estDatasetState[0]; var setEstDataset = estDatasetState[1]
 
   // Estimate file handed in by the global import router
   useEffect(function() {
@@ -36,6 +39,15 @@ export default function DocumentsPage(props) {
       if (props.onConsumedIncoming) props.onConsumedIncoming()
     }
   }, [props.incomingFile])
+
+  // Load the ESTIMATE baseline dataset (for the diff-vs-site view) whenever
+  // the project changes or a fresh save just happened (busy toggles on save).
+  useEffect(function() {
+    if (!props.project || !props.project.id) return
+    getWorkingCopy(props.project.id, 'estimate-io-summary', function(err, data) {
+      if (!err) setEstDataset(data)
+    })
+  }, [props.project && props.project.id, busy])
 
   function processFile(file) {
     if (!file) return
@@ -97,6 +109,25 @@ export default function DocumentsPage(props) {
     if (props.onUpdateScope) props.onUpdateScope(next)
     setBusy('SAVED TO ESTIMATE SCOPE')
     setTimeout(function() { setBusy('') }, 2500)
+
+    // Design Engine: also persist the I-O Summary sheet as the ESTIMATE
+    // baseline dataset (S2 datasetStore.js) so it can be diffed against the
+    // live as-per-site panels/equipmentMap. Best-effort, non-blocking.
+    var ioSummarySheet = parsed.sheets.filter(function(s) { return s.kind === 'io_summary' })[0]
+    if (ioSummarySheet && props.project && props.project.id) {
+      var estRows = flattenIoSummaryForDataset(ioSummarySheet.data.equipment)
+      var estId = 'estimate-io-summary'
+      getWorkingCopy(props.project.id, estId, function(err, existing) {
+        updateWorkingCopy(props.project.id, estId, {
+          kind: 'IO_SUMMARY',
+          name: 'ESTIMATE — ' + fileName,
+          columns: [{ id: 'equipment', title: 'EQUIPMENT', type: 'text' }, { id: 'qty', title: 'POINTS', type: 'number' }],
+          rows: estRows,
+          source_doc_id: null,
+          version: existing ? existing.version : 1
+        }, function(uerr) { if (uerr) console.warn('[MINIMATE] Estimate dataset save failed (non-blocking):', uerr.message) })
+      })
+    }
   }
 
   function toggleOpen(k) { var n = Object.assign({}, opened); n[k] = !n[k]; setOpened(n) }
@@ -349,6 +380,53 @@ export default function DocumentsPage(props) {
           </div>
         )}
       </div>
+      )}
+
+      {/* Diff vs site — compares the saved estimate baseline against the LIVE
+          as-per-site panels/equipmentMap (same props every other page uses).
+          Works identically for a new build (site state built up by hand from
+          empty) or a retrofit (site state seeded from an existing as-built
+          survey import) — this just compares whatever the live state
+          currently is against the design estimate, equipment-type by
+          equipment-type (the I-O Summary has no panel grouping to compare
+          against — see estimateDiff.js). */}
+      {view === 'estimate' && estDataset && (
+        <div className="bg-card rounded-xl border border-border p-4 mt-4">
+          <div className="text-[10px] text-dgray uppercase font-semibold mb-3">ESTIMATE VS AS-PER-SITE</div>
+          {(function() {
+            var diff = diffEstimateVsSite(estDataset.rows, props.equipmentMap || {})
+            var nothingToShow = diff.missingOnSite.length === 0 && diff.notInEstimate.length === 0 && diff.mismatched.length === 0
+            if (nothingToShow) return <div className="text-[11px] text-green uppercase">✓ SITE MATCHES THE DESIGN ESTIMATE — NOTHING OUTSTANDING</div>
+            return (
+              <div className="space-y-3">
+                {diff.missingOnSite.length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-orange uppercase font-semibold mb-1">IN ESTIMATE, NOT BUILT ON SITE YET ({diff.missingOnSite.length})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {diff.missingOnSite.map(function(d, i) { return <span key={i} className="text-[10px] bg-orange/10 text-orange px-2 py-1 rounded uppercase">{d.equipment}</span> })}
+                    </div>
+                  </div>
+                )}
+                {diff.notInEstimate.length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-cyan uppercase font-semibold mb-1">ON SITE, NOT IN THE DESIGN ESTIMATE ({diff.notInEstimate.length})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {diff.notInEstimate.map(function(d, i) { return <span key={i} className="text-[10px] bg-cyan/10 text-cyan px-2 py-1 rounded uppercase">{d.equipment}</span> })}
+                    </div>
+                  </div>
+                )}
+                {diff.mismatched.length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-red uppercase font-semibold mb-1">POINT COUNT MISMATCH ({diff.mismatched.length})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {diff.mismatched.map(function(d, i) { return <span key={i} className="text-[10px] bg-red/10 text-red px-2 py-1 rounded uppercase">{d.equipment} — EST {d.estimatePoints} / SITE {d.sitePoints}</span> })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </div>
       )}
 
       {view === 'drawings' && (props.drawingsElement || <div className="text-[11px] text-dgray uppercase">DRAWINGS SECTION.</div>)}

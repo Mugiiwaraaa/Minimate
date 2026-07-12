@@ -598,6 +598,11 @@ export default function App() {
     // beforeunload flush and the debounced save effect.
   }, [])
 
+  function handleCreatePanel(panel) {
+    pushUndo()
+    setPanels(function(prev) { return prev.concat([panel]) })
+  }
+
   function handleDeletePanel(panelId) {
     pushUndo()
     setPanels(function(prev) { return prev.filter(function(p) { return p.id !== panelId }) })
@@ -1797,7 +1802,7 @@ export default function App() {
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6 print-reset">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
-          <Route path="/panels" element={<Suspense fallback={pageLoading()}><PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} /></Suspense>} />
+          <Route path="/panels" element={<Suspense fallback={pageLoading()}><PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} onCreatePanel={handleCreatePanel} /></Suspense>} />
           <Route path="/panels/:panelId" element={<Suspense fallback={pageLoading()}><PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />

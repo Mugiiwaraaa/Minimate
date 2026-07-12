@@ -28,16 +28,34 @@ function getProgress(panel, equipmentMap) {
   }
 }
 
+function up(v) { return (v || '').toUpperCase().trim() }
+var gidP = 0
+function panelId() { gidP++; return 'panel-' + Date.now() + '-' + gidP } // globally unique — see M6 lesson in loopStore.js
+
 export default function PanelsList(props) {
   var panels = props.panels
   var equipmentMap = props.equipmentMap
   var onDeletePanel = props.onDeletePanel
+  var onCreatePanel = props.onCreatePanel
   var filterState = useState('all')
   var filter = filterState[0]
   var setFilter = filterState[1]
   var searchState = useState('')
   var search = searchState[0]
   var setSearch = searchState[1]
+  var showCreateState = useState(false)
+  var showCreate = showCreateState[0]
+  var setShowCreate = showCreateState[1]
+  var newPanelState = useState({ name: '', location: '', floor: '' })
+  var newPanel = newPanelState[0]
+  var setNewPanel = newPanelState[1]
+
+  function handleCreatePanel() {
+    if (!newPanel.name.trim() || !onCreatePanel) return
+    onCreatePanel({ id: panelId(), name: up(newPanel.name), location: up(newPanel.location), floor: up(newPanel.floor) })
+    setNewPanel({ name: '', location: '', floor: '' })
+    setShowCreate(false)
+  }
 
   var filtered = useMemo(function() {
     return panels
@@ -74,15 +92,36 @@ export default function PanelsList(props) {
           DDC PANELS
           <span className="text-dgray font-normal text-sm ml-2">{panels.length} PANELS</span>
         </h1>
-        <input
-          type="text"
-          placeholder="SEARCH PANELS..."
-          value={search}
-          onChange={function(e) { setSearch(e.target.value) }}
-          style={{textTransform:'uppercase'}}
-          className="bg-card2 border border-border rounded-md px-3 py-1.5 text-xs text-white placeholder:text-dgray outline-none focus:border-teal w-full md:w-48"
-        />
+        <div className="flex gap-2">
+          <input
+            type="text"
+            placeholder="SEARCH PANELS..."
+            value={search}
+            onChange={function(e) { setSearch(e.target.value) }}
+            style={{textTransform:'uppercase'}}
+            className="bg-card2 border border-border rounded-md px-3 py-1.5 text-xs text-white placeholder:text-dgray outline-none focus:border-teal w-full md:w-48"
+          />
+          {onCreatePanel && (
+            <button onClick={function() { setShowCreate(!showCreate) }}
+              className="px-4 py-1.5 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase shrink-0">+ CREATE PANEL</button>
+          )}
+        </div>
       </div>
+
+      {showCreate && (
+        <div className="bg-card rounded-xl border border-teal p-4 mb-4">
+          <h3 className="text-sm font-semibold mb-3 uppercase">NEW DDC PANEL</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <div><label className="text-[10px] text-dgray block mb-1">PANEL NAME</label><input value={newPanel.name} onChange={function(e) { setNewPanel(Object.assign({}, newPanel, { name: e.target.value })) }} placeholder="DDC-GF-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+            <div><label className="text-[10px] text-dgray block mb-1">LOCATION</label><input value={newPanel.location} onChange={function(e) { setNewPanel(Object.assign({}, newPanel, { location: e.target.value })) }} placeholder="ELECTRICAL ROOM" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+            <div><label className="text-[10px] text-dgray block mb-1">FLOOR</label><input value={newPanel.floor} onChange={function(e) { setNewPanel(Object.assign({}, newPanel, { floor: e.target.value })) }} placeholder="GF" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-2 py-1.5 text-xs text-white outline-none focus:border-teal"/></div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleCreatePanel} disabled={!newPanel.name.trim()} className="px-4 py-1.5 bg-teal text-white text-xs font-semibold rounded hover:bg-teal/80 disabled:opacity-40 uppercase">CREATE</button>
+            <button onClick={function() { setShowCreate(false) }} className="px-4 py-1.5 bg-card2 text-dgray text-xs rounded hover:text-white uppercase">CANCEL</button>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-1 bg-card2 rounded-lg p-1 w-fit mb-5 overflow-x-auto max-w-full">
         {filterTabs.map(function(tab) {
