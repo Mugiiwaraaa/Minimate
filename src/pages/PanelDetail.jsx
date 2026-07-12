@@ -197,14 +197,10 @@ export default function PanelDetail(props) {
 
   // ─── IO List View ─────────────────────────────────────────
   function renderIOView() {
-    if (equipment.length === 0) {
-      return (
-        <div className="bg-card rounded-xl border border-border p-8 text-center">
-          <div className="text-dgray text-sm">NO IO LIST UPLOADED FOR THIS PANEL YET.</div>
-          <div className="text-[11px] text-dgray mt-1">IMPORT AN IO LIST EXCEL FROM THE SIDEBAR.</div>
-        </div>
-      )
-    }
+    // IoSheetGrid handles an empty eqs array fine — its own + ADD EQUIPMENT
+    // button isn't conditional on having rows already, so a brand-new panel
+    // (Design Engine's manual-authoring path) can add its first equipment
+    // right here instead of being told to import a file it doesn't have.
     return (
       <IoSheetGrid
         eqs={equipment}
