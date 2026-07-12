@@ -14,9 +14,11 @@
 
    RLS is OPEN until R3 auth (USING true), same as every other table.
 
-   ============ RUN THIS SQL IN SUPABASE ONCE ============
+   Canonical SQL lives in supabase/schema.sql (S4 consolidation) — this
+   comment is kept in sync for readers of this file, not run separately.
+   ============ SUPABASE SCHEMA (see supabase/schema.sql) ============
    create table if not exists public.documents (
-     project_id    text not null,
+     project_id    uuid not null references public.projects(id) on delete cascade,
      id            text not null,
      register_no   text default '',
      doc_type      text default 'OTHER',

@@ -1,21 +1,21 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
-import TraceStudio from './components/TraceStudio'
 import Dashboard from './pages/Dashboard'
-import PanelsList from './pages/PanelsList'
-import PanelDetail from './pages/PanelDetail'
-import CommDevices from './pages/CommDevices'
-import DrawingsPage from './pages/DrawingsPage'
-import BlockersPage from './pages/BlockersPage'
-import ReportsPage from './pages/ReportsPage'
-import { lazy, Suspense } from 'react'
-const GridSpike = lazy(() => import('./pages/GridSpike')) // ponytail: S1 spike route — remove with the bake-off; lazy so a spike crash can't blank the app
-import DocumentsPage from './pages/DocumentsPage'
+import ProjectSelector from './pages/ProjectSelector'
+// Lazy: everything below is loaded on demand so the initial bundle only
+// carries the two screens every user sees before picking a route (S4).
+const TraceStudio = lazy(() => import('./components/TraceStudio'))
+const PanelsList = lazy(() => import('./pages/PanelsList'))
+const PanelDetail = lazy(() => import('./pages/PanelDetail'))
+const CommDevices = lazy(() => import('./pages/CommDevices'))
+const DrawingsPage = lazy(() => import('./pages/DrawingsPage'))
+const BlockersPage = lazy(() => import('./pages/BlockersPage'))
+const ReportsPage = lazy(() => import('./pages/ReportsPage'))
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 import GlobalImport from './components/GlobalImport'
 import { listDocuments, archiveDocument, upsertDocument, deleteDocument } from './lib/docStore'
 import { parseTermination, applyTermination } from './lib/terminationParser'
-import ProjectSelector from './pages/ProjectSelector'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
@@ -31,6 +31,10 @@ function Placeholder(props) {
       <p className="text-sm">{props.desc}</p>
     </div>
   )
+}
+
+function pageLoading() {
+  return <div className="text-dgray text-xs uppercase mt-20 text-center">LOADING...</div>
 }
 
 // ─── Canonical loop device factory ─────────────────────────
@@ -1786,20 +1790,21 @@ export default function App() {
       )}
 
       {traceSession && (
-        <TraceStudio file={traceSession.file} record={traceSession.record} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
+        <Suspense fallback={pageLoading()}>
+          <TraceStudio file={traceSession.file} record={traceSession.record} onCancel={handleTraceCancel} onComplete={handleTraceComplete} />
+        </Suspense>
       )}
       <div className="pt-14 md:pt-0 md:ml-[220px] p-4 md:p-6 print-reset">
         <Routes>
           <Route path="/" element={<Dashboard panels={panels} equipmentMap={equipmentMap} loops={loops} projectName={projectName} projectSub={projectSub} />} />
-          <Route path="/panels" element={<PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} />} />
-          <Route path="/panels/:panelId" element={<PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} />} />
-          <Route path="/field-devices" element={<CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} />} />
-          <Route path="/drawings" element={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />
-          <Route path="/documents" element={<DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} />} />
+          <Route path="/panels" element={<Suspense fallback={pageLoading()}><PanelsList panels={panels} equipmentMap={equipmentMap} onDeletePanel={handleDeletePanel} /></Suspense>} />
+          <Route path="/panels/:panelId" element={<Suspense fallback={pageLoading()}><PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
+          <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
+          <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />
+          <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
-          <Route path="/grid-spike" element={<Suspense fallback={<div className="text-dgray text-xs uppercase mt-20 text-center">LOADING GRID SPIKE...</div>}><GridSpike /></Suspense>} />
-          <Route path="/blockers" element={<BlockersPage blockers={blockers} onUpdate={setBlockers} />} />
-          <Route path="/reports" element={<ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} />} />
+          <Route path="/blockers" element={<Suspense fallback={pageLoading()}><BlockersPage blockers={blockers} onUpdate={setBlockers} /></Suspense>} />
+          <Route path="/reports" element={<Suspense fallback={pageLoading()}><ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} /></Suspense>} />
         </Routes>
       </div>
     </div>

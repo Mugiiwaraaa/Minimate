@@ -106,3 +106,146 @@ create trigger set_datasets_updated_at before update on datasets
 alter table datasets enable row level security;
 create policy "Allow all for now" on datasets
   for all using (true) with check (true);
+
+-- ============================================================
+-- S4 — CONSOLIDATED SCHEMA (previously missing / comment-only)
+-- ============================================================
+-- These five tables were live in production but only ever existed as
+-- CREATE TABLE comments scattered across loopStore.js/docStore.js/
+-- reportStore.js/supabaseDb.js — a fresh Supabase project set up from
+-- this file alone would previously break loop syncing silently
+-- (loadLoops -> ensureBackfill: "[M6] loops table missing?"). Column
+-- names verified against loopStore.js's loopRowToLoop/deviceRowToDevice
+-- and docStore.js's actual field usage. NOTE: documents.project_id is
+-- `uuid references projects(id)` here, not the `text` type previously
+-- written in docStore.js's own header comment (that comment was wrong —
+-- projects.id is uuid; fixed alongside this consolidation).
+
+-- ─── M6: LOOPS + LOOP_DEVICES (per-row commissioning data) ───
+
+create table loops (
+  project_id uuid not null references projects(id) on delete cascade,
+  id text not null,
+  name text not null,
+  protocol text default 'MODBUS RTU',
+  gateway text default '',
+  ddc_ref text default '',
+  floor text default '',
+  zone text default '',
+  color text default '',
+  source text default '',
+  drawing_id text default '',
+  cable_remarks jsonb default '[]'::jsonb,
+  position int default 0,
+  updated_at timestamptz default now(),
+  primary key (project_id, id)
+);
+
+create index idx_loops_project on loops(project_id);
+
+create table loop_devices (
+  project_id uuid not null references projects(id) on delete cascade,
+  id text not null,
+  loop_id text not null,
+  device_type text default 'DEVICE',
+  tag text not null,
+  room_name text default '',
+  address text default '',
+  serial text default '',
+  thermostat text default '',
+  floor text default '',
+  drawing_id text default '',
+  comm_cable boolean default false,
+  control_cable boolean default false,
+  continuity boolean default false,
+  termination boolean default false,
+  device_installed boolean default false,
+  address_set boolean default false,
+  remarks text default '',
+  position int default 0,
+  updated_at timestamptz default now(),
+  primary key (project_id, id),
+  foreign key (project_id, loop_id) references loops(project_id, id) on delete cascade
+);
+
+create index idx_loop_devices_project on loop_devices(project_id);
+create index idx_loop_devices_loop on loop_devices(project_id, loop_id);
+
+alter table loops enable row level security;
+create policy "Allow all for now" on loops for all using (true) with check (true);
+alter table loop_devices enable row level security;
+create policy "Allow all for now" on loop_devices for all using (true) with check (true);
+
+-- ─── R2: DOCUMENTS (register, revision/supersede chain) ───
+
+create table documents (
+  project_id uuid not null references projects(id) on delete cascade,
+  id text not null,
+  register_no text default '',
+  doc_type text default 'OTHER',
+  title text default '',
+  floor text default '',
+  revision text default 'A',
+  seq int default 0,
+  supersedes_id text,
+  status text default 'RECEIVED',
+  file_hash text,
+  storage_kind text default 'supabase',
+  storage_path text,
+  file_name text default '',
+  file_type text default '',
+  file_size bigint default 0,
+  source text default '',
+  remarks text default '',
+  extracted jsonb default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  primary key (project_id, id)
+);
+
+create index idx_documents_project on documents(project_id);
+
+alter table documents enable row level security;
+create policy "Allow all for now" on documents for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public)
+  values ('documents', 'documents', false)
+  on conflict (id) do nothing;
+create policy documents_obj_open on storage.objects
+  for all using (bucket_id = 'documents') with check (bucket_id = 'documents');
+
+-- ─── R1: PROGRESS_SNAPSHOTS (trend + forecast history) ───
+
+create table progress_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  snapped_at timestamptz default now(),
+  total int default 0,
+  comm int default 0,
+  ctrl int default 0,
+  cont int default 0,
+  term int default 0,
+  inst int default 0,
+  addr int default 0
+);
+
+create index idx_snapshots_project on progress_snapshots(project_id);
+
+alter table progress_snapshots enable row level security;
+create policy "Allow all for now" on progress_snapshots for all using (true) with check (true);
+
+-- ─── PROJECT_BACKUPS (6h auto-snapshot, keep 20) ───
+
+create table project_backups (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  name text,
+  version int default 0,
+  data jsonb,
+  created_at timestamptz default now()
+);
+
+create index idx_backups_project on project_backups(project_id);
+
+alter table project_backups enable row level security;
+create policy "Allow all for now" on project_backups for all using (true) with check (true);
