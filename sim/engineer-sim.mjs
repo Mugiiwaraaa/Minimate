@@ -34,6 +34,7 @@ async function run() {
   console.log('ENGINEER SIM · ' + BASE + ' · project ' + PROJECT)
   var browser = await chromium.launch({ headless: !HEADED })
   var ctxA = await browser.newContext({ viewport: { width: 1600, height: 900 } })
+  await ctxA.grantPermissions(['clipboard-read', 'clipboard-write']) // S9 copy/paste
   var A = await ctxA.newPage()
   A.on('console', function(msg) {
     if (msg.type() === 'error') console.log('  [browser error] ' + msg.text().substring(0, 160))
@@ -51,13 +52,13 @@ async function run() {
 
   // ── SCENARIO 2: loops + devices by hand (the daily grind) ────
   try {
-    await A.getByText('FIELD DEVICES', { exact: true }).first().click()
+    await A.locator('a[href="/field-devices"]').first().click() // sidebar NavLink text is "🔗FIELD DEVICES" (icon+label, no wrapper) — exact text match misses it and hits the Dashboard stat-card label instead; href is unambiguous
     await A.getByRole('button', { name: /\+ ADD LOOP/i }).click()
     await A.getByPlaceholder('GF').first().fill('FF')
     await A.getByPlaceholder('LOOP 1').first().fill('SIM-LOOP-01')
     await A.getByRole('button', { name: /CREATE LOOP/i }).click()
-    // open it and add 5 devices
-    await A.getByText('SIM-LOOP-01').first().click()
+    // addLoop() auto-expands the new loop (setExpanded(loop.id)) — no click needed;
+    // clicking the loop name here would just TOGGLE it closed again
     for (var i = 1; i <= 5; i++) {
       await A.getByText('+ ADD DEVICE', { exact: false }).first().click()
       await A.getByPlaceholder('FCU-01').first().fill('SIM-FCU-' + i)
@@ -86,8 +87,14 @@ async function run() {
     await A.getByText('SORT BY ADDR', { exact: false }).first().click()
     await A.waitForTimeout(1800)
     await A.reload()
-    await A.getByText('SIM-LOOP-01').first().waitFor({ timeout: 15000 })
-    await A.getByText('SIM-LOOP-01').first().click()
+    // activeProject is plain useState(null), no persistence — a hard reload always
+    // drops back to ProjectSelector regardless of URL. Re-select + re-navigate.
+    await A.getByText(PROJECT, { exact: false }).first().waitFor({ timeout: 15000 })
+    await A.getByText(PROJECT, { exact: false }).first().click()
+    await A.locator('a[href="/field-devices"]').first().waitFor({ timeout: 15000 })
+    await A.locator('a[href="/field-devices"]').first().click()
+    await A.getByText('SIM-LOOP-01').first().waitFor({ timeout: 10000 })
+    await A.getByText('SIM-LOOP-01').first().click() // collapsed again after reload — expand it
     var firstTag = await A.locator('table input[value^="SIM-FCU-"]').first().inputValue()
     if (firstTag !== 'SIM-FCU-5') throw new Error('expected SIM-FCU-5 first after addr sort, got ' + firstTag)
     pass('S4 sort persisted across reload')
@@ -99,7 +106,7 @@ async function run() {
     var B = await ctxB.newPage()
     await B.goto(BASE)
     await B.getByText(PROJECT).first().click()
-    await B.getByText('FIELD DEVICES', { exact: true }).first().click()
+    await B.locator('a[href="/field-devices"]').first().click()
     await B.getByText('SIM-LOOP-01').first().click()
     // B ticks a stage; A should see it without reload
     var bBox = B.locator('table button.w-5').first()
@@ -114,9 +121,19 @@ async function run() {
     await A.locator('table input[value^="SIM-FCU-"]').nth(1).fill('SIM-FCU-EDIT-A')
     await B.locator('table input[value^="SIM-FCU-"]').nth(2).fill('SIM-FCU-EDIT-B')
     await A.waitForTimeout(3000)
-    await A.reload(); await A.getByText('SIM-LOOP-01').first().waitFor(); await A.getByText('SIM-LOOP-01').first().click()
-    var body = await A.locator('table').first().innerText()
-    if (body.indexOf('SIM-FCU-EDIT-A') < 0 || body.indexOf('SIM-FCU-EDIT-B') < 0) throw new Error('concurrent edits lost: ' + (body.indexOf('SIM-FCU-EDIT-A') < 0 ? 'A' : 'B'))
+    await A.reload() // no persistence for activeProject — bounces to ProjectSelector, same as S4
+    await A.getByText(PROJECT, { exact: false }).first().waitFor({ timeout: 15000 })
+    await A.getByText(PROJECT, { exact: false }).first().click()
+    await A.locator('a[href="/field-devices"]').first().waitFor({ timeout: 15000 })
+    await A.locator('a[href="/field-devices"]').first().click()
+    await A.getByText('SIM-LOOP-01').first().waitFor({ timeout: 10000 })
+    await A.getByText('SIM-LOOP-01').first().click()
+    // table cells are <input value=...> — innerText never sees input values
+    // (same class of mistake as S6's original getByText check); match value
+    // attributes directly instead
+    var hasA = await A.locator('input[value="SIM-FCU-EDIT-A"]').count()
+    var hasB = await A.locator('input[value="SIM-FCU-EDIT-B"]').count()
+    if (hasA === 0 || hasB === 0) throw new Error('concurrent edits lost: ' + (hasA === 0 ? 'A' : 'B'))
     await ctxB.close()
     pass('S5 two-engineer live sync, no lost edits')
   } catch (e) { fail('S5 multi-user sync', e) }
@@ -128,13 +145,15 @@ async function run() {
     await A.getByPlaceholder(/EAST WING/i).fill('SIM AREA 1')
     await A.getByPlaceholder('GF').last().fill('FF')
     await A.getByRole('button', { name: /^CREATE$/i }).click()
-    await A.getByText('SIM AREA 1').first().waitFor({ timeout: 8000 })
+    // area name renders as <input value={area.name}>, not text content — getByText
+    // can never match an input's value; match the value attribute directly instead
+    await A.locator('input[value="SIM AREA 1"]').first().waitFor({ timeout: 8000 })
     pass('S6 area group under floor header')
   } catch (e) { fail('S6 location view', e) }
 
   // ── SCENARIO 7: reports render + exports exist ───────────────
   try {
-    await A.getByText('REPORTS', { exact: true }).first().click()
+    await A.locator('a[href="/reports"]').first().click()
     await A.getByText('EXPORT PDF', { exact: false }).first().waitFor({ timeout: 10000 })
     await A.getByText('WEEKLY PROGRESS', { exact: false }).first().click() // preset applies
     await A.getByText('EXECUTIVE SUMMARY', { exact: false }).first().waitFor()
@@ -152,12 +171,76 @@ async function run() {
     pass('S8 documents page reachable')
   } catch (e) { fail('S8 documents page', e) }
 
-  // ── SCENARIO 9 (FUTURE, enable after S3 refit): SheetGrid UX ─
-  // Keyboard nav (arrows/Tab), type-to-edit, range select, fill-drag,
-  // TSV paste round-trip, dropdown cells, Ctrl+Z. Left as named stub so
-  // the S-track has its acceptance test waiting.
-  results.push({ name: 'S9 sheetgrid excel UX (stub — enable at S3)', ok: true, note: 'SKIPPED' })
-  console.log('  ○ S9 sheetgrid excel UX — stub, enable at S3')
+  // ── SCENARIO 9: fixture import → IoSheetGrid Excel UX ─────────
+  // sim/fixtures/sim-io-list.xlsx -> import -> panel DDC-GF-01 with two
+  // equipment (UNIT-1, UNIT-2), each with a DI point ("SIM POINT ONE")
+  // and a DO point ("SIM POINT TWO"). Row layout is deterministic from
+  // IoSheetGrid.jsx's toRows(): r0=UNIT-1 header, r1/r2=its points,
+  // r3=UNIT-2 header, r4/r5=its points. Columns: _name=c0, _qty=c1,
+  // _di=c2, _do=c3 (see IO_COLUMNS in IoSheetGrid.jsx).
+  try {
+    await A.locator('input[type="file"]').first().setInputFiles('sim/fixtures/sim-io-list.xlsx')
+    await A.getByText('IMPORT →', { exact: false }).first().waitFor({ timeout: 8000 })
+    await A.getByText('IMPORT →', { exact: false }).first().click()
+    await A.getByText('CONFIRM IMPORT', { exact: false }).first().waitFor({ timeout: 8000 })
+    await A.getByText('CONFIRM IMPORT', { exact: false }).first().click()
+    await A.waitForTimeout(1200)
+
+    await A.locator('a[href="/panels"]').first().click() // same "🔗FIELD DEVICES"-class ambiguity as above — Dashboard has a DDC PANELS stat card too
+    await A.getByText('DDC-GF-01', { exact: false }).first().click()
+    var c10 = A.locator('[data-r="1"][data-c="0"]').first()
+    await c10.waitFor({ timeout: 10000 })
+
+    // keyboard nav: select r1, Down then Up round-trips back
+    await c10.click()
+    await A.keyboard.press('ArrowDown')
+    await A.keyboard.press('ArrowUp')
+
+    // type-to-edit: typing while a cell is selected starts edit; Enter commits
+    await A.keyboard.type('EDITED POINT')
+    await A.keyboard.press('Enter')
+    await A.waitForTimeout(400)
+    var nameText = (await c10.innerText()).trim()
+    if (nameText.indexOf('EDITED POINT') < 0) throw new Error('type-to-edit: expected EDITED POINT, got "' + nameText + '"')
+
+    // range select + copy: select r1 _name+_qty (2 cells), Ctrl+C
+    var c11 = A.locator('[data-r="1"][data-c="1"]').first()
+    await c10.click()
+    await c11.click({ modifiers: ['Shift'] }) // extends selection c0..c1
+    await A.keyboard.press('Control+c')
+
+    // paste onto r4 (UNIT-2's first point) — TSV round-trip
+    var c40 = A.locator('[data-r="4"][data-c="0"]').first()
+    await c40.click()
+    await A.keyboard.press('Control+v')
+    await A.waitForTimeout(500)
+    var pastedText = (await c40.innerText()).trim()
+    if (pastedText.indexOf('EDITED POINT') < 0) throw new Error('paste: expected EDITED POINT on r4, got "' + pastedText + '"')
+
+    // fill-drag COPY: select r1 _di (=1), drag its corner handle down to r2 (a DO point, _di empty)
+    var c12 = A.locator('[data-r="1"][data-c="2"]').first()
+    await c12.click()
+    var handle = A.locator('[data-r="1"][data-c="2"] [data-fill="1"]').first()
+    var hBox = await handle.boundingBox()
+    var c22 = A.locator('[data-r="2"][data-c="2"]').first()
+    var tBox = await c22.boundingBox()
+    if (!hBox || !tBox) throw new Error('fill handle or target cell not found')
+    await A.mouse.move(hBox.x + hBox.width / 2, hBox.y + hBox.height / 2)
+    await A.mouse.down()
+    await A.mouse.move(tBox.x + tBox.width / 2, tBox.y + tBox.height / 2, { steps: 5 })
+    await A.mouse.up()
+    await A.waitForTimeout(500)
+    var filledVal = (await c22.innerText()).trim()
+    if (filledVal !== '1') throw new Error('fill-drag: expected r2 _di=1 after fill, got "' + filledVal + '"')
+
+    // Ctrl+Z undo — should revert the fill (app-level undo, IoSheetGrid bubbles via onUndo)
+    await A.keyboard.press('Control+z')
+    await A.waitForTimeout(500)
+    var afterUndo = (await c22.innerText()).trim()
+    if (afterUndo === '1') throw new Error('undo: fill was not reverted, still shows "1"')
+
+    pass('S9 sheetgrid excel UX', 'import+nav+edit+copy/paste+fill-drag+undo all verified')
+  } catch (e) { fail('S9 sheetgrid excel UX', e) }
 
   // ── CLEANUP ──────────────────────────────────────────────────
   if (!KEEP) {
