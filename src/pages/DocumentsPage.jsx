@@ -280,13 +280,13 @@ export default function DocumentsPage(props) {
   return (
     <div className="p-4 md:p-6 max-w-[1200px] mx-auto">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-3">
-        <h1 className="text-lg md:text-xl font-bold uppercase">DOCUMENTS <span className="text-dgray font-normal text-xs ml-2">ESTIMATE ENGINE + LIBRARY</span></h1>
+        <h1 className="text-lg md:text-xl font-bold uppercase">DOCUMENTS <span className="text-dgray font-normal text-xs ml-2">DESIGN ENGINE + LIBRARY</span></h1>
         <div className="text-[10px] text-dgray uppercase">USE THE <span className="text-orange font-bold">IMPORT</span> BUTTON (SIDEBAR) TO ADD FILES</div>
       </div>
 
       <div className="flex gap-1.5 mb-4 border-b border-border pb-2">
         {['estimate', 'drawings', 'library'].map(function(v) {
-          var labels = { estimate: 'ESTIMATE ENGINE', drawings: 'DRAWINGS', library: 'DOCUMENT LIBRARY' }
+          var labels = { estimate: 'DESIGN ENGINE', drawings: 'DRAWINGS', library: 'DOCUMENT LIBRARY' }
           return <button key={v} onClick={function() { setView(v) }} className={'px-3 py-1.5 rounded text-[10px] font-bold uppercase transition ' + (view === v ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{labels[v]}</button>
         })}
       </div>
