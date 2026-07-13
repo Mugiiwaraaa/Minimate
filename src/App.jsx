@@ -125,6 +125,9 @@ export default function App() {
   var designNotesState = useState([]) // Grouping Canvas freeform annotations (lines/text)
   var designCanvasNotes = designNotesState[0]
   var setDesignCanvasNotes = designNotesState[1]
+  var designLocationsState = useState([]) // Grouping Canvas location/floor blocks: {id,name,dx,dy,w,h}
+  var designLocations = designLocationsState[0]
+  var setDesignLocations = designLocationsState[1]
   var gImpState = useState(null) // R2 global import: file awaiting route confirmation
   var gImpFile = gImpState[0]
   var setGImpFile = gImpState[1]
@@ -175,8 +178,8 @@ export default function App() {
   // Undo system
   var undoRef = useRef([])
   var skipUndoRef = useRef(false)
-  var stateRef = useRef({loops:[], areas:[], eq:{}, panels:[], term:{}})
-  stateRef.current = {loops: loops, areas: areaGroups, eq: equipmentMap, panels: panels, term: terminationMap}
+  var stateRef = useRef({loops:[], areas:[], eq:{}, panels:[], term:{}, notes:[], locations:[]})
+  stateRef.current = {loops: loops, areas: areaGroups, eq: equipmentMap, panels: panels, term: terminationMap, notes: designCanvasNotes, locations: designLocations}
 
   // ─── Auto-save to Supabase on state changes ────────────────
   var initialLoadDone = useRef(false)
@@ -216,7 +219,8 @@ export default function App() {
       gateways: gateways,
       reportConfig: reportConfig,
       estimateScope: estimateScope,
-      designCanvasNotes: designCanvasNotes
+      designCanvasNotes: designCanvasNotes,
+      designLocations: designLocations
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -224,7 +228,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope, designCanvasNotes])
+  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope, designCanvasNotes, designLocations])
 
   // Flush save before page unload
   useEffect(function() {
@@ -304,6 +308,7 @@ export default function App() {
       setReportConfig(data.reportConfig || {})
       setEstimateScope(data.estimateScope || {})
       setDesignCanvasNotes(data.designCanvasNotes || [])
+      setDesignLocations(data.designLocations || [])
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
@@ -450,6 +455,7 @@ export default function App() {
       setReportConfig(data.reportConfig || {})
       setEstimateScope(data.estimateScope || {})
       setDesignCanvasNotes(data.designCanvasNotes || [])
+      setDesignLocations(data.designLocations || [])
       setActiveProject(fullProject || project)
       activeProjectIdRef.current = (fullProject && fullProject.id) || null
       setLoadedVersion((fullProject && fullProject.version) || 0)
@@ -521,7 +527,9 @@ export default function App() {
       areas: JSON.parse(JSON.stringify(s.areas)),
       eq: JSON.parse(JSON.stringify(s.eq)),
       panels: JSON.parse(JSON.stringify(s.panels)),
-      term: JSON.parse(JSON.stringify(s.term))
+      term: JSON.parse(JSON.stringify(s.term)),
+      notes: JSON.parse(JSON.stringify(s.notes)),
+      locations: JSON.parse(JSON.stringify(s.locations))
     }])
     if (undoRef.current.length > 30) undoRef.current = undoRef.current.slice(-30)
   }
@@ -536,6 +544,8 @@ export default function App() {
     setEquipmentMap(last.eq)
     setPanels(last.panels)
     setTerminationMap(last.term)
+    setDesignCanvasNotes(last.notes || [])
+    setDesignLocations(last.locations || [])
   }
 
   var canUndo = undoRef.current.length > 0
@@ -611,11 +621,26 @@ export default function App() {
   }
 
   function handleUpdatePanelLayout(panelId, patch) {
+    pushUndo()
     setPanels(function(prev) { return prev.map(function(p) { return p.id === panelId ? Object.assign({}, p, patch) : p }) })
   }
 
   function handleUpdateDesignCanvasNotes(next) {
+    pushUndo()
     setDesignCanvasNotes(next)
+  }
+
+  function handleUpdateDesignLocations(next) {
+    pushUndo()
+    setDesignLocations(next)
+  }
+
+  // Deleting a location block unassigns every member DDC back to ungrouped in
+  // one undo step, instead of one pushUndo() per member via handleUpdatePanelLayout.
+  function handleUnassignLocation(name) {
+    pushUndo()
+    var key = ('' + name).toUpperCase().trim()
+    setPanels(function(prev) { return prev.map(function(p) { return (('' + (p.location || '')).toUpperCase().trim() === key) ? Object.assign({}, p, { location: '' }) : p }) })
   }
 
   function handleDeletePanel(panelId) {
@@ -1822,7 +1847,7 @@ export default function App() {
           <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />
           <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
-          <Route path="/design" element={<Suspense fallback={pageLoading()}><DesignPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelLayout={handleUpdatePanelLayout} scope={estimateScope} onUpdateScope={setEstimateScope} notes={designCanvasNotes} onUpdateNotes={handleUpdateDesignCanvasNotes} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} /></Suspense>} />
+          <Route path="/design" element={<Suspense fallback={pageLoading()}><DesignPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelLayout={handleUpdatePanelLayout} scope={estimateScope} onUpdateScope={setEstimateScope} notes={designCanvasNotes} onUpdateNotes={handleUpdateDesignCanvasNotes} locations={designLocations} onUpdateLocations={handleUpdateDesignLocations} onUnassignLocation={handleUnassignLocation} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} /></Suspense>} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Suspense fallback={pageLoading()}><BlockersPage blockers={blockers} onUpdate={setBlockers} /></Suspense>} />
           <Route path="/reports" element={<Suspense fallback={pageLoading()}><ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} /></Suspense>} />

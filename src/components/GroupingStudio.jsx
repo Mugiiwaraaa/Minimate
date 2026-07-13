@@ -1,13 +1,27 @@
-/* --- GroupingStudio.jsx --- Design Engine V2: DDC grouping floating canvas ---
-   Blank canvas + two block libraries (DDC panels, imported equipment). Create a
-   DDC block, pull an equipment block from the library, click one then the
-   other to wire them — the DDC's as-built IO totals update live from the same
-   equipmentMap/panels state everything else (IoSheetGrid/ReportsPage) reads.
-   No new data model for wiring: this is a friendlier front end over the exact
-   operation PanelDetail's V1 picker already performs (see estimateDiff.js).
-   Freeform annotations (lines/text remarks) DO need a small new persisted
-   field — project-level data.designCanvasNotes, threaded in as notes/
-   onUpdateNotes (see App.jsx). */
+/* --- GroupingStudio.jsx --- Design Engine V3: as-built architecture canvas ---
+   Blank canvas + block libraries (locations, DDC panels, imported equipment).
+   Create a DDC block, pull an equipment block from the library, click one then
+   the other to wire them — the DDC's as-built IO totals update live from the
+   same equipmentMap/panels state everything else (IoSheetGrid/ReportsPage)
+   reads. No new data model for wiring: this is a friendlier front end over the
+   exact operation PanelDetail's V1 picker already performs (see
+   estimateDiff.js). Point-level detail intentionally lives ONLY in the panel's
+   own IO Summary (PanelDetail/IoSheetGrid) — this canvas is for "what
+   equipment sits under what DDC, in what location," nothing deeper.
+
+   Location grouping reuses the existing panel.location text field as the
+   grouping key (also displayed elsewhere in the app as a plain label) — no
+   new per-panel field. designLocations is a small persisted registry
+   ({id,name,dx,dy,w,h}) that lets a location block exist (and remember its
+   position) before any DDC is assigned to it; site-view locations are the
+   union of that registry and whatever distinct panel.location values are
+   actually in use, so a location never vanishes just because its registry
+   row was removed.
+
+   Perf: every drag/resize updates one local `dragPreview` state only: parent
+   state (panels/equipmentMap/notes/locations) is committed ONCE on release,
+   not per pixel — this is also what makes drop-to-assign-location and clean
+   one-step undo possible. */
 
 import { useState, useRef, useEffect } from 'react'
 import { estimateEquipmentToPanelEquipment } from '../lib/estimateDiff'
@@ -18,11 +32,15 @@ var gid = 0
 function panelId() { gid++; return 'panel-' + Date.now() + '-' + gid }
 function localId() { gid++; return 'placed-' + Date.now() + '-' + gid }
 function noteId() { gid++; return 'note-' + Date.now() + '-' + gid }
+function locId() { gid++; return 'loc-' + Date.now() + '-' + gid }
 
 var COLORS = ['teal', 'cyan', 'orange', 'red', 'purple', 'green']
 var COLOR_HEX = { teal: '#2dd4bf', cyan: '#22d3ee', orange: '#fb923c', red: '#f87171', purple: '#a78bfa', green: '#4ade80' }
 var MIN_W = 90
 var MIN_H = 40
+var RAIL_MIN = 220
+var RAIL_MAX = 480
+var RAIL_DEFAULT = 288
 
 function ioEquipment(scope) {
   var sheet = ((scope && scope.sheets) || []).filter(function(s) { return s.kind === 'io_summary' })[0]
@@ -43,11 +61,13 @@ function pointTotals(eqs) {
 
 export default function GroupingStudio(props) {
   // props: panels, equipmentMap, scope, onCreatePanel, onDeletePanel,
-  //        onUpdateEquipment, onUpdatePanelLayout, notes, onUpdateNotes, onClose
+  //        onUpdateEquipment, onUpdatePanelLayout, notes, onUpdateNotes,
+  //        locations, onUpdateLocations, onUnassignLocation, onClose
   var panels = props.panels || []
   var equipmentMap = props.equipmentMap || {}
   var equipment = ioEquipment(props.scope)
   var notes = props.notes || []
+  var locations = props.locations || []
 
   var viewState = useState({ scale: 1, tx: 60, ty: 60 })
   var view = viewState[0]; var setView = viewState[1]
@@ -59,9 +79,9 @@ export default function GroupingStudio(props) {
   var search = searchState[0]; var setSearch = searchState[1]
   var newDdcState = useState('')
   var newDdcName = newDdcState[0]; var setNewDdcName = newDdcState[1]
-  var expandedState = useState(null) // {panelId, eqId} of a connected unit whose points are shown
-  var expanded = expandedState[0]; var setExpanded = expandedState[1]
-  var libOpenState = useState({ ddc: true, equip: true })
+  var newLocState = useState('')
+  var newLocName = newLocState[0]; var setNewLocName = newLocState[1]
+  var libOpenState = useState({ loc: true, ddc: true, equip: true })
   var libOpen = libOpenState[0]; var setLibOpen = libOpenState[1]
   var modeState = useState('select') // 'select' | 'line' | 'text'
   var mode = modeState[0]; var setMode = modeState[1]
@@ -71,10 +91,17 @@ export default function GroupingStudio(props) {
   var lineDraft = lineDraftState[0]; var setLineDraft = lineDraftState[1]
   var railOpenState = useState(false) // mobile-only: side rail is an off-canvas drawer below md
   var railOpen = railOpenState[0]; var setRailOpen = railOpenState[1]
+  var railWidthState = useState(RAIL_DEFAULT) // session-local only, not persisted
+  var railWidth = railWidthState[0]; var setRailWidth = railWidthState[1]
+  var activeLocationState = useState(null) // null = site view, else drilled into this location name
+  var activeLocation = activeLocationState[0]; var setActiveLocation = activeLocationState[1]
+  var dragPreviewState = useState(null) // {kind,id,panelId,x,y,w,h} — visual-only during a drag/resize
+  var dragPreview = dragPreviewState[0]; var setDragPreview = dragPreviewState[1]
 
   var wrapRef = useRef(null)
   var panRef = useRef(null)
-  var dragRef = useRef(null) // {kind:'panel'|'placed'|'equipment'|'note', mode:'move'|'resize', id, panelId, startX, startY, origX, origY, origW, origH, moved}
+  var dragRef = useRef(null) // {kind:'panel'|'placed'|'equipment'|'note'|'location', mode:'move'|'resize', id, panelId, startX, startY, origX, origY, origW, origH, moved}
+  var railDragRef = useRef(null)
   var viewRef = useRef(view); viewRef.current = view
 
   useEffect(function() {
@@ -92,6 +119,7 @@ export default function GroupingStudio(props) {
   }, [])
 
   function commitNotes(next) { if (props.onUpdateNotes) props.onUpdateNotes(next) }
+  function commitLocations(next) { if (props.onUpdateLocations) props.onUpdateLocations(next) }
 
   // Touch devices have no wheel event — these buttons are the only zoom control there.
   function zoomBy(delta) {
@@ -118,11 +146,28 @@ export default function GroupingStudio(props) {
     return total - (allocatedByType[up(estEq.type)] || 0)
   }
 
+  // ─── Location derivation: union of the registry + any location strings in use ───
+  var siteLocations = (function() {
+    var byKey = {}
+    locations.forEach(function(l) { byKey[up(l.name)] = { name: l.name, reg: l } })
+    panels.forEach(function(p) {
+      if (p.location) { var k = up(p.location); if (!byKey[k]) byKey[k] = { name: p.location, reg: null } }
+    })
+    return Object.keys(byKey).map(function(k) { return byKey[k] })
+  })()
+
+  function locationMembers(name) {
+    return panels.filter(function(p) { return up(p.location || '') === up(name) })
+  }
+
+  var visiblePanels = activeLocation
+    ? locationMembers(activeLocation)
+    : panels.filter(function(p) { return !p.location })
+
   // ─── Canvas pan / line draw / text place ───
   function onCanvasPointerDown(e) {
     if (e.target !== e.currentTarget) return
     setSelected(null)
-    setExpanded(null)
     if (mode === 'line') {
       var wp = screenToWorld(e.clientX, e.clientY)
       setLineDraft({ x1: wp.x, y1: wp.y, x2: wp.x, y2: wp.y })
@@ -156,7 +201,67 @@ export default function GroupingStudio(props) {
     panRef.current = null
   }
 
-  // ─── Block drag/resize (panel, placed-equipment, connected-equipment, note) ───
+  // ─── Position helpers (each checks the live drag preview, else falls back) ───
+  function panelPos(panel, idx) {
+    if (typeof panel.dx === 'number' && typeof panel.dy === 'number') return { x: panel.dx, y: panel.dy }
+    var col = idx % 4
+    var row = Math.floor(idx / 4)
+    return { x: 60 + col * 260, y: 60 + row * 220 }
+  }
+  function panelRect(panel, idx) {
+    var base = panelPos(panel, idx)
+    var x = base.x, y = base.y, w = panel.w || 200, h = panel.h || 110
+    if (dragPreview && dragPreview.kind === 'panel' && dragPreview.id === panel.id) {
+      if (dragPreview.x != null) { x = dragPreview.x; y = dragPreview.y }
+      if (dragPreview.w != null) { w = dragPreview.w; h = dragPreview.h }
+    }
+    return { x: x, y: y, w: w, h: h }
+  }
+  function equipAutoPos(pp, i) {
+    var col = i % 4, row = Math.floor(i / 4)
+    return { x: pp.x + 240 + col * 130, y: pp.y + 20 + row * 60 }
+  }
+  function equipRect(eq, pp, i) {
+    var fallback = equipAutoPos(pp, i)
+    var x = (typeof eq.ex === 'number') ? eq.ex : fallback.x
+    var y = (typeof eq.ey === 'number') ? eq.ey : fallback.y
+    var w = eq.w || 110, h = eq.h || 46
+    if (dragPreview && dragPreview.kind === 'equipment' && dragPreview.id === eq.id) {
+      if (dragPreview.x != null) { x = dragPreview.x; y = dragPreview.y }
+      if (dragPreview.w != null) { w = dragPreview.w; h = dragPreview.h }
+    }
+    return { x: x, y: y, w: w, h: h }
+  }
+  function locationPos(idx) {
+    var col = idx % 4, row = Math.floor(idx / 4)
+    return { x: 60 + col * 300, y: 60 + row * 220 }
+  }
+  function locationRect(loc, idx) {
+    var reg = loc.reg
+    var base = reg ? { x: reg.dx, y: reg.dy } : locationPos(idx)
+    var x = base.x, y = base.y, w = (reg && reg.w) || 240, h = (reg && reg.h) || 120
+    if (dragPreview && dragPreview.kind === 'location' && up(dragPreview.id) === up(loc.name)) {
+      if (dragPreview.x != null) { x = dragPreview.x; y = dragPreview.y }
+      if (dragPreview.w != null) { w = dragPreview.w; h = dragPreview.h }
+    }
+    return { x: x, y: y, w: w, h: h }
+  }
+  function noteRect(n) {
+    var x = n.x, y = n.y
+    if (dragPreview && dragPreview.kind === 'note' && dragPreview.id === n.id && dragPreview.x != null) { x = dragPreview.x; y = dragPreview.y }
+    return { x: x, y: y }
+  }
+  function upsertLocationByName(name, patch) {
+    var found = false
+    var next = locations.map(function(l) {
+      if (up(l.name) === up(name)) { found = true; return Object.assign({}, l, patch) }
+      return l
+    })
+    if (!found) next = next.concat([Object.assign({ id: locId(), name: name, dx: 60, dy: 60, w: 240, h: 120 }, patch)])
+    return next
+  }
+
+  // ─── Block drag/resize (panel, placed, equipment, note, location) ───
   function startDrag(info, e) {
     e.stopPropagation()
     dragRef.current = Object.assign({ startX: e.clientX, startY: e.clientY, moved: false }, info)
@@ -171,28 +276,68 @@ export default function GroupingStudio(props) {
     if (d.mode === 'resize') {
       var nw = Math.max(MIN_W, d.origW + dx)
       var nh = Math.max(MIN_H, d.origH + dy)
-      if (d.kind === 'panel') { if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(d.id, { w: nw, h: nh }) }
-      else if (d.kind === 'placed') { setPlaced(function(prev) { return prev.map(function(p) { return p.localId === d.id ? Object.assign({}, p, { w: nw, h: nh }) : p }) }) }
-      else if (d.kind === 'equipment') {
-        var existing = equipmentMap[d.panelId] || []
-        if (props.onUpdateEquipment) props.onUpdateEquipment(d.panelId, existing.map(function(eq) { return eq.id === d.id ? Object.assign({}, eq, { w: nw, h: nh }) : eq }))
-      }
+      setDragPreview({ kind: d.kind, id: d.id, panelId: d.panelId, w: nw, h: nh })
       return
     }
     var nx = d.origX + dx
     var ny = d.origY + dy
-    if (d.kind === 'panel') { if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(d.id, { dx: nx, dy: ny }) }
-    else if (d.kind === 'placed') { setPlaced(function(prev) { return prev.map(function(p) { return p.localId === d.id ? Object.assign({}, p, { x: nx, y: ny }) : p }) }) }
-    else if (d.kind === 'note') { commitNotes(notes.map(function(n) { return n.id === d.id ? Object.assign({}, n, { x: nx, y: ny }) : n })) }
+    if (d.kind === 'placed') {
+      // Local-only state, never touches App.jsx — no perf reason to defer this one.
+      setPlaced(function(prev) { return prev.map(function(p) { return p.localId === d.id ? Object.assign({}, p, { x: nx, y: ny }) : p }) })
+      return
+    }
+    setDragPreview({ kind: d.kind, id: d.id, panelId: d.panelId, x: nx, y: ny })
   }
-  function onBlockPointerUp() { dragRef.current = null }
+  function onBlockPointerUp() {
+    var d = dragRef.current
+    var dp = dragPreview
+    dragRef.current = null
+    setDragPreview(null)
+    if (!d || d.kind === 'placed') return
+    if (!dp) return
+    if (d.mode === 'resize') {
+      if (d.kind === 'panel') { if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(d.id, { w: dp.w, h: dp.h }) }
+      else if (d.kind === 'equipment') {
+        var existing = equipmentMap[d.panelId] || []
+        if (props.onUpdateEquipment) props.onUpdateEquipment(d.panelId, existing.map(function(eq) { return eq.id === d.id ? Object.assign({}, eq, { w: dp.w, h: dp.h }) : eq }))
+      } else if (d.kind === 'location') {
+        commitLocations(upsertLocationByName(d.id, { w: dp.w, h: dp.h }))
+      }
+      return
+    }
+    // move
+    if (d.kind === 'panel') {
+      var patch = { dx: dp.x, dy: dp.y }
+      if (!activeLocation) {
+        var cx = dp.x + (d.origW || 200) / 2, cy = dp.y + (d.origH || 110) / 2
+        for (var i = 0; i < siteLocations.length; i++) {
+          var r = locationRect(siteLocations[i], i)
+          if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) { patch.location = siteLocations[i].name; break }
+        }
+      }
+      if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(d.id, patch)
+    } else if (d.kind === 'equipment') {
+      var existing2 = equipmentMap[d.panelId] || []
+      if (props.onUpdateEquipment) props.onUpdateEquipment(d.panelId, existing2.map(function(eq) { return eq.id === d.id ? Object.assign({}, eq, { ex: dp.x, ey: dp.y }) : eq }))
+    } else if (d.kind === 'note') {
+      commitNotes(notes.map(function(n) { return n.id === d.id ? Object.assign({}, n, { x: dp.x, y: dp.y }) : n }))
+    } else if (d.kind === 'location') {
+      commitLocations(upsertLocationByName(d.id, { dx: dp.x, dy: dp.y }))
+    }
+  }
 
-  function panelPos(panel, idx) {
-    if (typeof panel.dx === 'number' && typeof panel.dy === 'number') return { x: panel.dx, y: panel.dy }
-    var col = idx % 4
-    var row = Math.floor(idx / 4)
-    return { x: 60 + col * 260, y: 60 + row * 220 }
+  // ─── Rail width resize (local-only, not part of the drag/undo system) ───
+  function startRailResize(e) {
+    e.stopPropagation()
+    railDragRef.current = { startX: e.clientX, origW: railWidth }
+    e.target.setPointerCapture(e.pointerId)
   }
+  function onRailResizeMove(e) {
+    if (!railDragRef.current) return
+    var nw = Math.max(RAIL_MIN, Math.min(RAIL_MAX, railDragRef.current.origW + (e.clientX - railDragRef.current.startX)))
+    setRailWidth(nw)
+  }
+  function onRailResizeUp() { railDragRef.current = null }
 
   // ─── Library actions ───
   function createDdc() {
@@ -203,6 +348,25 @@ export default function GroupingStudio(props) {
     props.onCreatePanel({ id: panelId(), name: up(name), location: '', floor: '', dx: pos.x, dy: pos.y })
     setNewDdcName('')
   }
+
+  function createLocation() {
+    var name = newLocName.trim()
+    if (!name) return
+    if (siteLocations.some(function(l) { return up(l.name) === up(name) })) { setNewLocName(''); return }
+    var idx = locations.length
+    var pos = locationPos(idx)
+    commitLocations(locations.concat([{ id: locId(), name: up(name), dx: pos.x, dy: pos.y, w: 240, h: 120 }]))
+    setNewLocName('')
+  }
+
+  function deleteLocation(name) {
+    if (!window.confirm('DELETE LOCATION ' + name + '? DDCS INSIDE WILL BECOME UNASSIGNED.')) return
+    if (props.onUnassignLocation) props.onUnassignLocation(name)
+    commitLocations(locations.filter(function(l) { return up(l.name) !== up(name) }))
+  }
+
+  function goToLocation(name) { setSelected(null); setActiveLocation(name) }
+  function goToSite() { setSelected(null); setActiveLocation(null) }
 
   function placeEquipment(estEq) {
     if (remainingFor(estEq) <= 0) return
@@ -236,7 +400,10 @@ export default function GroupingStudio(props) {
   function disconnect(panelId_, eqId) {
     var existing = equipmentMap[panelId_] || []
     if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.filter(function(e) { return e.id !== eqId }))
-    setExpanded(null)
+  }
+
+  function moveDdcToLocation(panel, name) {
+    if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(panel.id, { location: name })
   }
 
   function editNoteText(id, text) {
@@ -266,11 +433,33 @@ export default function GroupingStudio(props) {
         <div className="md:hidden fixed inset-0 bg-black/60 z-30" onClick={function() { setRailOpen(false) }} />
       )}
 
-      {/* ─── Side rail — always visible at md+, an off-canvas drawer below md ─── */}
-      <div className={'w-72 shrink-0 border-r border-border bg-card flex flex-col overflow-y-auto fixed inset-y-0 left-0 z-40 transition-transform duration-200 md:static md:translate-x-0 ' + (railOpen ? 'translate-x-0' : '-translate-x-full')}>
+      {/* ─── Side rail — always visible at md+, an off-canvas drawer below md, resizable width ─── */}
+      <div style={{ width: railWidth }} className={'shrink-0 border-r border-border bg-card flex flex-col overflow-y-auto fixed inset-y-0 left-0 z-40 relative transition-transform duration-200 md:static md:translate-x-0 ' + (railOpen ? 'translate-x-0' : '-translate-x-full')}>
         <div className="p-3 border-b border-border flex items-center justify-between">
           <div className="text-sm font-bold text-white">DDC GROUPING CANVAS</div>
           <button onClick={props.onClose} className="text-[11px] text-dgray hover:text-white px-2 py-1">✕ CLOSE</button>
+        </div>
+
+        <div className="border-b border-border">
+          <button onClick={function() { setLibOpen(Object.assign({}, libOpen, { loc: !libOpen.loc })) }} className="w-full text-left px-3 py-2 text-[11px] font-bold text-orange flex items-center justify-between">
+            <span>LOCATIONS ({siteLocations.length})</span><span>{libOpen.loc ? '▾' : '▸'}</span>
+          </button>
+          {libOpen.loc && (
+            <div className="px-3 pb-3 space-y-2">
+              <div className="flex gap-1.5">
+                <input value={newLocName} onChange={function(e) { setNewLocName(e.target.value) }}
+                  onKeyDown={function(e) { if (e.key === 'Enter') createLocation() }}
+                  placeholder="NEW LOCATION NAME" style={{ textTransform: 'uppercase' }}
+                  className="flex-1 bg-navy border border-border rounded px-2 py-1 text-[11px] text-white outline-none focus:border-orange" />
+                <button onClick={createLocation} disabled={!newLocName.trim()} className="px-2 py-1 bg-orange text-navy text-[10px] font-bold rounded disabled:opacity-40">+ ADD</button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {siteLocations.map(function(l) {
+                  return <button key={l.name} onClick={function() { goToLocation(l.name) }} className="text-[9px] px-2 py-1 rounded bg-card2 text-dgray hover:text-orange">{l.name}</button>
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="border-b border-border">
@@ -288,7 +477,7 @@ export default function GroupingStudio(props) {
               </div>
               <div className="flex flex-wrap gap-1">
                 {panels.map(function(p) {
-                  return <span key={p.id} className="text-[9px] px-2 py-1 rounded bg-card2 text-dgray">{p.name}</span>
+                  return <span key={p.id} className="text-[9px] px-2 py-1 rounded bg-card2 text-dgray">{p.name}{p.location ? ' · ' + p.location : ''}</span>
                 })}
               </div>
             </div>
@@ -320,8 +509,11 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-          CLICK AN EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC BLOCK TO WIRE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. SCROLL TO ZOOM, DRAG BACKGROUND TO PAN.
+          DRAG A DDC ONTO A LOCATION TO GROUP IT. CLICK AN EQUIPMENT BLOCK TO SELECT, THEN CLICK A DDC TO WIRE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
+        {/* Rail width resize handle */}
+        <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
+          style={{ position: 'absolute', top: 0, right: -3, bottom: 0, width: 6, cursor: 'ew-resize', touchAction: 'none' }} />
       </div>
 
       {/* ─── Canvas ─── */}
@@ -329,6 +521,10 @@ export default function GroupingStudio(props) {
         {/* Annotation toolbar */}
         <div className="flex items-center gap-3 flex-wrap px-3 py-1.5 border-b border-border bg-card z-10">
           <button onClick={function() { setRailOpen(true) }} className="md:hidden px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-card2 text-dgray hover:text-white">☰ LIBRARY</button>
+          {activeLocation && (
+            <button onClick={goToSite} className="px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-orange/20 text-orange hover:bg-orange/30">← BACK TO SITE</button>
+          )}
+          {activeLocation && <div className="text-[10px] font-bold text-white">{activeLocation}</div>}
           <div className="flex gap-1">
             {['select', 'line', 'text'].map(function(m) {
               return <button key={m} onClick={function() { setMode(m) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase ' + (mode === m ? 'bg-teal text-white' : 'bg-card2 text-dgray hover:text-white')}>{m === 'select' ? 'SELECT / PAN' : m}</button>
@@ -348,14 +544,12 @@ export default function GroupingStudio(props) {
           style={{ cursor: mode !== 'select' ? 'crosshair' : (panRef.current ? 'grabbing' : 'grab'), backgroundImage: 'radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)', backgroundSize: '24px 24px' }}>
           <div style={{ position: 'absolute', top: 0, left: 0, transform: 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')', transformOrigin: '0 0' }}>
             <svg style={{ position: 'absolute', top: 0, left: 0, width: 1, height: 1, overflow: 'visible', pointerEvents: 'none' }}>
-              {panels.map(function(panel, idx) {
-                var pp = panelPos(panel, idx)
+              {visiblePanels.map(function(panel, idx) {
+                var pr = panelRect(panel, idx)
                 var eqs = equipmentMap[panel.id] || []
                 return eqs.map(function(eq, i) {
-                  var col = i % 4, row = Math.floor(i / 4)
-                  var ex = pp.x + 240 + col * 130
-                  var ey = pp.y + 20 + row * 60
-                  return <line key={panel.id + '-' + eq.id} x1={pp.x + 100} y1={pp.y + 40} x2={ex} y2={ey + 16} stroke="rgba(45,212,191,0.5)" strokeWidth={2} />
+                  var er = equipRect(eq, pr, i)
+                  return <line key={panel.id + '-' + eq.id} x1={pr.x + pr.w / 2} y1={pr.y + pr.h / 2} x2={er.x + er.w / 2} y2={er.y + er.h / 2} stroke="rgba(45,212,191,0.5)" strokeWidth={2} />
                 })
               })}
               {notes.filter(function(n) { return n.type === 'line' }).map(function(n) {
@@ -373,20 +567,51 @@ export default function GroupingStudio(props) {
               )
             })}
 
-            {panels.map(function(panel, idx) {
-              var pp = panelPos(panel, idx)
+            {/* ─── Location hub blocks (site view only) ─── */}
+            {!activeLocation && siteLocations.map(function(loc, idx) {
+              var lr = locationRect(loc, idx)
+              var members = locationMembers(loc.name)
+              var allEqs = []
+              members.forEach(function(p) { allEqs = allEqs.concat(equipmentMap[p.id] || []) })
+              var totals = pointTotals(allEqs)
+              return (
+                <div key={loc.name}
+                  role="button" tabIndex={0} aria-label={'LOCATION BLOCK ' + loc.name}
+                  onPointerDown={function(e) { startDrag({ kind: 'location', mode: 'move', id: loc.name, origX: lr.x, origY: lr.y, origW: lr.w, origH: lr.h }, e) }}
+                  onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
+                  onClick={function() { if (!dragRef.current || !dragRef.current.moved) goToLocation(loc.name) }}
+                  style={{ position: 'absolute', left: lr.x, top: lr.y, width: lr.w, height: lr.h, touchAction: 'none', overflow: 'hidden' }}
+                  className="rounded-lg border-2 border-orange bg-orange/10 p-2.5 cursor-pointer select-none shadow-lg">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[12px] font-bold text-white truncate">{loc.name}</div>
+                    <button onPointerDown={function(e) { e.stopPropagation() }}
+                      onClick={function(e) { e.stopPropagation(); deleteLocation(loc.name) }}
+                      className="text-[9px] text-red/50 hover:text-red">✕</button>
+                  </div>
+                  <div className="text-[9px] text-dgray">{members.length} DDC{members.length === 1 ? '' : 'S'}</div>
+                  <div className="flex gap-1 flex-wrap mt-1">
+                    {['DI', 'DO', 'AI', 'AO'].map(function(k) {
+                      return totals[k] > 0 ? <span key={k} className="text-[8px] px-1 py-0.5 rounded bg-card2 text-orange">{k} {totals[k]}</span> : null
+                    })}
+                  </div>
+                  <div className="text-[8px] text-dgray/70 mt-1">CLICK TO OPEN</div>
+                  <ResizeHandle info={{ kind: 'location', id: loc.name, origW: lr.w, origH: lr.h }} />
+                </div>
+              )
+            })}
+
+            {visiblePanels.map(function(panel, idx) {
+              var pr = panelRect(panel, idx)
               var eqs = equipmentMap[panel.id] || []
               var totals = pointTotals(eqs)
-              var pw = panel.w || 200
-              var ph = panel.h || 110
               return (
                 <div key={panel.id}>
                   <div
                     role="button" tabIndex={0} aria-label={'DDC BLOCK ' + panel.name}
-                    onPointerDown={function(e) { startDrag({ kind: 'panel', mode: 'move', id: panel.id, origX: pp.x, origY: pp.y }, e) }}
+                    onPointerDown={function(e) { startDrag({ kind: 'panel', mode: 'move', id: panel.id, origX: pr.x, origY: pr.y, origW: pr.w, origH: pr.h }, e) }}
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
                     onClick={function() { if (!dragRef.current || !dragRef.current.moved) clickDdc(panel) }}
-                    style={{ position: 'absolute', left: pp.x, top: pp.y, width: pw, height: ph, touchAction: 'none', overflow: 'hidden' }}
+                    style={{ position: 'absolute', left: pr.x, top: pr.y, width: pr.w, height: pr.h, touchAction: 'none', overflow: 'hidden' }}
                     className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (selected ? 'border-teal bg-teal/10' : 'border-cyan bg-card')}>
                     <div className="flex items-center justify-between mb-1">
                       <div className="text-[11px] font-bold text-white truncate">{panel.name}</div>
@@ -400,35 +625,30 @@ export default function GroupingStudio(props) {
                         return totals[k] > 0 ? <span key={k} className="text-[8px] px-1 py-0.5 rounded bg-card2 text-cyan">{k} {totals[k]}</span> : null
                       })}
                     </div>
-                    <ResizeHandle info={{ kind: 'panel', id: panel.id, origW: pw, origH: ph }} />
+                    {activeLocation && (
+                      <select value={panel.location || ''} onClick={function(e) { e.stopPropagation() }} onPointerDown={function(e) { e.stopPropagation() }}
+                        onChange={function(e) { moveDdcToLocation(panel, e.target.value) }}
+                        className="mt-1 w-full bg-navy border border-border rounded text-[8px] text-dgray px-1 py-0.5 outline-none focus:border-orange">
+                        <option value="">MOVE TO: UNASSIGNED</option>
+                        {siteLocations.map(function(l) { return <option key={l.name} value={l.name}>MOVE TO: {l.name}</option> })}
+                      </select>
+                    )}
+                    <ResizeHandle info={{ kind: 'panel', id: panel.id, origW: pr.w, origH: pr.h }} />
                   </div>
                   {eqs.map(function(eq, i) {
-                    var col = i % 4, row = Math.floor(i / 4)
-                    var ex = pp.x + 240 + col * 130
-                    var ey = pp.y + 20 + row * 60
-                    var ew = eq.w || 110
-                    var eh = eq.h || 46
-                    var isExpanded = expanded && expanded.panelId === panel.id && expanded.eqId === eq.id
+                    var er = equipRect(eq, pr, i)
                     return (
-                      <div key={eq.id}>
-                        <div role="button" tabIndex={0} aria-label={'CONNECTED UNIT ' + eq.name}
-                          onClick={function() { setExpanded(isExpanded ? null : { panelId: panel.id, eqId: eq.id }) }}
-                          style={{ position: 'absolute', left: ex, top: ey, width: ew, height: eh, touchAction: 'none', overflow: 'hidden' }}
-                          className="rounded border border-teal/60 bg-card2 px-2 py-1 cursor-pointer select-none">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[9px] text-white truncate">{eq.name}</span>
-                            <button onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>
-                          </div>
-                          <ResizeHandle info={{ kind: 'equipment', id: eq.id, panelId: panel.id, origW: ew, origH: eh }} />
+                      <div key={eq.id}
+                        role="button" tabIndex={0} aria-label={'CONNECTED UNIT ' + eq.name}
+                        onPointerDown={function(e) { startDrag({ kind: 'equipment', mode: 'move', id: eq.id, panelId: panel.id, origX: er.x, origY: er.y, origW: er.w, origH: er.h }, e) }}
+                        onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
+                        style={{ position: 'absolute', left: er.x, top: er.y, width: er.w, height: er.h, touchAction: 'none', overflow: 'hidden' }}
+                        className="rounded border border-teal/60 bg-card2 px-2 py-1 cursor-pointer select-none">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] text-white truncate">{eq.name}</span>
+                          <button onPointerDown={function(e) { e.stopPropagation() }} onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>
                         </div>
-                        {isExpanded && (
-                          <div style={{ position: 'absolute', left: ex, top: ey + eh + 4, width: 170, zIndex: 10 }} className="rounded border border-teal bg-navy p-2 shadow-xl">
-                            <div className="text-[9px] font-bold text-teal mb-1">{eq.name} POINTS</div>
-                            {(eq.points || []).filter(function(p) { return p.type }).map(function(p, pi) {
-                              return <div key={pi} className="text-[8px] text-dgray flex justify-between"><span className="truncate mr-1">{p.description || p.type}</span><span className="text-cyan shrink-0">{p.type} {p.qty}</span></div>
-                            })}
-                          </div>
-                        )}
+                        <ResizeHandle info={{ kind: 'equipment', id: eq.id, panelId: panel.id, origW: er.w, origH: er.h }} />
                       </div>
                     )
                   })}
@@ -456,10 +676,11 @@ export default function GroupingStudio(props) {
             })}
 
             {notes.filter(function(n) { return n.type === 'text' }).map(function(n) {
+              var nr = noteRect(n)
               return (
-                <div key={n.id} style={{ position: 'absolute', left: n.x, top: n.y, width: 150 }} className="rounded shadow-lg overflow-hidden">
+                <div key={n.id} style={{ position: 'absolute', left: nr.x, top: nr.y, width: 150 }} className="rounded shadow-lg overflow-hidden">
                   <div
-                    onPointerDown={function(e) { startDrag({ kind: 'note', mode: 'move', id: n.id, origX: n.x, origY: n.y }, e) }}
+                    onPointerDown={function(e) { startDrag({ kind: 'note', mode: 'move', id: n.id, origX: nr.x, origY: nr.y }, e) }}
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
                     style={{ background: COLOR_HEX[n.color] || COLOR_HEX.teal, touchAction: 'none' }}
                     className="px-1.5 py-0.5 text-[8px] text-navy font-bold flex items-center justify-between cursor-move select-none">

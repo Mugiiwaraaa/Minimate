@@ -524,6 +524,7 @@ export default function DesignPage(props) {
           onCreatePanel={props.onCreatePanel} onDeletePanel={props.onDeletePanel}
           onUpdateEquipment={props.onUpdateEquipment} onUpdatePanelLayout={props.onUpdatePanelLayout}
           notes={props.notes} onUpdateNotes={props.onUpdateNotes}
+          locations={props.locations} onUpdateLocations={props.onUpdateLocations} onUnassignLocation={props.onUnassignLocation}
           onClose={function() { setGroupingOpen(false) }}
         />
       )}
