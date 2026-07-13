@@ -69,6 +69,8 @@ export default function GroupingStudio(props) {
   var noteColor = noteColorState[0]; var setNoteColor = noteColorState[1]
   var lineDraftState = useState(null) // {x1,y1,x2,y2} while dragging a new line
   var lineDraft = lineDraftState[0]; var setLineDraft = lineDraftState[1]
+  var railOpenState = useState(false) // mobile-only: side rail is an off-canvas drawer below md
+  var railOpen = railOpenState[0]; var setRailOpen = railOpenState[1]
 
   var wrapRef = useRef(null)
   var panRef = useRef(null)
@@ -90,6 +92,11 @@ export default function GroupingStudio(props) {
   }, [])
 
   function commitNotes(next) { if (props.onUpdateNotes) props.onUpdateNotes(next) }
+
+  // Touch devices have no wheel event — these buttons are the only zoom control there.
+  function zoomBy(delta) {
+    setView(function(v) { return Object.assign({}, v, { scale: Math.min(2.5, Math.max(0.3, v.scale + delta)) }) })
+  }
 
   function screenToWorld(clientX, clientY) {
     var rect = wrapRef.current.getBoundingClientRect()
@@ -254,8 +261,13 @@ export default function GroupingStudio(props) {
 
   return (
     <div className="fixed inset-0 z-50 bg-navy flex" style={{ textTransform: 'uppercase' }}>
-      {/* ─── Side rail ─── */}
-      <div className="w-72 shrink-0 border-r border-border bg-card flex flex-col overflow-y-auto">
+      {/* Mobile-only backdrop behind the off-canvas side rail */}
+      {railOpen && (
+        <div className="md:hidden fixed inset-0 bg-black/60 z-30" onClick={function() { setRailOpen(false) }} />
+      )}
+
+      {/* ─── Side rail — always visible at md+, an off-canvas drawer below md ─── */}
+      <div className={'w-72 shrink-0 border-r border-border bg-card flex flex-col overflow-y-auto fixed inset-y-0 left-0 z-40 transition-transform duration-200 md:static md:translate-x-0 ' + (railOpen ? 'translate-x-0' : '-translate-x-full')}>
         <div className="p-3 border-b border-border flex items-center justify-between">
           <div className="text-sm font-bold text-white">DDC GROUPING CANVAS</div>
           <button onClick={props.onClose} className="text-[11px] text-dgray hover:text-white px-2 py-1">✕ CLOSE</button>
@@ -313,9 +325,10 @@ export default function GroupingStudio(props) {
       </div>
 
       {/* ─── Canvas ─── */}
-      <div className="flex-1 relative flex flex-col">
+      <div className="flex-1 relative flex flex-col min-w-0">
         {/* Annotation toolbar */}
-        <div className="flex items-center gap-3 px-3 py-1.5 border-b border-border bg-card z-10">
+        <div className="flex items-center gap-3 flex-wrap px-3 py-1.5 border-b border-border bg-card z-10">
+          <button onClick={function() { setRailOpen(true) }} className="md:hidden px-2.5 py-1 rounded text-[9px] font-bold uppercase bg-card2 text-dgray hover:text-white">☰ LIBRARY</button>
           <div className="flex gap-1">
             {['select', 'line', 'text'].map(function(m) {
               return <button key={m} onClick={function() { setMode(m) }} className={'px-2.5 py-1 rounded text-[9px] font-bold uppercase ' + (mode === m ? 'bg-teal text-white' : 'bg-card2 text-dgray hover:text-white')}>{m === 'select' ? 'SELECT / PAN' : m}</button>
@@ -460,6 +473,12 @@ export default function GroupingStudio(props) {
                 </div>
               )
             })}
+          </div>
+
+          {/* Zoom controls — the only way to zoom on touch devices (no wheel event) */}
+          <div className="absolute bottom-3 right-3 flex flex-col gap-1 z-10">
+            <button onClick={function() { zoomBy(0.15) }} className="w-8 h-8 rounded bg-card2 text-white text-sm font-bold border border-border hover:border-teal">+</button>
+            <button onClick={function() { zoomBy(-0.15) }} className="w-8 h-8 rounded bg-card2 text-white text-sm font-bold border border-border hover:border-teal">−</button>
           </div>
         </div>
       </div>

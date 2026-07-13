@@ -365,7 +365,7 @@ export default function DesignPage(props) {
         <div className="text-[10px] text-dgray uppercase">USE THE <span className="text-orange font-bold">IMPORT</span> BUTTON (SIDEBAR) TO ADD FILES</div>
       </div>
 
-      <div className="flex items-center justify-between gap-2 mb-4 border-b border-border pb-2">
+      <div className="flex items-center justify-between gap-2 mb-4 border-b border-border pb-2 flex-wrap">
         <div className="flex gap-1.5 flex-wrap">
           {['io', 'cables', 'boq', 'other'].map(function(v) {
             return <button key={v} onClick={function() { setDtab(v) }} className={'px-3 py-1.5 rounded text-[10px] font-bold uppercase transition ' + (dtab === v ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{TAB_LABELS[v]}</button>
