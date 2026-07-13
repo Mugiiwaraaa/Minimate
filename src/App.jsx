@@ -603,6 +603,10 @@ export default function App() {
     setPanels(function(prev) { return prev.concat([panel]) })
   }
 
+  function handleUpdatePanelPos(panelId, dx, dy) {
+    setPanels(function(prev) { return prev.map(function(p) { return p.id === panelId ? Object.assign({}, p, { dx: dx, dy: dy }) : p }) })
+  }
+
   function handleDeletePanel(panelId) {
     pushUndo()
     setPanels(function(prev) { return prev.filter(function(p) { return p.id !== panelId }) })
@@ -1806,7 +1810,7 @@ export default function App() {
           <Route path="/panels/:panelId" element={<Suspense fallback={pageLoading()}><PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} estimateScope={estimateScope} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />
-          <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
+          <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelPos={handleUpdatePanelPos} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Suspense fallback={pageLoading()}><BlockersPage blockers={blockers} onUpdate={setBlockers} /></Suspense>} />
           <Route path="/reports" element={<Suspense fallback={pageLoading()}><ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} /></Suspense>} />

@@ -13,6 +13,7 @@ import DocGrid from '../components/DocGrid'
 import IoListPage from './IoListPage'
 import { getWorkingCopy, updateWorkingCopy } from '../lib/datasetStore'
 import { flattenIoSummaryForDataset, diffEstimateVsSite } from '../lib/estimateDiff'
+import GroupingStudio from '../components/GroupingStudio'
 
 function up(v) { return ('' + (v == null ? '' : v)).toUpperCase() }
 
@@ -31,6 +32,8 @@ export default function DocumentsPage(props) {
   var openDocState = useState(null); var openDoc = openDocState[0]; var setOpenDoc = openDocState[1]
   var estDatasetState = useState(null); var estDataset = estDatasetState[0]; var setEstDataset = estDatasetState[1]
   var matchSelState = useState(null); var matchSel = matchSelState[0]; var setMatchSel = matchSelState[1] // {type:'estimate'|'site', name}
+  var groupingOpenState = useState(false); var groupingOpen = groupingOpenState[0]; var setGroupingOpen = groupingOpenState[1]
+  var hasIoSummary = (scope.sheets || []).some(function(s) { return s.kind === 'io_summary' })
 
   function dismissEstimateItem(name) {
     var next = Object.assign({}, scope, { dismissed: Object.assign({}, scope.dismissed || {}, (function() { var o = {}; o[up(name)] = true; return o })()) })
@@ -341,11 +344,18 @@ export default function DocumentsPage(props) {
         <div className="text-[10px] text-dgray uppercase">USE THE <span className="text-orange font-bold">IMPORT</span> BUTTON (SIDEBAR) TO ADD FILES</div>
       </div>
 
-      <div className="flex gap-1.5 mb-4 border-b border-border pb-2">
-        {['estimate', 'drawings', 'library'].map(function(v) {
-          var labels = { estimate: 'DESIGN ENGINE', drawings: 'DRAWINGS', library: 'DOCUMENT LIBRARY' }
-          return <button key={v} onClick={function() { setView(v) }} className={'px-3 py-1.5 rounded text-[10px] font-bold uppercase transition ' + (view === v ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{labels[v]}</button>
-        })}
+      <div className="flex items-center justify-between gap-2 mb-4 border-b border-border pb-2">
+        <div className="flex gap-1.5">
+          {['estimate', 'drawings', 'library'].map(function(v) {
+            var labels = { estimate: 'DESIGN ENGINE', drawings: 'DRAWINGS', library: 'DOCUMENT LIBRARY' }
+            return <button key={v} onClick={function() { setView(v) }} className={'px-3 py-1.5 rounded text-[10px] font-bold uppercase transition ' + (view === v ? 'bg-teal/20 text-teal' : 'bg-card2 text-dgray hover:text-white')}>{labels[v]}</button>
+          })}
+        </div>
+        {view === 'estimate' && (
+          <button onClick={function() { setGroupingOpen(true) }} disabled={!hasIoSummary}
+            title={hasIoSummary ? '' : 'IMPORT AN I-O SUMMARY FIRST'}
+            className="px-3 py-1.5 rounded text-[10px] font-bold uppercase bg-orange/20 text-orange hover:bg-orange/30 disabled:opacity-30 disabled:hover:bg-orange/20">⌘ GROUPING CANVAS</button>
+        )}
       </div>
 
       {view === 'estimate' && busy && <div className="mb-3 text-[11px] text-teal uppercase font-semibold">{busy}</div>}
@@ -525,6 +535,15 @@ export default function DocumentsPage(props) {
             </div>
           )}
         </div>
+      )}
+
+      {groupingOpen && (
+        <GroupingStudio
+          panels={props.panels} equipmentMap={props.equipmentMap} scope={scope}
+          onCreatePanel={props.onCreatePanel} onDeletePanel={props.onDeletePanel}
+          onUpdateEquipment={props.onUpdateEquipment} onUpdatePanelPos={props.onUpdatePanelPos}
+          onClose={function() { setGroupingOpen(false) }}
+        />
       )}
     </div>
   )
