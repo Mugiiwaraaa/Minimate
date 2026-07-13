@@ -13,6 +13,7 @@ const DrawingsPage = lazy(() => import('./pages/DrawingsPage'))
 const BlockersPage = lazy(() => import('./pages/BlockersPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
+const DesignPage = lazy(() => import('./pages/DesignPage'))
 import GlobalImport from './components/GlobalImport'
 import { listDocuments, archiveDocument, upsertDocument, deleteDocument } from './lib/docStore'
 import { parseTermination, applyTermination } from './lib/terminationParser'
@@ -121,6 +122,9 @@ export default function App() {
   var estScopeState = useState({}) // R2 estimate/design scope (as-designed layer)
   var estimateScope = estScopeState[0]
   var setEstimateScope = estScopeState[1]
+  var designNotesState = useState([]) // Grouping Canvas freeform annotations (lines/text)
+  var designCanvasNotes = designNotesState[0]
+  var setDesignCanvasNotes = designNotesState[1]
   var gImpState = useState(null) // R2 global import: file awaiting route confirmation
   var gImpFile = gImpState[0]
   var setGImpFile = gImpState[1]
@@ -211,7 +215,8 @@ export default function App() {
       blockers: blockers,
       gateways: gateways,
       reportConfig: reportConfig,
-      estimateScope: estimateScope
+      estimateScope: estimateScope,
+      designCanvasNotes: designCanvasNotes
     }
     setSaveStatus('saving')
     saveProjectData(activeProject.id, data)
@@ -219,7 +224,7 @@ export default function App() {
     var t = setTimeout(function() { setSaveStatus('saved') }, 2000)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 4000)
     return function() { clearTimeout(t); clearTimeout(t2) }
-  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope])
+  }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope, designCanvasNotes])
 
   // Flush save before page unload
   useEffect(function() {
@@ -298,6 +303,7 @@ export default function App() {
       setGateways(data.gateways || [])
       setReportConfig(data.reportConfig || {})
       setEstimateScope(data.estimateScope || {})
+      setDesignCanvasNotes(data.designCanvasNotes || [])
       setActiveProject(fullProject)
       setLoadedVersion(fullProject.version || 0)
       setLoadedData(data)
@@ -443,6 +449,7 @@ export default function App() {
       setGateways(data.gateways || [])
       setReportConfig(data.reportConfig || {})
       setEstimateScope(data.estimateScope || {})
+      setDesignCanvasNotes(data.designCanvasNotes || [])
       setActiveProject(fullProject || project)
       activeProjectIdRef.current = (fullProject && fullProject.id) || null
       setLoadedVersion((fullProject && fullProject.version) || 0)
@@ -603,8 +610,12 @@ export default function App() {
     setPanels(function(prev) { return prev.concat([panel]) })
   }
 
-  function handleUpdatePanelPos(panelId, dx, dy) {
-    setPanels(function(prev) { return prev.map(function(p) { return p.id === panelId ? Object.assign({}, p, { dx: dx, dy: dy }) : p }) })
+  function handleUpdatePanelLayout(panelId, patch) {
+    setPanels(function(prev) { return prev.map(function(p) { return p.id === panelId ? Object.assign({}, p, patch) : p }) })
+  }
+
+  function handleUpdateDesignCanvasNotes(next) {
+    setDesignCanvasNotes(next)
   }
 
   function handleDeletePanel(panelId) {
@@ -893,7 +904,7 @@ export default function App() {
       return
     }
     if (dest === 'data') { handleImportFile({ target: { files: [file], value: '' } }); return }
-    if (dest === 'estimate') { setIncomingEst(file); navigate('/documents'); return }
+    if (dest === 'estimate') { setIncomingEst(file); navigate('/design'); return }
     // 'library' — the archive above is the whole action
   }
   function updateDoc(doc) {
@@ -1810,7 +1821,8 @@ export default function App() {
           <Route path="/panels/:panelId" element={<Suspense fallback={pageLoading()}><PanelDetail panels={panels} equipmentMap={equipmentMap} terminationMap={terminationMap} estimateScope={estimateScope} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onUpdateTermination={handleUpdateTermination} onDeletePanel={handleDeletePanel} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />
-          <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdatePoint={handleUpdatePoint} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelPos={handleUpdatePanelPos} scope={estimateScope} onUpdateScope={setEstimateScope} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
+          <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
+          <Route path="/design" element={<Suspense fallback={pageLoading()}><DesignPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelLayout={handleUpdatePanelLayout} scope={estimateScope} onUpdateScope={setEstimateScope} notes={designCanvasNotes} onUpdateNotes={handleUpdateDesignCanvasNotes} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} /></Suspense>} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Suspense fallback={pageLoading()}><BlockersPage blockers={blockers} onUpdate={setBlockers} /></Suspense>} />
           <Route path="/reports" element={<Suspense fallback={pageLoading()}><ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} /></Suspense>} />
