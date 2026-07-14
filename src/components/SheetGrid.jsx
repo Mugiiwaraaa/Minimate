@@ -36,7 +36,7 @@ const coerce = (col, raw) => {
 const emptyValue = (col) => (col.type === 'checkbox' ? false : col.type === 'number' ? 0 : '')
 const emptyRow = (columns) => Object.fromEntries(columns.map((c) => [c.id, emptyValue(c)]))
 
-export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange, onOps, onUndo, protectedRows, height = 560, rowHeight = 30, rowGroup, rowClass }) {
+export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange, onOps, onUndo, protectedRows, height = 560, rowHeight = 30, rowGroup, rowClass, naCells, onCellContextMenu }) {
   const scrollRef = useRef(null)
   const gridRef = useRef(null)
   const [sel, setSel] = useState(null)
@@ -110,7 +110,10 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
     emit({ type: 'cells', edits: [{ r, colId: columns[c].id, value: val }] })
   }
 
+  const isNaCell = (r, c) => !!(naCells && naCells.has(r + '-' + c))
+
   const startEdit = (r, c, seed) => {
+    if (isNaCell(r, c)) return
     const col = columns[c]
     if (col.type === 'checkbox') { setCell(r, c, !rows[r][col.id]); return }
     setEditing({ r, c, value: seed !== undefined ? seed : String(rows[r][col.id] ?? '') })
@@ -393,7 +396,7 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
         if (prev) onRowsChange(prev)
         break
       }
-      case e.key === ' ' && columns[sel.c].type === 'checkbox': e.preventDefault(); setCell(sel.r, sel.c, !rows[sel.r][columns[sel.c].id]); break
+      case e.key === ' ' && columns[sel.c].type === 'checkbox' && !isNaCell(sel.r, sel.c): e.preventDefault(); setCell(sel.r, sel.c, !rows[sel.r][columns[sel.c].id]); break
       case e.key.length === 1 && !mod && !e.altKey: e.preventDefault(); startEdit(sel.r, sel.c); break
       default: break
     }
@@ -532,12 +535,14 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
                   {columns.map((col, c) => {
                     const active = sel && sel.r === origR && sel.c === c
                     const isEdit = editing && editing.r === origR && editing.c === c
+                    const isNA = isNaCell(origR, c)
                     const v = row[col.id]
                     return (
                       <div
                         key={col.id}
                         data-r={origR}
                         data-c={c}
+                        onContextMenu={(e) => { if (onCellContextMenu) { e.preventDefault(); onCellContextMenu(origR, c) } }}
                         className={
                           'shrink-0 border-r border-b border-border/30 px-2 flex items-center text-[11px] uppercase relative ' +
                           (inRange(origR, c) ? 'bg-teal/15 ' : '') +
@@ -568,6 +573,8 @@ export default function SheetGrid({ columns, rows, onRowsChange, onColumnsChange
                               className="absolute inset-0 bg-navy text-white text-[11px] uppercase outline-none border-2 border-teal px-2 select-text"
                             />
                           )
+                        ) : isNA ? (
+                          <span className="text-[9px] text-dgray/60 italic" title="RIGHT-CLICK TO UN-MARK N/A">N/A</span>
                         ) : col.type === 'checkbox' ? (
                           <span className={'w-4 h-4 rounded border text-[10px] font-bold flex items-center justify-center ' + (v ? 'bg-green border-green text-white' : 'border-border text-transparent')}>✓</span>
                         ) : (

@@ -232,6 +232,19 @@ export default function GroupingStudio(props) {
     }
     return { x: x, y: y, w: w, h: h }
   }
+  // While a DDC panel is being dragged, its connected equipment (and the wires
+  // drawn to them) visually ride along by this same delta — otherwise moving a
+  // panel just stretches the wires elastically toward equipment left behind.
+  // Equipment with no explicit ex/ey already tracks the panel for free via
+  // equipAutoPos's fallback; this only matters for equipment someone has
+  // individually repositioned before (explicit ex/ey, now absolute).
+  function panelFollowDelta(panel, idx, pr) {
+    if (dragPreview && dragPreview.kind === 'panel' && dragPreview.id === panel.id && dragPreview.x != null) {
+      var basePos = panelPos(panel, idx)
+      return { dx: pr.x - basePos.x, dy: pr.y - basePos.y }
+    }
+    return { dx: 0, dy: 0 }
+  }
   function locationPos(idx) {
     var col = idx % 4, row = Math.floor(idx / 4)
     return { x: 60 + col * 300, y: 60 + row * 220 }
@@ -270,6 +283,7 @@ export default function GroupingStudio(props) {
   function onBlockPointerMove(e) {
     var d = dragRef.current
     if (!d) return
+    d.lastClientX = e.clientX; d.lastClientY = e.clientY
     var dx = (e.clientX - d.startX) / viewRef.current.scale
     var dy = (e.clientY - d.startY) / viewRef.current.scale
     if (Math.abs(dx) > 4 || Math.abs(dy) > 4) d.moved = true
@@ -308,14 +322,45 @@ export default function GroupingStudio(props) {
     // move
     if (d.kind === 'panel') {
       var patch = { dx: dp.x, dy: dp.y }
-      if (!activeLocation) {
-        var cx = dp.x + (d.origW || 200) / 2, cy = dp.y + (d.origH || 110) / 2
-        for (var i = 0; i < siteLocations.length; i++) {
-          var r = locationRect(siteLocations[i], i)
-          if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) { patch.location = siteLocations[i].name; break }
+      var eqShiftDx = 0, eqShiftDy = 0
+      // Dropped onto a sidebar location pill (or the UNASSIGNED chip) — takes
+      // priority over the canvas-overlap check below. This is a JUMP into a
+      // different location's view, not a drag gesture, so it lands at a fresh
+      // auto-layout slot (like a newly created DDC) instead of wherever the
+      // cursor happened to be over the rail — otherwise it can end up stuck
+      // behind the sidebar. Equipment doesn't follow a jump like this.
+      var dropEl = (d.lastClientX != null) ? document.elementFromPoint(d.lastClientX, d.lastClientY) : null
+      var dropTarget = dropEl && dropEl.closest ? dropEl.closest('[data-loc-target]') : null
+      if (dropTarget) {
+        var targetLoc = dropTarget.getAttribute('data-loc-target')
+        patch.location = targetLoc
+        var memberCount = targetLoc ? locationMembers(targetLoc).length : 0
+        patch.dx = 60 + (memberCount % 4) * 260
+        patch.dy = 60 + Math.floor(memberCount / 4) * 220
+      } else {
+        eqShiftDx = dp.x - d.origX
+        eqShiftDy = dp.y - d.origY
+        if (!activeLocation) {
+          var cx = dp.x + (d.origW || 200) / 2, cy = dp.y + (d.origH || 110) / 2
+          for (var i = 0; i < siteLocations.length; i++) {
+            var r = locationRect(siteLocations[i], i)
+            if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) { patch.location = siteLocations[i].name; break }
+          }
         }
       }
       if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(d.id, patch)
+      // Carry equipment with an explicit (individually-dragged-before) position
+      // along by the same delta the panel just moved, so it doesn't get left
+      // behind with an elastically-stretched wire. Equipment still on the
+      // auto-layout fallback already tracks the panel for free.
+      if (Math.abs(eqShiftDx) > 0.5 || Math.abs(eqShiftDy) > 0.5) {
+        var eqsToShift = equipmentMap[d.id] || []
+        if (eqsToShift.some(function(e) { return typeof e.ex === 'number' }) && props.onUpdateEquipment) {
+          props.onUpdateEquipment(d.id, eqsToShift.map(function(e) {
+            return (typeof e.ex === 'number') ? Object.assign({}, e, { ex: e.ex + eqShiftDx, ey: e.ey + eqShiftDy }) : e
+          }))
+        }
+      }
     } else if (d.kind === 'equipment') {
       var existing2 = equipmentMap[d.panelId] || []
       if (props.onUpdateEquipment) props.onUpdateEquipment(d.panelId, existing2.map(function(eq) { return eq.id === d.id ? Object.assign({}, eq, { ex: dp.x, ey: dp.y }) : eq }))
@@ -345,7 +390,7 @@ export default function GroupingStudio(props) {
     if (!name || !props.onCreatePanel) return
     var idx = panels.length
     var pos = { x: 60 + (idx % 4) * 260, y: 60 + Math.floor(idx / 4) * 220 }
-    props.onCreatePanel({ id: panelId(), name: up(name), location: '', floor: '', dx: pos.x, dy: pos.y })
+    props.onCreatePanel({ id: panelId(), name: up(name), location: activeLocation || '', floor: '', dx: pos.x, dy: pos.y })
     setNewDdcName('')
   }
 
@@ -402,8 +447,11 @@ export default function GroupingStudio(props) {
     if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.filter(function(e) { return e.id !== eqId }))
   }
 
-  function moveDdcToLocation(panel, name) {
-    if (props.onUpdatePanelLayout) props.onUpdatePanelLayout(panel.id, { location: name })
+  function renameEquipment(panelId_, eqId, curName) {
+    var val = window.prompt('EQUIPMENT NAME:', curName)
+    if (!val || !val.trim() || up(val) === up(curName)) return
+    var existing = equipmentMap[panelId_] || []
+    if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.map(function(e) { return e.id === eqId ? Object.assign({}, e, { name: up(val) }) : e }))
   }
 
   function editNoteText(id, text) {
@@ -454,8 +502,9 @@ export default function GroupingStudio(props) {
                 <button onClick={createLocation} disabled={!newLocName.trim()} className="px-2 py-1 bg-orange text-navy text-[10px] font-bold rounded disabled:opacity-40">+ ADD</button>
               </div>
               <div className="flex flex-wrap gap-1">
+                <span data-loc-target="" title="DRAG A DDC HERE TO UNASSIGN IT" className="text-[9px] px-2 py-1 rounded bg-navy border border-dgray/40 text-dgray/70">UNASSIGNED</span>
                 {siteLocations.map(function(l) {
-                  return <button key={l.name} onClick={function() { goToLocation(l.name) }} className="text-[9px] px-2 py-1 rounded bg-card2 text-dgray hover:text-orange">{l.name}</button>
+                  return <button key={l.name} data-loc-target={l.name} onClick={function() { goToLocation(l.name) }} title={'CLICK TO OPEN · DRAG A DDC HERE TO MOVE IT IN'} className="text-[9px] px-2 py-1 rounded bg-card2 text-dgray hover:text-orange">{l.name}</button>
                 })}
               </div>
             </div>
@@ -509,7 +558,7 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-          DRAG A DDC ONTO A LOCATION TO GROUP IT. CLICK AN EQUIPMENT BLOCK TO SELECT, THEN CLICK A DDC TO WIRE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
+          DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK AN EQUIPMENT BLOCK TO SELECT, THEN CLICK A DDC TO WIRE IT — DOUBLE-CLICK A WIRED UNIT TO RENAME IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
         {/* Rail width resize handle */}
         <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
@@ -547,9 +596,11 @@ export default function GroupingStudio(props) {
               {visiblePanels.map(function(panel, idx) {
                 var pr = panelRect(panel, idx)
                 var eqs = equipmentMap[panel.id] || []
+                var fd = panelFollowDelta(panel, idx, pr)
                 return eqs.map(function(eq, i) {
                   var er = equipRect(eq, pr, i)
-                  return <line key={panel.id + '-' + eq.id} x1={pr.x + pr.w / 2} y1={pr.y + pr.h / 2} x2={er.x + er.w / 2} y2={er.y + er.h / 2} stroke="rgba(45,212,191,0.5)" strokeWidth={2} />
+                  var ex = er.x + fd.dx, ey = er.y + fd.dy
+                  return <line key={panel.id + '-' + eq.id} x1={pr.x + pr.w / 2} y1={pr.y + pr.h / 2} x2={ex + er.w / 2} y2={ey + er.h / 2} stroke={fd.dx || fd.dy ? 'rgba(255,255,255,0.7)' : 'rgba(45,212,191,0.5)'} strokeWidth={2} />
                 })
               })}
               {notes.filter(function(n) { return n.type === 'line' }).map(function(n) {
@@ -604,6 +655,8 @@ export default function GroupingStudio(props) {
               var pr = panelRect(panel, idx)
               var eqs = equipmentMap[panel.id] || []
               var totals = pointTotals(eqs)
+              var fd = panelFollowDelta(panel, idx, pr)
+              var isDraggingThis = !!(fd.dx || fd.dy)
               return (
                 <div key={panel.id}>
                   <div
@@ -612,7 +665,7 @@ export default function GroupingStudio(props) {
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
                     onClick={function() { if (!dragRef.current || !dragRef.current.moved) clickDdc(panel) }}
                     style={{ position: 'absolute', left: pr.x, top: pr.y, width: pr.w, height: pr.h, touchAction: 'none', overflow: 'hidden' }}
-                    className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (selected ? 'border-teal bg-teal/10' : 'border-cyan bg-card')}>
+                    className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (isDraggingThis ? 'border-white bg-card2 shadow-2xl ring-2 ring-white/40' : selected ? 'border-teal bg-teal/10' : 'border-cyan bg-card')}>
                     <div className="flex items-center justify-between mb-1">
                       <div className="text-[11px] font-bold text-white truncate">{panel.name}</div>
                       <button onPointerDown={function(e) { e.stopPropagation() }}
@@ -625,25 +678,27 @@ export default function GroupingStudio(props) {
                         return totals[k] > 0 ? <span key={k} className="text-[8px] px-1 py-0.5 rounded bg-card2 text-cyan">{k} {totals[k]}</span> : null
                       })}
                     </div>
-                    {activeLocation && (
-                      <select value={panel.location || ''} onClick={function(e) { e.stopPropagation() }} onPointerDown={function(e) { e.stopPropagation() }}
-                        onChange={function(e) { moveDdcToLocation(panel, e.target.value) }}
-                        className="mt-1 w-full bg-navy border border-border rounded text-[8px] text-dgray px-1 py-0.5 outline-none focus:border-orange">
-                        <option value="">MOVE TO: UNASSIGNED</option>
-                        {siteLocations.map(function(l) { return <option key={l.name} value={l.name}>MOVE TO: {l.name}</option> })}
-                      </select>
-                    )}
+                    <input
+                      key={panel.id + '-room'}
+                      defaultValue={panel.room || ''}
+                      onClick={function(e) { e.stopPropagation() }}
+                      onPointerDown={function(e) { e.stopPropagation() }}
+                      onBlur={function(e) { var v = up(e.target.value); if (v !== (panel.room || '') && props.onUpdatePanelLayout) props.onUpdatePanelLayout(panel.id, { room: v }) }}
+                      placeholder="ROOM NAME" style={{ textTransform: 'uppercase' }}
+                      className="mt-1 w-full bg-navy border border-border rounded text-[8px] text-dgray px-1 py-0.5 outline-none focus:border-cyan" />
                     <ResizeHandle info={{ kind: 'panel', id: panel.id, origW: pr.w, origH: pr.h }} />
                   </div>
                   {eqs.map(function(eq, i) {
-                    var er = equipRect(eq, pr, i)
+                    var er0 = equipRect(eq, pr, i)
+                    var er = isDraggingThis ? { x: er0.x + fd.dx, y: er0.y + fd.dy, w: er0.w, h: er0.h } : er0
                     return (
                       <div key={eq.id}
                         role="button" tabIndex={0} aria-label={'CONNECTED UNIT ' + eq.name}
-                        onPointerDown={function(e) { startDrag({ kind: 'equipment', mode: 'move', id: eq.id, panelId: panel.id, origX: er.x, origY: er.y, origW: er.w, origH: er.h }, e) }}
+                        onPointerDown={function(e) { startDrag({ kind: 'equipment', mode: 'move', id: eq.id, panelId: panel.id, origX: er0.x, origY: er0.y, origW: er0.w, origH: er0.h }, e) }}
                         onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
+                        onDoubleClick={function(e) { e.stopPropagation(); renameEquipment(panel.id, eq.id, eq.name) }}
                         style={{ position: 'absolute', left: er.x, top: er.y, width: er.w, height: er.h, touchAction: 'none', overflow: 'hidden' }}
-                        className="rounded border border-teal/60 bg-card2 px-2 py-1 cursor-pointer select-none">
+                        className={'rounded border px-2 py-1 cursor-pointer select-none ' + (isDraggingThis ? 'border-white/70 bg-card2 shadow-md' : 'border-teal/60 bg-card2')} title="DOUBLE-CLICK TO RENAME">
                         <div className="flex items-center justify-between">
                           <span className="text-[9px] text-white truncate">{eq.name}</span>
                           <button onPointerDown={function(e) { e.stopPropagation() }} onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>

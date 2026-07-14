@@ -31,6 +31,7 @@ const IO_COLUMNS = [
 const STAGES = ['cable_pulled', 'cable_continuity', 'term_ddc_side', 'term_field_side', 'functional_test']
 const STAGE_COLS = ['_cable', '_cont', '_termddc', '_termfld', '_func']
 const TYPE_MAP = { _di: 'DI', _do: 'DO', _ai: 'AI', _ao: 'AO', _si: 'INT' }
+const STAGE_BY_COL = { _cable: 'cable_pulled', _cont: 'cable_continuity', _termddc: 'term_ddc_side', _termfld: 'term_field_side', _func: 'functional_test' }
 
 const up = (v) => ('' + (v == null ? '' : v)).toUpperCase()
 let idc = 0
@@ -39,10 +40,11 @@ const nid = (p) => { idc++; return `${p}-${Date.now()}-${idc}` }
 // equipment[] → { rows, groups, map } — map[i] tells what each grid row IS:
 // { ei } for an equipment header · { ei, pi } for a point (pi = REAL index
 // in eq.points, so excluded points don't shift the mapping)
-function toRows(eqs, extraCols) {
+function toRows(eqs, cols) {
   const rows = []
   const groups = []
   const map = []
+  const naSet = new Set()
   eqs.forEach((eq, ei) => {
     const start = rows.length
     const activePts = (eq.points || []).filter((p) => !p.excluded)
@@ -74,12 +76,20 @@ function toRows(eqs, extraCols) {
       }
       // Merge custom column values for this point
       if (pt._custom) Object.assign(ptRow, pt._custom)
+      const rowIdx = rows.length
       rows.push(ptRow)
       map.push({ ei, pi: realPi })
+      if (pt.na) {
+        STAGE_COLS.forEach((colId) => {
+          if (!pt.na[STAGE_BY_COL[colId]]) return
+          const c = cols.findIndex((cc) => cc.id === colId)
+          if (c >= 0) naSet.add(rowIdx + '-' + c)
+        })
+      }
     })
     groups.push({ start, end: rows.length - 1 })
   })
-  return { rows, groups, map }
+  return { rows, groups, map, naSet }
 }
 
 const newPoint = () => ({
@@ -193,6 +203,26 @@ export default function IoSheetGrid({ eqs, panelId, onUpdateEquipment, onUndo, h
     return origR % 2 ? 'bg-card2/20' : ''
   }
 
+  // Right-click on a stage cell (CABLE/CONT/TERM DDC/TERM FLD/FUNC) for a point
+  // row toggles that ONE cell as N/A — e.g. a Modbus point has no DDC-side
+  // termination but still needs cable pull + field-side termination. Header
+  // rows and non-stage columns ignore the context menu (native menu shows).
+  const onCellContextMenu = (r, c) => {
+    const m = conv.map[r]
+    if (!m || m.pi === undefined) return
+    const colId = cols[c] && cols[c].id
+    const stageKey = STAGE_BY_COL[colId]
+    if (!stageKey) return
+    const clone = cloneEqs()
+    const pt = clone[m.ei].points[m.pi]
+    if (!pt) return
+    const na = { ...(pt.na || {}) }
+    if (na[stageKey]) delete na[stageKey]
+    else na[stageKey] = true
+    pt.na = na
+    onUpdateEquipment(panelId, clone)
+  }
+
   return (
     <div>
       <SheetGrid
@@ -203,6 +233,8 @@ export default function IoSheetGrid({ eqs, panelId, onUpdateEquipment, onUndo, h
         onUndo={onUndo}
         onColumnsChange={setCols}
         protectedRows={conv.groups.map((g) => g.start)}
+        naCells={conv.naSet}
+        onCellContextMenu={onCellContextMenu}
         height={height || 420}
         rowHeight={28}
         rowGroup={conv.groups.length > 0 ? conv.groups : null}
@@ -216,7 +248,7 @@ export default function IoSheetGrid({ eqs, panelId, onUpdateEquipment, onUndo, h
           + ADD EQUIPMENT
         </button>
         {!compact && (
-          <span className="text-[9px] text-dgray uppercase">CTRL+ENTER = NEW POINT · CTRL+DEL = DELETE ROWS (HEADER ROW = WHOLE EQUIPMENT) · FILL/PASTE FLOW AROUND HEADERS</span>
+          <span className="text-[9px] text-dgray uppercase">CTRL+ENTER = NEW POINT · CTRL+DEL = DELETE ROWS (HEADER ROW = WHOLE EQUIPMENT) · FILL/PASTE FLOW AROUND HEADERS · RIGHT-CLICK A CABLE/CONT/TERM/FUNC CELL = MARK N/A</span>
         )}
       </div>
     </div>
