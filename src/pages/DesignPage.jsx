@@ -54,6 +54,10 @@ export default function DesignPage(props) {
   var matchSelState = useState(null); var matchSel = matchSelState[0]; var setMatchSel = matchSelState[1] // {type:'estimate'|'site', name}
   var groupingOpenState = useState(false); var groupingOpen = groupingOpenState[0]; var setGroupingOpen = groupingOpenState[1]
   var hasIoSummary = (scope.sheets || []).some(function(s) { return s.kind === 'io_summary' })
+  // Grouping Canvas itself reads live panels/equipmentMap, not the estimate —
+  // it's just as usable for a project that skipped the estimate and went
+  // straight to an as-built IO List import (this project's actual workflow).
+  var canOpenGrouping = hasIoSummary || (props.panels || []).length > 0
 
   function dismissEstimateItem(name) {
     var next = Object.assign({}, scope, { dismissed: Object.assign({}, scope.dismissed || {}, (function() { var o = {}; o[up(name)] = true; return o })()) })
@@ -372,8 +376,8 @@ export default function DesignPage(props) {
           })}
         </div>
         {dtab === 'io' && (
-          <button onClick={function() { setGroupingOpen(true) }} disabled={!hasIoSummary}
-            title={hasIoSummary ? '' : 'IMPORT AN I-O SUMMARY FIRST'}
+          <button onClick={function() { setGroupingOpen(true) }} disabled={!canOpenGrouping}
+            title={canOpenGrouping ? '' : 'IMPORT AN I-O SUMMARY OR AN AS-BUILT IO LIST FIRST'}
             className="px-3 py-1.5 rounded text-[10px] font-bold uppercase bg-orange/20 text-orange hover:bg-orange/30 disabled:opacity-30 disabled:hover:bg-orange/20">⌘ GROUPING CANVAS</button>
         )}
       </div>
