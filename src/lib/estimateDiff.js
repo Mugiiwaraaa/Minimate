@@ -57,20 +57,23 @@ function diffEstimateVsSite(estimateRows, equipmentMap, aliases, dismissed) {
   var missingOnSite = [] // in the design estimate, not built on site yet
   var notInEstimate = [] // built on site, not in the design estimate
   var mismatched = []    // matched by name but point count differs
+  var matched = []       // matched by name, point count agrees — nothing outstanding
 
   Object.keys(estByName).forEach(function(key) {
     var est = estByName[key]
     var live = liveByName[key]
-    if (!live) { missingOnSite.push({ equipment: est.name, reason: 'NOT BUILT ON SITE YET' }); return }
+    if (!live) { missingOnSite.push({ equipment: est.name, reason: 'NOT BUILT ON SITE YET', estimatePoints: est.points }); return }
     if (live.points !== est.points) {
       mismatched.push({ equipment: est.name, estimatePoints: est.points, sitePoints: live.points })
+    } else {
+      matched.push({ equipment: est.name, points: est.points })
     }
   })
   Object.keys(liveByName).forEach(function(key) {
-    if (!estByName[key]) notInEstimate.push({ equipment: liveByName[key].name, reason: 'NOT IN DESIGN ESTIMATE' })
+    if (!estByName[key]) notInEstimate.push({ equipment: liveByName[key].name, reason: 'NOT IN DESIGN ESTIMATE', sitePoints: liveByName[key].points })
   })
 
-  return { missingOnSite: missingOnSite, notInEstimate: notInEstimate, mismatched: mismatched }
+  return { missingOnSite: missingOnSite, notInEstimate: notInEstimate, mismatched: mismatched, matched: matched }
 }
 
 // Flatten estimateParser.js's parseIoSummary() output ({equipment: [{type, qty, points:

@@ -470,53 +470,50 @@ export default function DesignPage(props) {
         <div className="bg-card rounded-xl border border-border p-4 mt-4">
           <div className="flex items-center justify-between mb-1">
             <div className="text-[10px] text-dgray uppercase font-semibold">ESTIMATE VS AS-PER-SITE</div>
-            {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH(ES) ON THE OTHER SIDE{matchSel.type === 'estimate' ? ' (STAYS SELECTED FOR MULTIPLE SITE ITEMS)' : ''} <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
+            {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH(ES) IN THE TABLE{matchSel.type === 'estimate' ? ' (STAYS SELECTED FOR MULTIPLE SITE ITEMS)' : ''} <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
           </div>
-          <div className="text-[9px] text-dgray uppercase mb-3">CLICK AN ITEM ON EACH SIDE TO LINK THEM AS THE SAME EQUIPMENT (NAMING DIFFERENCE) · ✕ DISMISSES AN ESTIMATE ITEM YOU DON'T NEED TO TRACK</div>
+          <div className="text-[9px] text-dgray uppercase mb-3">CLICK A MISSING/EXTRA ROW, THEN ITS MATCH, TO LINK THEM AS THE SAME EQUIPMENT (NAMING DIFFERENCE) · ✕ DISMISSES AN ESTIMATE ITEM YOU DON'T NEED TO TRACK</div>
           {(function() {
             var diff = diffEstimateVsSite(estDataset.rows, props.equipmentMap || {}, scope.aliases || {}, scope.dismissed || {})
-            var nothingToShow = diff.missingOnSite.length === 0 && diff.notInEstimate.length === 0 && diff.mismatched.length === 0
-            if (nothingToShow) return <div className="text-[11px] text-green uppercase">✓ SITE MATCHES THE DESIGN ESTIMATE — NOTHING OUTSTANDING</div>
+            var STATUS = {
+              matched: { label: 'MATCH', cls: 'text-green' },
+              missing: { label: 'MISSING ON SITE', cls: 'text-orange' },
+              extra: { label: 'NOT IN ESTIMATE', cls: 'text-cyan' },
+              mismatch: { label: 'POINT MISMATCH', cls: 'text-red' }
+            }
+            var rows = []
+              .concat(diff.mismatched.map(function(d) { return { equipment: d.equipment, est: d.estimatePoints, site: d.sitePoints, status: 'mismatch' } }))
+              .concat(diff.missingOnSite.map(function(d) { return { equipment: d.equipment, est: d.estimatePoints, site: null, status: 'missing' } }))
+              .concat(diff.notInEstimate.map(function(d) { return { equipment: d.equipment, est: null, site: d.sitePoints, status: 'extra' } }))
+              .concat(diff.matched.map(function(d) { return { equipment: d.equipment, est: d.points, site: d.points, status: 'matched' } }))
+              .sort(function(a, b) { return a.equipment.localeCompare(b.equipment) })
             return (
-              <div className="space-y-3">
-                {diff.missingOnSite.length > 0 && (
-                  <div>
-                    <div className="text-[9px] text-orange uppercase font-semibold mb-1">IN ESTIMATE, NOT BUILT ON SITE YET ({diff.missingOnSite.length})</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {diff.missingOnSite.map(function(d, i) {
-                        var sel = matchSel && matchSel.type === 'estimate' && matchSel.name === d.equipment
-                        return (
-                          <span key={i} className={'text-[10px] px-2 py-1 rounded uppercase flex items-center gap-1 ' + (sel ? 'bg-teal text-white' : 'bg-orange/10 text-orange hover:bg-orange/20')}>
-                            <button onClick={function() { clickEstimateItem(d.equipment) }} title="CLICK TO MATCH WITH A SITE ITEM">{d.equipment}</button>
-                            <button onClick={function() { dismissEstimateItem(d.equipment) }} title="DISMISS — DON'T TRACK THIS" className="opacity-60 hover:opacity-100">✕</button>
-                          </span>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-                {diff.notInEstimate.length > 0 && (
-                  <div>
-                    <div className="text-[9px] text-cyan uppercase font-semibold mb-1">ON SITE, NOT IN THE DESIGN ESTIMATE ({diff.notInEstimate.length})</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {diff.notInEstimate.map(function(d, i) {
-                        var sel = matchSel && matchSel.type === 'site' && matchSel.name === d.equipment
-                        return (
-                          <button key={i} onClick={function() { clickSiteItem(d.equipment) }} title="CLICK TO MATCH WITH AN ESTIMATE ITEM" className={'text-[10px] px-2 py-1 rounded uppercase ' + (sel ? 'bg-teal text-white' : 'bg-cyan/10 text-cyan hover:bg-cyan/20')}>{d.equipment}</button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-                {diff.mismatched.length > 0 && (
-                  <div>
-                    <div className="text-[9px] text-red uppercase font-semibold mb-1">POINT COUNT MISMATCH ({diff.mismatched.length})</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {diff.mismatched.map(function(d, i) { return <span key={i} className="text-[10px] bg-red/10 text-red px-2 py-1 rounded uppercase">{d.equipment} — EST {d.estimatePoints} / SITE {d.sitePoints}</span> })}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <table className="w-full"><thead><tr className="border-b border-border">
+                <th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>EST POINTS</th><th className={thc + ' text-center'}>SITE POINTS</th><th className={thc}>STATUS</th><th className={thc + ' no-print'}></th>
+              </tr></thead><tbody>
+                {rows.map(function(r, i) {
+                  var st = STATUS[r.status]
+                  var selEst = matchSel && matchSel.type === 'estimate' && matchSel.name === r.equipment
+                  var selSite = matchSel && matchSel.type === 'site' && matchSel.name === r.equipment
+                  return (<tr key={i} className={'border-b border-border/30' + (i % 2 ? ' bg-card2/20' : '') + ((selEst || selSite) ? ' bg-teal/10' : '')}>
+                    <td className={tdc + ' font-bold text-cyan'}>{r.equipment}</td>
+                    <td className={tdc + ' text-center'}>{r.est == null ? '—' : r.est}</td>
+                    <td className={tdc + ' text-center'}>{r.site == null ? '—' : r.site}</td>
+                    <td className={tdc + ' ' + st.cls}>{st.label}</td>
+                    <td className={tdc + ' no-print whitespace-nowrap'}>
+                      {r.status === 'missing' && (
+                        <span className="inline-flex items-center gap-1">
+                          <button onClick={function() { clickEstimateItem(r.equipment) }} title="CLICK TO MATCH WITH A SITE ITEM" className={'text-[9px] px-1.5 py-0.5 rounded uppercase ' + (selEst ? 'bg-teal text-white' : 'bg-orange/10 text-orange hover:bg-orange/20')}>MATCH</button>
+                          <button onClick={function() { dismissEstimateItem(r.equipment) }} title="DISMISS — DON'T TRACK THIS" className="text-dgray hover:text-red px-0.5">✕</button>
+                        </span>
+                      )}
+                      {r.status === 'extra' && (
+                        <button onClick={function() { clickSiteItem(r.equipment) }} title="CLICK TO MATCH WITH AN ESTIMATE ITEM" className={'text-[9px] px-1.5 py-0.5 rounded uppercase ' + (selSite ? 'bg-teal text-white' : 'bg-cyan/10 text-cyan hover:bg-cyan/20')}>MATCH</button>
+                      )}
+                    </td>
+                  </tr>)
+                })}
+              </tbody></table>
             )
           })()}
         </div>
