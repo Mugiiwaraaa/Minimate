@@ -843,7 +843,12 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                     role="button" tabIndex={0} aria-label={'DDC BLOCK ' + panel.name}
                     onPointerDown={function(e) { startDrag({ kind: 'panel', mode: 'move', id: panel.id, origX: pr.x, origY: pr.y, origW: pr.w, origH: pr.h }, e) }}
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
-                    onClick={function() { if (dragRef.current && dragRef.current.moved) return; if (selected) { clickDdc(panel); return } setCanvasSel({ kind: 'panel', id: panel.id }) }}
+                    onClick={function() {
+                      if (dragRef.current && dragRef.current.moved) return
+                      var reLinking = canvasSel && canvasSel.kind === 'equipment' && canvasSel.panelId === UNASSIGNED_PANEL
+                      if (selected || reLinking) { clickDdc(panel); return }
+                      setCanvasSel({ kind: 'panel', id: panel.id })
+                    }}
                     title="CLICK TO SELECT · CTRL+C TO COPY · CTRL+V TO PASTE A COPIED UNIT ONTO THIS DDC"
                     style={{ position: 'absolute', left: pr.x, top: pr.y, width: pr.w, height: pr.h, touchAction: 'none', overflow: 'hidden' }}
                     className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (isDraggingThis ? 'border-white bg-card2 shadow-2xl ring-2 ring-white/40' : selected ? 'border-teal bg-teal/10' : isCanvasSel ? 'border-white bg-card2 ring-2 ring-white/60' : 'border-cyan bg-card')}>
