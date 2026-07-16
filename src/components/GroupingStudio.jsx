@@ -429,7 +429,11 @@ export default function GroupingStudio(props) {
   }
 
   function clickPlaced(pid) {
-    setSelected(function(s) { return s === pid ? null : pid })
+    setSelected(function(s) {
+      var next = s === pid ? null : pid
+      setCanvasSel(next ? { kind: 'placed', id: pid } : null)
+      return next
+    })
   }
 
   // NOTE: clickDdc only ever acts when `selected` is set, and `selected` is
@@ -511,6 +515,11 @@ export default function GroupingStudio(props) {
     var newPanel = Object.assign({}, clip.data, {
       id: panelId(),
       name: newName,
+      // Lands wherever you currently are, not wherever the original was —
+      // otherwise copying a panel from site view and pasting while drilled
+      // into a location silently creates an unassigned panel invisible in
+      // the very view you pasted it into.
+      location: activeLocation || '',
       dx: (typeof clip.data.dx === 'number' ? clip.data.dx : 60) + 24,
       dy: (typeof clip.data.dy === 'number' ? clip.data.dy : 60) + 24
     })
@@ -518,9 +527,24 @@ export default function GroupingStudio(props) {
     setCanvasSel({ kind: 'panel', id: newPanel.id })
   }
 
-  // Ctrl/Cmd+C then Ctrl/Cmd+V on a selected DDC panel or wired equipment
-  // block — duplicates it (auto-numbered name, offset position) instead of
-  // re-doing the place/wire flow by hand for near-identical units.
+  // Duplicates an unwired library block still sitting on the canvas
+  // (not yet clicked onto a DDC) — same estimate type, still unwired,
+  // just another copy nearby.
+  function pastePlaced(clip) {
+    var newBlock = {
+      localId: localId(),
+      estEq: clip.data.estEq,
+      x: (typeof clip.data.x === 'number' ? clip.data.x : 500) + 24,
+      y: (typeof clip.data.y === 'number' ? clip.data.y : 60) + 24
+    }
+    setPlaced(function(prev) { return prev.concat([newBlock]) })
+    setCanvasSel({ kind: 'placed', id: newBlock.localId })
+  }
+
+  // Ctrl/Cmd+C then Ctrl/Cmd+V on a selected DDC panel, wired equipment
+  // block, or unwired library block — duplicates it (auto-numbered name,
+  // offset position) instead of re-doing the place/wire flow by hand for
+  // near-identical units.
   useEffect(function() {
     function onKeyDown(e) {
       var tag = (e.target && e.target.tagName) || ''
@@ -536,12 +560,16 @@ export default function GroupingStudio(props) {
           var eqs = equipmentMap[canvasSel.panelId] || []
           var eq = eqs.filter(function(x) { return x.id === canvasSel.id })[0]
           if (eq) clipboardRef.current = { kind: 'equipment', panelId: canvasSel.panelId, data: eq }
+        } else if (canvasSel.kind === 'placed') {
+          var block = placed.filter(function(x) { return x.localId === canvasSel.id })[0]
+          if (block) clipboardRef.current = { kind: 'placed', data: block }
         }
       } else if (key === 'v') {
         var clip = clipboardRef.current
         if (!clip) return
         e.preventDefault()
         if (clip.kind === 'panel') pastePanel(clip)
+        else if (clip.kind === 'placed') pastePlaced(clip)
         else if (clip.kind === 'equipment') {
           var destPanelId = (canvasSel && canvasSel.kind === 'panel') ? canvasSel.id : clip.panelId
           pasteEquipment(clip, destPanelId)
@@ -550,7 +578,7 @@ export default function GroupingStudio(props) {
     }
     window.addEventListener('keydown', onKeyDown)
     return function() { window.removeEventListener('keydown', onKeyDown) }
-  }, [canvasSel, panels, equipmentMap])
+  }, [canvasSel, panels, equipmentMap, placed, activeLocation])
 
   function editNoteText(id, text) {
     commitNotes(notes.map(function(n) { return n.id === id ? Object.assign({}, n, { text: text }) : n }))
@@ -656,7 +684,7 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC OR WIRED UNIT TO SELECT IT, CTRL+C TO COPY — SELECT ANY DDC PANEL ANYWHERE (ANY LOCATION) AND CTRL+V TO LINK THE COPIED UNIT THERE, OR JUST CTRL+V AGAIN ON THE SAME PANEL TO DUPLICATE IT IN PLACE. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
+DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC, WIRED UNIT, OR UNWIRED LIBRARY BLOCK TO SELECT IT, CTRL+C TO COPY — SELECT ANY DDC PANEL ANYWHERE (ANY LOCATION) AND CTRL+V TO LINK THE COPIED UNIT THERE, OR JUST CTRL+V AGAIN ON THE SAME PANEL TO DUPLICATE IT IN PLACE. RIGHT-CLICK A WIRE TO DELINK IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
         {/* Rail width resize handle */}
         <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
@@ -698,7 +726,20 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                 return eqs.map(function(eq, i) {
                   var er = equipRect(eq, pr, i)
                   var ex = er.x + fd.dx, ey = er.y + fd.dy
-                  return <line key={panel.id + '-' + eq.id} x1={pr.x + pr.w / 2} y1={pr.y + pr.h / 2} x2={ex + er.w / 2} y2={ey + er.h / 2} stroke={fd.dx || fd.dy ? 'rgba(255,255,255,0.7)' : 'rgba(45,212,191,0.5)'} strokeWidth={2} />
+                  var x1 = pr.x + pr.w / 2, y1 = pr.y + pr.h / 2, x2 = ex + er.w / 2, y2 = ey + er.h / 2
+                  return (
+                    <g key={panel.id + '-' + eq.id}>
+                      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={fd.dx || fd.dy ? 'rgba(255,255,255,0.7)' : 'rgba(45,212,191,0.5)'} strokeWidth={2} />
+                      {/* Invisible fat hit-target over the thin visible line — the
+                          parent svg has pointerEvents:none so this needs its own
+                          override to be right-clickable. */}
+                      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={14}
+                        style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                        onContextMenu={function(e) { e.preventDefault(); e.stopPropagation(); disconnect(panel.id, eq.id) }}>
+                        <title>RIGHT-CLICK TO DELINK {eq.name} FROM {panel.name}</title>
+                      </line>
+                    </g>
+                  )
                 })
               })}
               {notes.filter(function(n) { return n.type === 'line' }).map(function(n) {
@@ -838,9 +879,9 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                   onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
                   onClick={function() { if (!dragRef.current || !dragRef.current.moved) clickPlaced(block.localId) }}
                   style={{ position: 'absolute', left: block.x, top: block.y, width: bw, height: bh, touchAction: 'none', overflow: 'hidden' }}
-                  className={'rounded border-2 px-2 py-1.5 cursor-pointer select-none shadow ' + (isSel ? 'border-orange bg-orange/20' : 'border-dgray/50 bg-card2')}>
+                  title="CLICK TO SELECT · CTRL+C TO COPY" className={'rounded border-2 px-2 py-1.5 cursor-pointer select-none shadow ' + (isSel ? 'border-orange bg-orange/20' : 'border-dgray/50 bg-card2')}>
                   <div className="text-[10px] text-white truncate">{block.estEq.type}</div>
-                  <div className="text-[8px] text-dgray">{isSel ? 'CLICK A DDC TO WIRE' : 'UNWIRED'}</div>
+                  <div className="text-[8px] text-dgray">{isSel ? 'CLICK A DDC TO WIRE · CTRL+C/V' : 'UNWIRED'}</div>
                   <ResizeHandle info={{ kind: 'placed', id: block.localId, origW: bw, origH: bh }} />
                 </div>
               )
