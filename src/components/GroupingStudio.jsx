@@ -474,18 +474,33 @@ export default function GroupingStudio(props) {
     return up(prefix + n)
   }
 
-  function pasteEquipment(clip) {
-    var panelId_ = clip.panelId
+  // destPanelId: wherever the equipment lands — the currently canvas-selected
+  // DDC panel if there is one (so you can copy a unit in one panel, select a
+  // DIFFERENT DDC anywhere — any location — and paste it there), else the
+  // panel it was copied from.
+  function pasteEquipment(clip, destPanelId) {
+    var panelId_ = destPanelId || clip.panelId
+    var samePanel = panelId_ === clip.panelId
     var existing = equipmentMap[panelId_] || []
     var existingNames = existing.map(function(e) { return up(e.name) })
     var newName = nextAvailableName(clip.data.name || '', existingNames)
     var newUnit = Object.assign({}, clip.data, {
       id: localId(),
       name: newName,
-      ex: (typeof clip.data.ex === 'number' ? clip.data.ex : 0) + 24,
-      ey: (typeof clip.data.ey === 'number' ? clip.data.ey : 0) + 24,
       points: (clip.data.points || []).map(function(p) { return Object.assign({}, p, { id: localId() }) })
     })
+    if (samePanel) {
+      // Duplicating within the same panel: offset so the copy doesn't sit
+      // exactly on top of the original.
+      newUnit.ex = (typeof clip.data.ex === 'number' ? clip.data.ex : 0) + 24
+      newUnit.ey = (typeof clip.data.ey === 'number' ? clip.data.ey : 0) + 24
+    } else {
+      // Landing on a different (possibly differently-positioned) DDC — the
+      // source's on-canvas coordinates are meaningless here; drop them so it
+      // falls back to that panel's own auto-layout position instead.
+      delete newUnit.ex
+      delete newUnit.ey
+    }
     if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.concat([newUnit]))
     setCanvasSel({ kind: 'equipment', id: newUnit.id, panelId: panelId_ })
   }
@@ -527,7 +542,10 @@ export default function GroupingStudio(props) {
         if (!clip) return
         e.preventDefault()
         if (clip.kind === 'panel') pastePanel(clip)
-        else if (clip.kind === 'equipment') pasteEquipment(clip)
+        else if (clip.kind === 'equipment') {
+          var destPanelId = (canvasSel && canvasSel.kind === 'panel') ? canvasSel.id : clip.panelId
+          pasteEquipment(clip, destPanelId)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -638,7 +656,7 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC OR WIRED UNIT TO SELECT IT, THEN CTRL+C / CTRL+V TO DUPLICATE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
+DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC OR WIRED UNIT TO SELECT IT, CTRL+C TO COPY — SELECT ANY DDC PANEL ANYWHERE (ANY LOCATION) AND CTRL+V TO LINK THE COPIED UNIT THERE, OR JUST CTRL+V AGAIN ON THE SAME PANEL TO DUPLICATE IT IN PLACE. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
         {/* Rail width resize handle */}
         <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
@@ -745,7 +763,7 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                     onPointerDown={function(e) { startDrag({ kind: 'panel', mode: 'move', id: panel.id, origX: pr.x, origY: pr.y, origW: pr.w, origH: pr.h }, e) }}
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
                     onClick={function() { if (dragRef.current && dragRef.current.moved) return; if (selected) { clickDdc(panel); return } setCanvasSel({ kind: 'panel', id: panel.id }) }}
-                    title="CLICK TO SELECT · CTRL+C/CTRL+V TO DUPLICATE"
+                    title="CLICK TO SELECT · CTRL+C TO COPY · CTRL+V TO PASTE A COPIED UNIT ONTO THIS DDC"
                     style={{ position: 'absolute', left: pr.x, top: pr.y, width: pr.w, height: pr.h, touchAction: 'none', overflow: 'hidden' }}
                     className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (isDraggingThis ? 'border-white bg-card2 shadow-2xl ring-2 ring-white/40' : selected ? 'border-teal bg-teal/10' : isCanvasSel ? 'border-white bg-card2 ring-2 ring-white/60' : 'border-cyan bg-card')}>
                     <div className="flex items-center justify-between mb-1">
