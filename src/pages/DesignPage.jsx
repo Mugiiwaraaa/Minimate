@@ -53,6 +53,7 @@ export default function DesignPage(props) {
   var estDatasetState = useState(null); var estDataset = estDatasetState[0]; var setEstDataset = estDatasetState[1]
   var matchSelState = useState(null); var matchSel = matchSelState[0]; var setMatchSel = matchSelState[1] // {type:'estimate'|'site', name}
   var groupingOpenState = useState(false); var groupingOpen = groupingOpenState[0]; var setGroupingOpen = groupingOpenState[1]
+  var diffSearchState = useState(''); var diffSearch = diffSearchState[0]; var setDiffSearch = diffSearchState[1]
   var hasIoSummary = (scope.sheets || []).some(function(s) { return s.kind === 'io_summary' })
   // Grouping Canvas itself reads live panels/equipmentMap, not the estimate —
   // it's just as usable for a project that skipped the estimate and went
@@ -61,6 +62,11 @@ export default function DesignPage(props) {
 
   function dismissEstimateItem(name) {
     var next = Object.assign({}, scope, { dismissed: Object.assign({}, scope.dismissed || {}, (function() { var o = {}; o[up(name)] = true; return o })()) })
+    if (props.onUpdateScope) props.onUpdateScope(next)
+  }
+
+  function setDiffRemark(name, text) {
+    var next = Object.assign({}, scope, { remarks: Object.assign({}, scope.remarks || {}, (function() { var o = {}; o[up(name)] = text; return o })()) })
     if (props.onUpdateScope) props.onUpdateScope(next)
   }
 
@@ -473,6 +479,9 @@ export default function DesignPage(props) {
             {matchSel && <div className="text-[9px] text-teal uppercase">{matchSel.name} SELECTED — CLICK ITS MATCH(ES) IN THE TABLE{matchSel.type === 'estimate' ? ' (STAYS SELECTED FOR MULTIPLE SITE ITEMS)' : ''} <button onClick={function() { setMatchSel(null) }} className="ml-1 text-dgray hover:text-white">✕</button></div>}
           </div>
           <div className="text-[9px] text-dgray uppercase mb-3">CLICK A MISSING/EXTRA ROW, THEN ITS MATCH, TO LINK THEM AS THE SAME EQUIPMENT (NAMING DIFFERENCE) · ✕ DISMISSES AN ESTIMATE ITEM YOU DON'T NEED TO TRACK</div>
+          <input value={diffSearch} onChange={function(e) { setDiffSearch(e.target.value) }}
+            placeholder="SEARCH EQUIPMENT..." style={{ textTransform: 'uppercase' }}
+            className="w-full max-w-xs bg-navy border border-border rounded px-2 py-1 text-[11px] text-white outline-none focus:border-teal mb-3" />
           {(function() {
             var diff = diffEstimateVsSite(estDataset.rows, props.equipmentMap || {}, scope.aliases || {}, scope.dismissed || {})
             var STATUS = {
@@ -481,15 +490,17 @@ export default function DesignPage(props) {
               extra: { label: 'NOT IN ESTIMATE', cls: 'text-cyan' },
               mismatch: { label: 'POINT MISMATCH', cls: 'text-red' }
             }
-            var rows = []
+            var allRows = []
               .concat(diff.mismatched.map(function(d) { return { equipment: d.equipment, est: d.estimatePoints, site: d.sitePoints, status: 'mismatch' } }))
               .concat(diff.missingOnSite.map(function(d) { return { equipment: d.equipment, est: d.estimatePoints, site: null, status: 'missing' } }))
               .concat(diff.notInEstimate.map(function(d) { return { equipment: d.equipment, est: null, site: d.sitePoints, status: 'extra' } }))
               .concat(diff.matched.map(function(d) { return { equipment: d.equipment, est: d.points, site: d.points, status: 'matched' } }))
               .sort(function(a, b) { return a.equipment.localeCompare(b.equipment) })
+            var rows = diffSearch.trim() ? allRows.filter(function(r) { return up(r.equipment).indexOf(up(diffSearch)) !== -1 }) : allRows
+            if (rows.length === 0) return <div className="text-[11px] text-dgray uppercase">NO EQUIPMENT MATCHES "{diffSearch}"</div>
             return (
               <table className="w-full"><thead><tr className="border-b border-border">
-                <th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>EST POINTS</th><th className={thc + ' text-center'}>SITE POINTS</th><th className={thc}>STATUS</th><th className={thc + ' no-print'}></th>
+                <th className={thc}>EQUIPMENT</th><th className={thc + ' text-center'}>EST POINTS</th><th className={thc + ' text-center'}>SITE POINTS</th><th className={thc}>STATUS</th><th className={thc}>REMARKS</th><th className={thc + ' no-print'}></th>
               </tr></thead><tbody>
                 {rows.map(function(r, i) {
                   var st = STATUS[r.status]
@@ -500,6 +511,12 @@ export default function DesignPage(props) {
                     <td className={tdc + ' text-center'}>{r.est == null ? '—' : r.est}</td>
                     <td className={tdc + ' text-center'}>{r.site == null ? '—' : r.site}</td>
                     <td className={tdc + ' ' + st.cls}>{st.label}</td>
+                    <td className={tdc}>
+                      <input key={r.equipment} defaultValue={(scope.remarks && scope.remarks[up(r.equipment)]) || ''}
+                        onBlur={function(e) { var v = up(e.target.value); if (v !== ((scope.remarks && scope.remarks[up(r.equipment)]) || '')) setDiffRemark(r.equipment, v) }}
+                        placeholder="" style={{ textTransform: 'uppercase' }}
+                        className="bg-transparent border border-transparent rounded px-1 py-0.5 uppercase outline-none focus:border-teal focus:bg-navy w-full min-w-[120px] text-[10px] text-orange italic" />
+                    </td>
                     <td className={tdc + ' no-print whitespace-nowrap'}>
                       {r.status === 'missing' && (
                         <span className="inline-flex items-center gap-1">

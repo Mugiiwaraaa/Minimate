@@ -54,15 +54,29 @@ export function getWorkingCopy(projectId, datasetId, cb) {
     })
 }
 
-// Update working copy with optimistic version lock
+// Update working copy with optimistic version lock.
+//
+// BUG FIXED (2026-07-14): the old code chained upsert(row).eq('version',
+// currentVersion) expecting that to gate the write on the version matching —
+// it doesn't. PostgREST doesn't apply query filters to an insert/upsert's
+// affected rows, only to what comes back in the RETURNING set, and the row
+// we'd just written already carried version:currentVersion+1 — so that
+// filter could never match what was just written and ALWAYS reported a
+// false "version conflict" while the upsert itself had already landed
+// unconditionally underneath. Net effect: every save silently won
+// regardless of a real conflict, which is how the estimate dataset lost
+// equipment entries when two saves raced (last write wins with no real
+// lock at all, not "safely rejected").
+//
+// Real fix: an UPDATE ... WHERE version = currentVersion actually is
+// filtered by Postgres before ever touching a row, so an empty RETURNING
+// set here genuinely means either no row exists yet (first save) or the
+// version moved under us (real conflict) — insert covers the former.
 export function updateWorkingCopy(projectId, datasetId, updates, cb) {
   if (isDemo || !supabase) { cb(null, true); return }
 
   const currentVersion = updates.version || 1
-  const row = {
-    project_id: projectId,
-    id: datasetId,
-    revision_number: 0,
+  const patch = {
     kind: updates.kind,
     name: updates.name,
     columns: updates.columns || [],
@@ -74,17 +88,31 @@ export function updateWorkingCopy(projectId, datasetId, updates, cb) {
 
   supabase
     .from('datasets')
-    .upsert(row, { onConflict: 'project_id,id,revision_number' })
-    .eq('version', currentVersion) // optimistic lock
+    .update(patch)
+    .eq('project_id', projectId).eq('id', datasetId).eq('revision_number', 0).eq('version', currentVersion)
     .select()
     .then(res => {
-      if (res.error) {
-        cb(res.error, false)
-      } else if (!res.data || res.data.length === 0) {
-        cb(new Error('Version conflict - dataset was modified by another user'), false)
-      } else {
-        cb(null, true)
-      }
+      if (res.error) { cb(res.error, false); return }
+      if (res.data && res.data.length > 0) { cb(null, true); return } // update landed, done
+
+      // Nothing updated — find out whether this is a first-ever save (insert)
+      // or a genuine conflict (someone else's save already moved the version).
+      supabase.from('datasets').select('id')
+        .eq('project_id', projectId).eq('id', datasetId).eq('revision_number', 0)
+        .then(existsRes => {
+          if (existsRes.error) { cb(existsRes.error, false); return }
+          if (existsRes.data && existsRes.data.length > 0) {
+            cb(new Error('Version conflict - dataset was modified by another user'), false)
+            return
+          }
+          supabase.from('datasets')
+            .insert(Object.assign({ project_id: projectId, id: datasetId, revision_number: 0 }, patch, { version: 1 }))
+            .select()
+            .then(insRes => {
+              if (insRes.error) cb(insRes.error, false)
+              else cb(null, true)
+            })
+        })
     })
 }
 
