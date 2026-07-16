@@ -38,7 +38,7 @@ function cableProgress(equipmentMap) {
 
 export default function DesignPage(props) {
   // props: project, projectName, panels, equipmentMap, onUpdateEquipment,
-  //        onCreatePanel, onDeletePanel, onUpdatePanelLayout, scope, onUpdateScope,
+  //        onMoveEquipment, onCreatePanel, onDeletePanel, onUpdatePanelLayout, scope, onUpdateScope,
   //        notes, onUpdateNotes, incomingFile, onConsumedIncoming
   var scope = props.scope || {}
   var wbState = useState(null); var wb = wbState[0]; var setWb = wbState[1]
@@ -540,7 +540,7 @@ export default function DesignPage(props) {
         <GroupingStudio
           panels={props.panels} equipmentMap={props.equipmentMap} scope={scope}
           onCreatePanel={props.onCreatePanel} onDeletePanel={props.onDeletePanel}
-          onUpdateEquipment={props.onUpdateEquipment} onUpdatePanelLayout={props.onUpdatePanelLayout}
+          onUpdateEquipment={props.onUpdateEquipment} onMoveEquipment={props.onMoveEquipment} onUpdatePanelLayout={props.onUpdatePanelLayout}
           notes={props.notes} onUpdateNotes={props.onUpdateNotes}
           locations={props.locations} onUpdateLocations={props.onUpdateLocations} onUnassignLocation={props.onUnassignLocation}
           onClose={function() { setGroupingOpen(false) }}

@@ -615,6 +615,26 @@ export default function App() {
     // beforeunload flush and the debounced save effect.
   }, [])
 
+  // Moves one equipment unit between two equipmentMap buckets (e.g. a real
+  // DDC panel <-> the Grouping Canvas's '__unassigned__' pool for delinked-
+  // but-not-deleted units) as ONE atomic update/undo step, instead of the
+  // caller doing a remove-here + add-there as two separate
+  // handleUpdatePanelEquipment calls (which would push two undo entries for
+  // what's conceptually a single action).
+  var handleMoveEquipment = useCallback(function(fromPanelId, toPanelId, eqId, patch) {
+    pushUndo()
+    setEquipmentMap(function(prev) {
+      var fromList = prev[fromPanelId] || []
+      var eq = fromList.filter(function(e) { return e.id === eqId })[0]
+      if (!eq) return prev
+      var moved = Object.assign({}, eq, patch || {})
+      var next = Object.assign({}, prev)
+      next[fromPanelId] = fromList.filter(function(e) { return e.id !== eqId })
+      next[toPanelId] = (prev[toPanelId] || []).concat([moved])
+      return next
+    })
+  }, [])
+
   function handleCreatePanel(panel) {
     pushUndo()
     setPanels(function(prev) { return prev.concat([panel]) })
@@ -1847,7 +1867,7 @@ export default function App() {
           <Route path="/field-devices" element={<Suspense fallback={pageLoading()}><CommDevices loops={loops} areas={areaGroups} gateways={gateways} onUpdateLoops={handleUpdateLoops} onUpdateAreas={handleUpdateAreas} onUpdateGateways={setGateways} onUndo={handleUndo} canUndo={canUndo} /></Suspense>} />
           <Route path="/drawings" element={<Suspense fallback={pageLoading()}><DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} /></Suspense>} />
           <Route path="/documents" element={<Suspense fallback={pageLoading()}><DocumentsPage project={activeProject} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} documents={documents} onUpdateDoc={updateDoc} onDeleteDoc={deleteDoc} drawingsElement={<DrawingsPage drawings={drawings} onOpen={handleOpenDrawing} onUpdateMeta={handleUpdateDrawingMeta} onDelete={handleDeleteDrawing} />} /></Suspense>} />
-          <Route path="/design" element={<Suspense fallback={pageLoading()}><DesignPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelLayout={handleUpdatePanelLayout} scope={estimateScope} onUpdateScope={setEstimateScope} notes={designCanvasNotes} onUpdateNotes={handleUpdateDesignCanvasNotes} locations={designLocations} onUpdateLocations={handleUpdateDesignLocations} onUnassignLocation={handleUnassignLocation} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} /></Suspense>} />
+          <Route path="/design" element={<Suspense fallback={pageLoading()}><DesignPage project={activeProject} projectName={projectName} panels={panels} equipmentMap={equipmentMap} onUpdateEquipment={handleUpdatePanelEquipment} onMoveEquipment={handleMoveEquipment} onCreatePanel={handleCreatePanel} onDeletePanel={handleDeletePanel} onUpdatePanelLayout={handleUpdatePanelLayout} scope={estimateScope} onUpdateScope={setEstimateScope} notes={designCanvasNotes} onUpdateNotes={handleUpdateDesignCanvasNotes} locations={designLocations} onUpdateLocations={handleUpdateDesignLocations} onUnassignLocation={handleUnassignLocation} incomingFile={incomingEst} onConsumedIncoming={function() { setIncomingEst(null) }} /></Suspense>} />
           <Route path="/tasks" element={<Placeholder title="Tasks" desc="Daily task management and team assignments" />} />
           <Route path="/blockers" element={<Suspense fallback={pageLoading()}><BlockersPage blockers={blockers} onUpdate={setBlockers} /></Suspense>} />
           <Route path="/reports" element={<Suspense fallback={pageLoading()}><ReportsPage projectId={activeProject.id} projectName={projectName} projectClient={activeProject.client || ''} loops={loops} areas={areaGroups} blockers={blockers} gateways={gateways} panels={panels} equipmentMap={equipmentMap} onUpdatePanels={setPanels} config={reportConfig} onConfig={setReportConfig} /></Suspense>} />

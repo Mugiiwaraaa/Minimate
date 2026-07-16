@@ -41,6 +41,11 @@ var MIN_H = 40
 var RAIL_MIN = 220
 var RAIL_MAX = 480
 var RAIL_DEFAULT = 288
+// Delinked equipment isn't deleted — it moves into this sentinel bucket of
+// equipmentMap (persisted the same way as any real panel's list) so it
+// survives a refresh, stays exactly where it was on canvas, and can be
+// re-linked to any DDC later by clicking it then clicking a panel.
+var UNASSIGNED_PANEL = '__unassigned__'
 
 function ioEquipment(scope) {
   var sheet = ((scope && scope.sheets) || []).filter(function(s) { return s.kind === 'io_summary' })[0]
@@ -441,6 +446,15 @@ export default function GroupingStudio(props) {
   // path for a DDC block to select another DDC block. DDC-to-DDC wiring is
   // deliberately impossible; don't "fix" this into existing later.
   function clickDdc(panel) {
+    // An unassigned (delinked) unit is selected — re-link it here instead of
+    // the place/wire flow below. Clears ex/ey so it uses this panel's own
+    // auto-layout slot rather than carrying over a position that belonged
+    // to wherever it was floating unassigned.
+    if (canvasSel && canvasSel.kind === 'equipment' && canvasSel.panelId === UNASSIGNED_PANEL) {
+      if (props.onMoveEquipment) props.onMoveEquipment(UNASSIGNED_PANEL, panel.id, canvasSel.id, { ex: undefined, ey: undefined })
+      setCanvasSel(null)
+      return
+    }
     if (!selected) return
     var block = placed.filter(function(p) { return p.localId === selected })[0]
     if (!block) { setSelected(null); return }
@@ -452,9 +466,19 @@ export default function GroupingStudio(props) {
     setSelected(null)
   }
 
-  function disconnect(panelId_, eqId) {
-    var existing = equipmentMap[panelId_] || []
-    if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.filter(function(e) { return e.id !== eqId }))
+  // Delink: moves the unit into the unassigned pool at its exact current
+  // canvas position (atX/atY — the resolved rect the caller already has in
+  // scope) instead of deleting it, so it stays right where it is and can be
+  // re-linked to any DDC later.
+  function disconnect(panelId_, eqId, atX, atY) {
+    if (panelId_ === UNASSIGNED_PANEL) return
+    var eq = (equipmentMap[panelId_] || []).filter(function(e) { return e.id === eqId })[0]
+    if (!eq) return
+    var patch = {
+      ex: (typeof atX === 'number') ? atX : (typeof eq.ex === 'number' ? eq.ex : 0),
+      ey: (typeof atY === 'number') ? atY : (typeof eq.ey === 'number' ? eq.ey : 0)
+    }
+    if (props.onMoveEquipment) props.onMoveEquipment(panelId_, UNASSIGNED_PANEL, eqId, patch)
   }
 
   function commitEquipmentRename(panelId_, eqId, newName) {
@@ -549,6 +573,22 @@ export default function GroupingStudio(props) {
     function onKeyDown(e) {
       var tag = (e.target && e.target.tagName) || ''
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (!canvasSel) return
+        e.preventDefault()
+        if (canvasSel.kind === 'panel') {
+          var delPanel = panels.filter(function(x) { return x.id === canvasSel.id })[0]
+          if (delPanel && window.confirm('DELETE PANEL ' + delPanel.name + '?') && props.onDeletePanel) props.onDeletePanel(canvasSel.id)
+        } else if (canvasSel.kind === 'equipment') {
+          var delEqs = equipmentMap[canvasSel.panelId] || []
+          if (props.onUpdateEquipment) props.onUpdateEquipment(canvasSel.panelId, delEqs.filter(function(x) { return x.id !== canvasSel.id }))
+        } else if (canvasSel.kind === 'placed') {
+          setPlaced(function(prev) { return prev.filter(function(x) { return x.localId !== canvasSel.id }) })
+          setSelected(function(s) { return s === canvasSel.id ? null : s })
+        }
+        setCanvasSel(null)
+        return
+      }
       if (!(e.ctrlKey || e.metaKey)) return
       var key = e.key.toLowerCase()
       if (key === 'c') {
@@ -684,7 +724,7 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC, WIRED UNIT, OR UNWIRED LIBRARY BLOCK TO SELECT IT, CTRL+C TO COPY — SELECT ANY DDC PANEL ANYWHERE (ANY LOCATION) AND CTRL+V TO LINK THE COPIED UNIT THERE, OR JUST CTRL+V AGAIN ON THE SAME PANEL TO DUPLICATE IT IN PLACE. RIGHT-CLICK A WIRE TO DELINK IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
+DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC, WIRED UNIT, OR UNWIRED LIBRARY BLOCK TO SELECT IT, CTRL+C TO COPY — SELECT ANY DDC PANEL ANYWHERE (ANY LOCATION) AND CTRL+V TO LINK THE COPIED UNIT THERE, OR JUST CTRL+V AGAIN ON THE SAME PANEL TO DUPLICATE IT IN PLACE. RIGHT-CLICK A WIRE (OR THE ✕ ON A UNIT) TO DELINK IT — IT STAYS ON CANVAS, DASHED BORDER, CLICK A DDC TO RE-LINK IT. SELECT ANY BLOCK AND PRESS DELETE TO REMOVE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
         {/* Rail width resize handle */}
         <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
@@ -735,7 +775,7 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                           override to be right-clickable. */}
                       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={14}
                         style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-                        onContextMenu={function(e) { e.preventDefault(); e.stopPropagation(); disconnect(panel.id, eq.id) }}>
+                        onContextMenu={function(e) { e.preventDefault(); e.stopPropagation(); disconnect(panel.id, eq.id, ex, ey) }}>
                         <title>RIGHT-CLICK TO DELINK {eq.name} FROM {panel.name}</title>
                       </line>
                     </g>
@@ -858,7 +898,7 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                           ) : (
                             <span className="text-[9px] text-white truncate">{eq.name}</span>
                           )}
-                          <button onPointerDown={function(e) { e.stopPropagation() }} onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>
+                          <button onPointerDown={function(e) { e.stopPropagation() }} onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id, er.x, er.y) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>
                         </div>
                         <ResizeHandle info={{ kind: 'equipment', id: eq.id, panelId: panel.id, origW: er.w, origH: er.h }} />
                       </div>
@@ -883,6 +923,45 @@ DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) 
                   <div className="text-[10px] text-white truncate">{block.estEq.type}</div>
                   <div className="text-[8px] text-dgray">{isSel ? 'CLICK A DDC TO WIRE · CTRL+C/V' : 'UNWIRED'}</div>
                   <ResizeHandle info={{ kind: 'placed', id: block.localId, origW: bw, origH: bh }} />
+                </div>
+              )
+            })}
+
+            {/* Delinked equipment — stays exactly where it was on canvas
+                (position baked in at disconnect time), always visible
+                regardless of the current location view. Click a DDC to
+                re-link it there. */}
+            {(equipmentMap[UNASSIGNED_PANEL] || []).map(function(eq, i) {
+              var x = typeof eq.ex === 'number' ? eq.ex : 500 + (i % 5) * 130
+              var y = typeof eq.ey === 'number' ? eq.ey : 500 + Math.floor(i / 5) * 60
+              var w = eq.w || 110, h = eq.h || 46
+              var isSelCanvas = canvasSel && canvasSel.kind === 'equipment' && canvasSel.id === eq.id && canvasSel.panelId === UNASSIGNED_PANEL
+              var isEditingThis = editingEqId === eq.id
+              return (
+                <div key={eq.id}
+                  role="button" tabIndex={0} aria-label={'UNLINKED UNIT ' + eq.name}
+                  onClick={function() { setCanvasSel({ kind: 'equipment', id: eq.id, panelId: UNASSIGNED_PANEL }) }}
+                  onDoubleClick={function(e) { e.stopPropagation(); setEditingEqId(eq.id) }}
+                  style={{ position: 'absolute', left: x, top: y, width: w, height: h, overflow: 'hidden' }}
+                  title="UNLINKED — CLICK TO SELECT, THEN CLICK A DDC TO RE-LINK IT · CTRL+C TO COPY"
+                  className={'rounded border-2 border-dashed px-2 py-1 cursor-pointer select-none shadow ' + (isSelCanvas ? 'border-orange bg-orange/20' : 'border-dgray/60 bg-card2')}>
+                  <div className="flex items-center justify-between">
+                    {isEditingThis ? (
+                      <input autoFocus defaultValue={eq.name}
+                        onPointerDown={function(e) { e.stopPropagation() }}
+                        onClick={function(e) { e.stopPropagation() }}
+                        onBlur={function(e) { commitEquipmentRename(UNASSIGNED_PANEL, eq.id, e.target.value) }}
+                        onKeyDown={function(e) {
+                          if (e.key === 'Enter') { e.preventDefault(); e.target.blur() }
+                          else if (e.key === 'Escape') { e.preventDefault(); setEditingEqId(null) }
+                        }}
+                        style={{ textTransform: 'uppercase' }}
+                        className="bg-navy border border-teal rounded px-1 text-[9px] text-white outline-none w-full" />
+                    ) : (
+                      <span className="text-[9px] text-white truncate">{eq.name}</span>
+                    )}
+                  </div>
+                  <div className="text-[8px] text-dgray">{isSelCanvas ? 'CLICK A DDC TO RE-LINK' : 'UNLINKED'}</div>
                 </div>
               )
             })}
