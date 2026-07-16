@@ -97,11 +97,16 @@ export default function GroupingStudio(props) {
   var activeLocation = activeLocationState[0]; var setActiveLocation = activeLocationState[1]
   var dragPreviewState = useState(null) // {kind,id,panelId,x,y,w,h} — visual-only during a drag/resize
   var dragPreview = dragPreviewState[0]; var setDragPreview = dragPreviewState[1]
+  var canvasSelState = useState(null) // {kind:'panel'|'equipment', id, panelId} — click-selected DDC/unit, for Ctrl+C/Ctrl+V (separate from `selected`, which is the unwired-equipment-ready-to-wire flow)
+  var canvasSel = canvasSelState[0]; var setCanvasSel = canvasSelState[1]
+  var editingEqIdState = useState(null) // id of a wired equipment block currently showing its inline rename input
+  var editingEqId = editingEqIdState[0]; var setEditingEqId = editingEqIdState[1]
 
   var wrapRef = useRef(null)
   var panRef = useRef(null)
   var dragRef = useRef(null) // {kind:'panel'|'placed'|'equipment'|'note'|'location', mode:'move'|'resize', id, panelId, startX, startY, origX, origY, origW, origH, moved}
   var railDragRef = useRef(null)
+  var clipboardRef = useRef(null) // {kind:'panel'|'equipment', panelId, data} — Ctrl+C snapshot
   var viewRef = useRef(view); viewRef.current = view
 
   useEffect(function() {
@@ -168,6 +173,7 @@ export default function GroupingStudio(props) {
   function onCanvasPointerDown(e) {
     if (e.target !== e.currentTarget) return
     setSelected(null)
+    setCanvasSel(null)
     if (mode === 'line') {
       var wp = screenToWorld(e.clientX, e.clientY)
       setLineDraft({ x1: wp.x, y1: wp.y, x2: wp.x, y2: wp.y })
@@ -447,12 +453,86 @@ export default function GroupingStudio(props) {
     if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.filter(function(e) { return e.id !== eqId }))
   }
 
-  function renameEquipment(panelId_, eqId, curName) {
-    var val = window.prompt('EQUIPMENT NAME:', curName)
-    if (!val || !val.trim() || up(val) === up(curName)) return
+  function commitEquipmentRename(panelId_, eqId, newName) {
+    setEditingEqId(null)
+    var val = up((newName || '').trim())
+    if (!val) return
     var existing = equipmentMap[panelId_] || []
-    if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.map(function(e) { return e.id === eqId ? Object.assign({}, e, { name: up(val) }) : e }))
+    var cur = existing.filter(function(e) { return e.id === eqId })[0]
+    if (!cur || val === up(cur.name)) return
+    if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.map(function(e) { return e.id === eqId ? Object.assign({}, e, { name: val }) : e }))
   }
+
+  // "CAHU-4" -> "CAHU-5" (next number not already used in the same list);
+  // no trailing number -> just append " COPY".
+  function nextAvailableName(baseName, existingNamesUpper) {
+    var m = ('' + baseName).match(/^(.*?)(\d+)$/)
+    if (!m) return up(baseName) + ' COPY'
+    var prefix = m[1]
+    var n = parseInt(m[2], 10) + 1
+    while (existingNamesUpper.indexOf(up(prefix + n)) !== -1) n++
+    return up(prefix + n)
+  }
+
+  function pasteEquipment(clip) {
+    var panelId_ = clip.panelId
+    var existing = equipmentMap[panelId_] || []
+    var existingNames = existing.map(function(e) { return up(e.name) })
+    var newName = nextAvailableName(clip.data.name || '', existingNames)
+    var newUnit = Object.assign({}, clip.data, {
+      id: localId(),
+      name: newName,
+      ex: (typeof clip.data.ex === 'number' ? clip.data.ex : 0) + 24,
+      ey: (typeof clip.data.ey === 'number' ? clip.data.ey : 0) + 24,
+      points: (clip.data.points || []).map(function(p) { return Object.assign({}, p, { id: localId() }) })
+    })
+    if (props.onUpdateEquipment) props.onUpdateEquipment(panelId_, existing.concat([newUnit]))
+    setCanvasSel({ kind: 'equipment', id: newUnit.id, panelId: panelId_ })
+  }
+
+  function pastePanel(clip) {
+    var existingNames = panels.map(function(p) { return up(p.name) })
+    var newName = nextAvailableName(clip.data.name || '', existingNames)
+    var newPanel = Object.assign({}, clip.data, {
+      id: panelId(),
+      name: newName,
+      dx: (typeof clip.data.dx === 'number' ? clip.data.dx : 60) + 24,
+      dy: (typeof clip.data.dy === 'number' ? clip.data.dy : 60) + 24
+    })
+    if (props.onCreatePanel) props.onCreatePanel(newPanel)
+    setCanvasSel({ kind: 'panel', id: newPanel.id })
+  }
+
+  // Ctrl/Cmd+C then Ctrl/Cmd+V on a selected DDC panel or wired equipment
+  // block — duplicates it (auto-numbered name, offset position) instead of
+  // re-doing the place/wire flow by hand for near-identical units.
+  useEffect(function() {
+    function onKeyDown(e) {
+      var tag = (e.target && e.target.tagName) || ''
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return
+      if (!(e.ctrlKey || e.metaKey)) return
+      var key = e.key.toLowerCase()
+      if (key === 'c') {
+        if (!canvasSel) return
+        if (canvasSel.kind === 'panel') {
+          var p = panels.filter(function(x) { return x.id === canvasSel.id })[0]
+          if (p) clipboardRef.current = { kind: 'panel', data: p }
+        } else if (canvasSel.kind === 'equipment') {
+          var eqs = equipmentMap[canvasSel.panelId] || []
+          var eq = eqs.filter(function(x) { return x.id === canvasSel.id })[0]
+          if (eq) clipboardRef.current = { kind: 'equipment', panelId: canvasSel.panelId, data: eq }
+        }
+      } else if (key === 'v') {
+        var clip = clipboardRef.current
+        if (!clip) return
+        e.preventDefault()
+        if (clip.kind === 'panel') pastePanel(clip)
+        else if (clip.kind === 'equipment') pasteEquipment(clip)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return function() { window.removeEventListener('keydown', onKeyDown) }
+  }, [canvasSel, panels, equipmentMap])
 
   function editNoteText(id, text) {
     commitNotes(notes.map(function(n) { return n.id === id ? Object.assign({}, n, { text: text }) : n }))
@@ -558,7 +638,7 @@ export default function GroupingStudio(props) {
           )}
         </div>
         <div className="p-2 border-t border-border text-[9px] text-dgray leading-snug">
-          DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK AN EQUIPMENT BLOCK TO SELECT, THEN CLICK A DDC TO WIRE IT — DOUBLE-CLICK A WIRED UNIT TO RENAME IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
+DRAG A DDC ONTO A LOCATION (SITE VIEW) OR ONTO A LOCATION PILL ABOVE (ANY VIEW) TO GROUP IT — DROP ON UNASSIGNED TO UNGROUP. CLICK A LIBRARY EQUIPMENT BLOCK TO SELECT IT, THEN CLICK A DDC TO WIRE IT. DOUBLE-CLICK A WIRED UNIT TO RENAME IT IN PLACE. CLICK A DDC OR WIRED UNIT TO SELECT IT, THEN CTRL+C / CTRL+V TO DUPLICATE IT. DRAG BLOCKS TO ARRANGE, DRAG THE CORNER TO RESIZE. DRAG THIS PANEL'S RIGHT EDGE TO RESIZE IT.
         </div>
         {/* Rail width resize handle */}
         <div onPointerDown={startRailResize} onPointerMove={onRailResizeMove} onPointerUp={onRailResizeUp}
@@ -657,15 +737,17 @@ export default function GroupingStudio(props) {
               var totals = pointTotals(eqs)
               var fd = panelFollowDelta(panel, idx, pr)
               var isDraggingThis = !!(fd.dx || fd.dy)
+              var isCanvasSel = canvasSel && canvasSel.kind === 'panel' && canvasSel.id === panel.id
               return (
                 <div key={panel.id}>
                   <div
                     role="button" tabIndex={0} aria-label={'DDC BLOCK ' + panel.name}
                     onPointerDown={function(e) { startDrag({ kind: 'panel', mode: 'move', id: panel.id, origX: pr.x, origY: pr.y, origW: pr.w, origH: pr.h }, e) }}
                     onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
-                    onClick={function() { if (!dragRef.current || !dragRef.current.moved) clickDdc(panel) }}
+                    onClick={function() { if (dragRef.current && dragRef.current.moved) return; if (selected) { clickDdc(panel); return } setCanvasSel({ kind: 'panel', id: panel.id }) }}
+                    title="CLICK TO SELECT · CTRL+C/CTRL+V TO DUPLICATE"
                     style={{ position: 'absolute', left: pr.x, top: pr.y, width: pr.w, height: pr.h, touchAction: 'none', overflow: 'hidden' }}
-                    className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (isDraggingThis ? 'border-white bg-card2 shadow-2xl ring-2 ring-white/40' : selected ? 'border-teal bg-teal/10' : 'border-cyan bg-card')}>
+                    className={'rounded-lg border-2 p-2.5 cursor-pointer select-none shadow-lg ' + (isDraggingThis ? 'border-white bg-card2 shadow-2xl ring-2 ring-white/40' : selected ? 'border-teal bg-teal/10' : isCanvasSel ? 'border-white bg-card2 ring-2 ring-white/60' : 'border-cyan bg-card')}>
                     <div className="flex items-center justify-between mb-1">
                       <div className="text-[11px] font-bold text-white truncate">{panel.name}</div>
                       <button onPointerDown={function(e) { e.stopPropagation() }}
@@ -691,16 +773,32 @@ export default function GroupingStudio(props) {
                   {eqs.map(function(eq, i) {
                     var er0 = equipRect(eq, pr, i)
                     var er = isDraggingThis ? { x: er0.x + fd.dx, y: er0.y + fd.dy, w: er0.w, h: er0.h } : er0
+                    var isEqCanvasSel = canvasSel && canvasSel.kind === 'equipment' && canvasSel.id === eq.id
+                    var isEditingThis = editingEqId === eq.id
                     return (
                       <div key={eq.id}
                         role="button" tabIndex={0} aria-label={'CONNECTED UNIT ' + eq.name}
                         onPointerDown={function(e) { startDrag({ kind: 'equipment', mode: 'move', id: eq.id, panelId: panel.id, origX: er0.x, origY: er0.y, origW: er0.w, origH: er0.h }, e) }}
                         onPointerMove={onBlockPointerMove} onPointerUp={onBlockPointerUp}
-                        onDoubleClick={function(e) { e.stopPropagation(); renameEquipment(panel.id, eq.id, eq.name) }}
+                        onClick={function() { if (!dragRef.current || !dragRef.current.moved) setCanvasSel({ kind: 'equipment', id: eq.id, panelId: panel.id }) }}
+                        onDoubleClick={function(e) { e.stopPropagation(); setEditingEqId(eq.id) }}
                         style={{ position: 'absolute', left: er.x, top: er.y, width: er.w, height: er.h, touchAction: 'none', overflow: 'hidden' }}
-                        className={'rounded border px-2 py-1 cursor-pointer select-none ' + (isDraggingThis ? 'border-white/70 bg-card2 shadow-md' : 'border-teal/60 bg-card2')} title="DOUBLE-CLICK TO RENAME">
+                        className={'rounded border px-2 py-1 cursor-pointer select-none ' + (isDraggingThis ? 'border-white/70 bg-card2 shadow-md' : isEqCanvasSel ? 'border-white bg-card2 ring-2 ring-white/60' : 'border-teal/60 bg-card2')} title="DOUBLE-CLICK TO RENAME · CTRL+C/CTRL+V TO DUPLICATE">
                         <div className="flex items-center justify-between">
-                          <span className="text-[9px] text-white truncate">{eq.name}</span>
+                          {isEditingThis ? (
+                            <input autoFocus defaultValue={eq.name}
+                              onPointerDown={function(e) { e.stopPropagation() }}
+                              onClick={function(e) { e.stopPropagation() }}
+                              onBlur={function(e) { commitEquipmentRename(panel.id, eq.id, e.target.value) }}
+                              onKeyDown={function(e) {
+                                if (e.key === 'Enter') { e.preventDefault(); e.target.blur() }
+                                else if (e.key === 'Escape') { e.preventDefault(); setEditingEqId(null) }
+                              }}
+                              style={{ textTransform: 'uppercase' }}
+                              className="bg-navy border border-teal rounded px-1 text-[9px] text-white outline-none w-full" />
+                          ) : (
+                            <span className="text-[9px] text-white truncate">{eq.name}</span>
+                          )}
                           <button onPointerDown={function(e) { e.stopPropagation() }} onClick={function(e) { e.stopPropagation(); disconnect(panel.id, eq.id) }} className="text-[8px] text-red/50 hover:text-red ml-1">✕</button>
                         </div>
                         <ResizeHandle info={{ kind: 'equipment', id: eq.id, panelId: panel.id, origW: er.w, origH: er.h }} />
