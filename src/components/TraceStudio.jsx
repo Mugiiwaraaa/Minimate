@@ -15,6 +15,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { putFile } from '../lib/fileStore'
 import { saveDraft, getDraft, clearDraft } from '../lib/traceDraftStore'
+import { uploadDrawing } from '../lib/drawingCloudStore'
 
 var LOOP_COLORS = ['#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899']
 var ZONE_COLORS = ['#8B5CF6', '#22D3EE', '#10B981', '#F59E0B', '#EC4899', '#EF4444']
@@ -98,7 +99,7 @@ function straightenPolyline(points, tolDeg) {
 
 export default function TraceStudio(props) {
   // props: file (File), record (optional saved drawing to re-edit),
-  //        onCancel(), onComplete(result, drawingRecord)
+  //        projectId, onCancel(), onComplete(result, drawingRecord)
   var rec = props.record || null
 
   var loadingState = useState(true)
@@ -207,6 +208,10 @@ export default function TraceStudio(props) {
       // killed before DONE, etc.) — offer to restore rather than silently
       // applying it, in case it's actually older than what's already loaded.
       getDraft(hash).then(function(d) { if (d && !cancelled) setResumeDraft(d) }).catch(function() {})
+      // Background cloud backup — runs on every open (new file or
+      // reopened record alike) so this device isn't the only place this
+      // drawing exists. Best-effort; never blocks tracing.
+      uploadDrawing(props.projectId, hash, props.file)
     }).catch(function() { /* cache is best-effort */ })
 
     if (isImageFile(props.file)) {

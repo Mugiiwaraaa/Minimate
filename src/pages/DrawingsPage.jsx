@@ -1,17 +1,19 @@
 /* --- DrawingsPage.jsx --- Traced drawings library ---
    Every traced drawing is saved (pins + traces + zones) grouped by
-   Floor / Block / Zone. Reopen to modify unlimited times — the file
-   comes from this device's cache (IndexedDB); if it is not on this
-   device, the user re-selects the original file. */
+   Floor / Block / Zone. Reopen to modify unlimited times — the file comes
+   from this device's cache (IndexedDB) first, falls through to the cloud
+   backup (drawingCloudStore.js) if not cached here, and only asks the user
+   to manually re-select as a last resort. */
 
 import { useState } from 'react'
-import { getFile, hashFile } from '../lib/fileStore'
+import { getFile, putFile, hashFile } from '../lib/fileStore'
+import { downloadDrawing, uploadDrawing } from '../lib/drawingCloudStore'
 
 /* Uppercase WITHOUT trim so spaces survive while typing */
 function up(v) { return (v || '').toUpperCase() }
 
 export default function DrawingsPage(props) {
-  // props: drawings, onOpen(record, file), onUpdateMeta(id, fields), onDelete(id)
+  // props: drawings, projectId, onOpen(record, file), onUpdateMeta(id, fields), onDelete(id)
   var drawings = props.drawings || []
   var locateState = useState(null) // record id awaiting manual file selection
   var locateId = locateState[0]
@@ -25,10 +27,19 @@ export default function DrawingsPage(props) {
     getFile(record.fileHash).then(function(file) {
       if (file) {
         props.onOpen(record, file)
-      } else {
-        setLocateId(record.id)
-        setMsg('THE ORIGINAL FILE IS NOT CACHED ON THIS DEVICE — SELECT IT TO REOPEN "' + record.name + '"')
+        return
       }
+      // Not on this device — try the cloud backup before asking the user
+      // to manually re-select the file.
+      downloadDrawing(props.projectId, record.fileHash, record.fileName, record.fileKind === 'image' ? 'image/*' : 'application/pdf').then(function(cloudFile) {
+        if (cloudFile) {
+          putFile(cloudFile) // reseed this device's cache so the next open is instant
+          props.onOpen(record, cloudFile)
+          return
+        }
+        setLocateId(record.id)
+        setMsg('THE ORIGINAL FILE IS NOT CACHED ON THIS DEVICE OR IN CLOUD BACKUP — SELECT IT TO REOPEN "' + record.name + '"')
+      })
     })
   }
 
@@ -43,6 +54,7 @@ export default function DrawingsPage(props) {
         setMsg('')
       }
       setLocateId(null)
+      uploadDrawing(props.projectId, record.fileHash || hash, file) // so it's never manually re-located again
       props.onOpen(record, file)
     })
   }
@@ -61,7 +73,7 @@ export default function DrawingsPage(props) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-lg font-extrabold uppercase">TRACED DRAWINGS</h1>
-          <div className="text-[10px] text-dgray uppercase">PINS, LOOPS AND ZONES ARE SAVED WITH THE PROJECT — FILES STAY CACHED ON EACH DEVICE</div>
+          <div className="text-[10px] text-dgray uppercase">PINS, LOOPS AND ZONES ARE SAVED WITH THE PROJECT — FILES ARE CACHED ON EACH DEVICE AND BACKED UP TO THE CLOUD</div>
         </div>
         <div className="text-[10px] text-dgray uppercase">{drawings.length} DRAWING{drawings.length === 1 ? '' : 'S'}</div>
       </div>
