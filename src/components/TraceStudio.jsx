@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { putFile } from '../lib/fileStore'
+import { saveDraft, getDraft, clearDraft } from '../lib/traceDraftStore'
 
 var LOOP_COLORS = ['#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899']
 var ZONE_COLORS = ['#8B5CF6', '#22D3EE', '#10B981', '#F59E0B', '#EC4899', '#EF4444']
@@ -31,6 +32,14 @@ function up(v) { return (v || '').toUpperCase().trim() }
 
 function isImageFile(file) {
   return (file.type || '').indexOf('image/') === 0
+}
+
+/* Narrow viewport (matches this app's md: Tailwind breakpoint) or a browser-
+   reported low-memory device (Chrome/Android only; iOS Safari doesn't expose
+   deviceMemory, so width is the universal fallback). Used to cap raster size
+   — a killed tab on a site phone is worse than a slightly softer render. */
+function isMobileDevice() {
+  return window.innerWidth < 768 || !!(navigator.deviceMemory && navigator.deviceMemory <= 4)
 }
 
 /* Ramer-Douglas-Peucker polyline simplification (points in page px) */
@@ -157,6 +166,9 @@ export default function TraceStudio(props) {
   var hasTextLayerState = useState(false)
   var hasTextLayer = hasTextLayerState[0]
   var setHasTextLayer = hasTextLayerState[1]
+  var resumeDraftState = useState(null) // {pins, loops, zones, meta, pageNum, savedAt} awaiting Restore/Discard
+  var resumeDraft = resumeDraftState[0]
+  var setResumeDraft = resumeDraftState[1]
 
   // ─── Refs ──────────────────────────────────────────────────
   var canvasRef = useRef(null)
@@ -191,6 +203,10 @@ export default function TraceStudio(props) {
 
     putFile(props.file).then(function(hash) {
       fileHashRef.current = hash
+      // Autosaved draft from an earlier session on this exact file (tab
+      // killed before DONE, etc.) — offer to restore rather than silently
+      // applying it, in case it's actually older than what's already loaded.
+      getDraft(hash).then(function(d) { if (d && !cancelled) setResumeDraft(d) }).catch(function() {})
     }).catch(function() { /* cache is best-effort */ })
 
     if (isImageFile(props.file)) {
@@ -230,23 +246,59 @@ export default function TraceStudio(props) {
     return function() { cancelled = true }
   }, [])
 
+  // ─── Draft autosave ──────────────────────────────────────────
+  // Pins/traces/zones otherwise live only in React state until DONE commits
+  // the real drawing record — a killed tab before that loses everything.
+  // Debounced local save, gated while a resume decision is still pending so
+  // it never silently overwrites a not-yet-restored draft.
+  useEffect(function() {
+    if (!fileHashRef.current || resumeDraft) return
+    var t = setTimeout(function() {
+      saveDraft(fileHashRef.current, { pins: pins, loops: loops, zones: zones, meta: meta, pageNum: pageNum })
+    }, 800)
+    return function() { clearTimeout(t) }
+  }, [pins, loops, zones, meta, pageNum, resumeDraft])
+
+  function applyResumeDraft() {
+    if (!resumeDraft) return
+    setPins(resumeDraft.pins || [])
+    setLoops(resumeDraft.loops || [])
+    setZones(resumeDraft.zones || [])
+    setMeta(resumeDraft.meta || meta)
+    if (resumeDraft.pageNum && resumeDraft.pageNum !== pageRef.current) renderPage(resumeDraft.pageNum)
+    setResumeDraft(null)
+  }
+
+  function discardResumeDraft() {
+    clearDraft(fileHashRef.current)
+    setResumeDraft(null)
+  }
+
   function renderPage(n) {
     var pdf = pdfRef.current
     if (!pdf) return Promise.resolve()
+    // Zero outgoing canvases before dropping the reference — canvas backing
+    // memory isn't always promptly reclaimed by GC alone, and holding two
+    // full-res rasters at once is exactly the kind of spike that gets a tab
+    // killed on a phone.
+    if (hiResRef.current && hiResRef.current.canvas) { hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0 }
     hiResRef.current = null
     hiResTokenRef.current++
     setLoading(true)
     return pdf.getPage(n).then(function(page) {
       var vp1 = page.getViewport({ scale: 1 })
-      var maxDim = 4096
+      var mobile = isMobileDevice()
+      var maxDim = mobile ? 2048 : 4096
+      var scaleCap = mobile ? 2 : 4
       var scale = Math.min(maxDim / vp1.width, maxDim / vp1.height)
-      if (scale > 4) scale = 4
+      if (scale > scaleCap) scale = scaleCap
       var vp = page.getViewport({ scale: scale })
       var off = document.createElement('canvas')
       off.width = Math.round(vp.width)
       off.height = Math.round(vp.height)
       var ctx = off.getContext('2d')
       return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function() {
+        if (pageImgRef.current) { pageImgRef.current.width = 0; pageImgRef.current.height = 0 }
         pageImgRef.current = off
         // Text layer (true CAD PDFs) -> selectable labels
         return page.getTextContent().then(function(content) {
@@ -289,7 +341,11 @@ export default function TraceStudio(props) {
 
     // Base raster is 1:1 or better at this zoom — no tile needed
     if (v.scale <= 1.05) {
-      if (hiResRef.current) { hiResRef.current = null; requestDraw() }
+      if (hiResRef.current) {
+        if (hiResRef.current.canvas) { hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0 }
+        hiResRef.current = null
+        requestDraw()
+      }
       return
     }
 
@@ -301,11 +357,12 @@ export default function TraceStudio(props) {
     var y1 = Math.min(img.height, (canvas.height - v.ty) / v.scale + pad)
     if (x1 <= x0 || y1 <= y0) return
 
-    // Extra density over the base raster, memory-capped
-    var density = Math.min(v.scale, 6)
+    // Extra density over the base raster, memory-capped (tighter on mobile)
+    var mobile = isMobileDevice()
+    var density = Math.min(v.scale, mobile ? 3 : 6)
     var tw = Math.round((x1 - x0) * density)
     var th = Math.round((y1 - y0) * density)
-    var maxPixels = 3200 * 3200
+    var maxPixels = mobile ? 1600 * 1600 : 3200 * 3200
     if (tw * th > maxPixels) {
       var shrink = Math.sqrt(maxPixels / (tw * th))
       density = density * shrink
@@ -330,6 +387,9 @@ export default function TraceStudio(props) {
         transform: [1, 0, 0, 1, -x0 * density, -y0 * density]
       }).promise.then(function() {
         if (token !== hiResTokenRef.current) return // stale — view moved on
+        if (hiResRef.current && hiResRef.current.canvas && hiResRef.current.canvas !== c) {
+          hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0
+        }
         hiResRef.current = { canvas: c, x: x0, y: y0, w: x1 - x0, h: y1 - y0, page: pageNo }
         console.log('[TRACE] Sharp tile rendered: ' + tw + 'x' + th + ' @ density ' + density.toFixed(2) + 'x (zoom ' + viewRef.current.scale.toFixed(2) + ')')
         requestDraw()
@@ -372,6 +432,15 @@ export default function TraceStudio(props) {
     if (!canvas) return
     canvas.addEventListener('wheel', onWheel, { passive: false })
     return function() { canvas.removeEventListener('wheel', onWheel) }
+  }, [])
+
+  // Free the big rasters the moment Trace Studio closes rather than waiting
+  // on GC — matters most reopening this same heavy view on a phone.
+  useEffect(function() {
+    return function() {
+      if (pageImgRef.current) { pageImgRef.current.width = 0; pageImgRef.current.height = 0 }
+      if (hiResRef.current && hiResRef.current.canvas) { hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0 }
+    }
   }, [])
 
   // ─── Draw ──────────────────────────────────────────────────
@@ -1138,6 +1207,7 @@ export default function TraceStudio(props) {
       zones: zones
     }
 
+    clearDraft(fileHashRef.current)
     props.onComplete(result, drawingRecord)
   }
 
@@ -1188,6 +1258,13 @@ export default function TraceStudio(props) {
         </button>
       </div>
 
+      {resumeDraft && (
+        <div className="px-3 py-1.5 bg-orange/20 border-b border-orange text-[10px] text-orange font-bold uppercase flex items-center gap-3">
+          <span>UNSAVED WORK FOUND FROM A PREVIOUS SESSION ON THIS DRAWING — RESTORE IT?</span>
+          <button onClick={applyResumeDraft} className="px-2.5 py-1 bg-orange text-navy rounded font-bold">RESTORE</button>
+          <button onClick={discardResumeDraft} className="text-white/70 hover:text-white">DISCARD</button>
+        </div>
+      )}
       {aiMsg && (
         <div className="px-3 py-1 bg-card border-b border-border text-[9px] text-orange uppercase truncate">{aiMsg}</div>
       )}
