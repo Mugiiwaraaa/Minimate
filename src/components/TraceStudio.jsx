@@ -739,8 +739,19 @@ export default function TraceStudio(props) {
 
     var pt = toPage(e.clientX, e.clientY)
 
-    // Right-drag pans in ANY mode (navigate mid-trace on desktop)
+    // Right-click a pin or a traced line to delete it immediately; right-click
+    // on empty canvas still pans (navigate mid-trace on desktop), unchanged.
     if (e.button === 2) {
+      var rHit = hitPin(pt)
+      if (rHit) {
+        if (window.confirm('DELETE PIN ' + (rHit.tag || rHit.serial || '') + '?')) deletePin(rHit.id)
+        return
+      }
+      var rStroke = hitStroke(pt)
+      if (rStroke) {
+        if (window.confirm('DELETE THIS TRACED SEGMENT?')) deleteStroke(rStroke.loopId, rStroke.strokeIdx)
+        return
+      }
       gestureRef.current = { type: 'pan', startX: e.clientX, startY: e.clientY, v0: Object.assign({}, viewRef.current) }
       return
     }
@@ -938,6 +949,35 @@ export default function TraceStudio(props) {
     requestDraw()
   }
 
+  // Where a newly-captured pin belongs in the sequence: find which
+  // ALREADY-captured device is nearest each end of the just-drawn stroke, and
+  // insert right after the earlier of the two. Redrawing a short connector
+  // between device 14 and device 16 to pick up a missed device correctly
+  // lands it as #15, instead of always appending to the end of the loop.
+  // Falls back to appending when there's nothing yet to anchor against (the
+  // loop's first stroke) or the stroke doesn't reach any captured device.
+  function findInsertIndex(loop, rawStroke, img) {
+    var existing = []
+    loop.deviceIds.forEach(function(pid, idx) {
+      var p = pinsRef.current.find(function(x) { return x.id === pid })
+      if (p) existing.push({ idx: idx, pin: p })
+    })
+    if (existing.length === 0) return loop.deviceIds.length
+    function nearest(pt) {
+      var best = null
+      var bestD = Infinity
+      existing.forEach(function(e) {
+        var d = Math.hypot(e.pin.x * img.width - pt.x, e.pin.y * img.height - pt.y)
+        if (d < bestD) { bestD = d; best = e }
+      })
+      return best
+    }
+    var a = nearest(rawStroke[0])
+    var b = nearest(rawStroke[rawStroke.length - 1])
+    if (!a || !b) return loop.deviceIds.length
+    return Math.min(a.idx, b.idx) + 1
+  }
+
   function commitStroke() {
     var raw = strokeRef.current
     strokeRef.current = []
@@ -969,11 +1009,13 @@ export default function TraceStudio(props) {
       })
     })
 
+    var insertAt = findInsertIndex(loop, raw, img)
+    var newIds = loop.deviceIds.slice(0, insertAt).concat(capturedIds).concat(loop.deviceIds.slice(insertAt))
     loopsRef.current = loopsRef.current.map(function(l) {
       if (l.id !== loop.id) return l
       return Object.assign({}, l, {
         strokes: l.strokes.concat([simplified]),
-        deviceIds: l.deviceIds.concat(capturedIds)
+        deviceIds: newIds
       })
     })
     setLoops(loopsRef.current)
@@ -1096,17 +1138,34 @@ export default function TraceStudio(props) {
     requestDraw()
   }
 
-  function undoLastStroke() {
-    var loop = loopsRef.current.find(function(l) { return l.id === activeLoopRef.current })
-    if (!loop || loop.strokes.length === 0) return
-    var img = pageImgRef.current
-    if (!img) return
-    var remaining = loop.strokes.slice(0, -1)
+  // Manual nudge of a device's position in the sequence (▲▼ in the loop
+  // panel) — lets a wrong serialization be fixed with two clicks instead of
+  // deleting and retracing the whole loop.
+  function moveDeviceInLoop(loopId, index, dir) {
+    loopsRef.current = loopsRef.current.map(function(l) {
+      if (l.id !== loopId) return l
+      var ids = l.deviceIds.slice()
+      var j = index + dir
+      if (j < 0 || j >= ids.length) return l
+      var tmp = ids[index]; ids[index] = ids[j]; ids[j] = tmp
+      return Object.assign({}, l, { deviceIds: ids })
+    })
+    setLoops(loopsRef.current)
+    requestDraw()
+  }
+
+  // Shared by undoLastStroke and deleteStroke: a loop's deviceIds are always
+  // re-derivable from which pins its remaining stroke geometry passes near —
+  // recomputing from scratch (rather than trying to track "which stroke
+  // captured which pin") keeps this a single source of truth. Trade-off: a
+  // device manually unlisted via removeFromLoop() can reappear if a stroke is
+  // later deleted/undone and the geometry still passes near it — pre-existing
+  // behavior, not new here.
+  function recaptureIds(strokes, page, img) {
     var captureR = 14
-    var page = pageRef.current
     var already = {}
     var ids = []
-    remaining.forEach(function(stroke) {
+    strokes.forEach(function(stroke) {
       stroke.forEach(function(pt) {
         pinsRef.current.forEach(function(pin) {
           if ((pin.page || 1) !== page) return
@@ -1117,6 +1176,51 @@ export default function TraceStudio(props) {
         })
       })
     })
+    return ids
+  }
+
+  // Right-click a traced line to delete just that segment (see hitStroke) —
+  // deliberately smaller-grained than deleting the whole loop.
+  function deleteStroke(loopId, strokeIdx) {
+    var loop = loopsRef.current.find(function(l) { return l.id === loopId })
+    if (!loop) return
+    var img = pageImgRef.current
+    if (!img) return
+    var remaining = loop.strokes.filter(function(_, i) { return i !== strokeIdx })
+    var ids = recaptureIds(remaining, loop.page || 1, img)
+    loopsRef.current = loopsRef.current.map(function(l) {
+      return l.id === loopId ? Object.assign({}, l, { strokes: remaining, deviceIds: ids }) : l
+    })
+    setLoops(loopsRef.current)
+    requestDraw()
+  }
+
+  // Nearest traced segment to a tap/click, across all loops on the current
+  // page — same proximity approach as markCableAt, reused for right-click delete.
+  function hitStroke(pagePt) {
+    var page = pageRef.current
+    var thresh = 24 / viewRef.current.scale
+    if (thresh < 16) thresh = 16
+    var best = null
+    loopsRef.current.forEach(function(loop) {
+      if ((loop.page || 1) !== page) return
+      loop.strokes.forEach(function(stroke, si) {
+        for (var i = 0; i < stroke.length - 1; i++) {
+          var d = perpDist(pagePt, stroke[i], stroke[i + 1])
+          if (d < thresh && (!best || d < best.d)) best = { d: d, loopId: loop.id, strokeIdx: si }
+        }
+      })
+    })
+    return best
+  }
+
+  function undoLastStroke() {
+    var loop = loopsRef.current.find(function(l) { return l.id === activeLoopRef.current })
+    if (!loop || loop.strokes.length === 0) return
+    var img = pageImgRef.current
+    if (!img) return
+    var remaining = loop.strokes.slice(0, -1)
+    var ids = recaptureIds(remaining, pageRef.current, img)
     loopsRef.current = loopsRef.current.map(function(l) {
       if (l.id !== loop.id) return l
       return Object.assign({}, l, { strokes: remaining, deviceIds: ids })
@@ -1307,8 +1411,8 @@ export default function TraceStudio(props) {
           )}
           {!loading && !error && !pickField && (
             <div className="absolute bottom-16 md:bottom-3 left-3 bg-card/90 rounded-lg px-3 py-2 text-[9px] text-dgray uppercase pointer-events-none max-w-[75%]">
-              {mode === 'trace' && 'DRAW ALONG THE LOOP — PINS CAPTURE IN ORDER. RIGHT-DRAG OR TWO FINGERS TO MOVE AROUND.'}
-              {mode === 'pin' && 'TAP EMPTY = ADD PIN · DRAG PIN = MOVE · TAP PIN = EDIT'}
+              {mode === 'trace' && 'DRAW ALONG THE LOOP — PINS CAPTURE IN ORDER. RIGHT-CLICK A PIN OR LINE TO DELETE IT · RIGHT-DRAG EMPTY SPACE OR TWO FINGERS TO MOVE AROUND.'}
+              {mode === 'pin' && 'TAP EMPTY = ADD PIN · DRAG PIN = MOVE · TAP PIN = EDIT · RIGHT-CLICK PIN = DELETE'}
               {mode === 'zone' && 'DRAG AN AREA — THEN SET TYPE (DEVICE ZONE / HIGHLIGHT), SHAPE AND COLOR'}
               {mode === 'mark' && 'TAP ON A TRACED LINE TO MARK A CABLE ISSUE BETWEEN TWO DEVICES → GOES TO BLOCKERS'}
               {mode === 'pan' && 'DRAG TO MOVE · WHEEL / PINCH TO ZOOM'}
@@ -1471,7 +1575,15 @@ export default function TraceStudio(props) {
                           if (!p) return null
                           var rem = remarkByIndex[i]
                           return (
-                            <span key={pid} className="flex items-center gap-1">
+                            <span key={pid} className="flex items-center gap-0.5">
+                              <span className="flex flex-col leading-none">
+                                <button onClick={function(e) { e.stopPropagation(); moveDeviceInLoop(loop.id, i, -1) }}
+                                  disabled={i === 0} title="MOVE EARLIER IN SEQUENCE"
+                                  className="text-[7px] text-dgray hover:text-teal disabled:opacity-20 disabled:hover:text-dgray">▲</button>
+                                <button onClick={function(e) { e.stopPropagation(); moveDeviceInLoop(loop.id, i, 1) }}
+                                  disabled={i === loop.deviceIds.length - 1} title="MOVE LATER IN SEQUENCE"
+                                  className="text-[7px] text-dgray hover:text-teal disabled:opacity-20 disabled:hover:text-dgray">▼</button>
+                              </span>
                               <button onClick={function(e) { e.stopPropagation(); removeFromLoop(loop.id, pid) }}
                                 title="TAP TO REMOVE FROM LOOP"
                                 className="px-1.5 py-0.5 rounded bg-card text-[8px] text-white uppercase hover:bg-red/20 hover:text-red transition">
