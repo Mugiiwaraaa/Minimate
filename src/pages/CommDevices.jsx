@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import StatusBadge from '../components/StatusBadge'
+import * as ca from '../lib/commissioningAgent'
 
 var loopStages = ['comm_cable','control_cable','continuity','termination','device_installed','address_set']
 var stgLbl = {comm_cable:'COMM CABLE',control_cable:'CTRL CABLE',continuity:'CONTINUITY',termination:'TERMINATION',device_installed:'INSTALLED',address_set:'ADDRESS'}
@@ -64,6 +65,47 @@ export default function CommDevices(props){
   var nas=useState({name:'',floor:''}),newArea=nas[0],setNewArea=nas[1]
   var saas=useState(false),showAddArea=saas[0],setShowAddArea=saas[1]
   var lfcS=useState({}),locCollapsed=lfcS[0],setLocCollapsed=lfcS[1]
+  var projectId=props.projectId
+  var busSt=useState(localStorage.getItem('kmc_modbus_bus')||''),bus=busSt[0],setBus=busSt[1]
+  var mcSt=useState({}),modbusComm=mcSt[0],setModbusComm=mcSt[1] // loopId -> {busy,summary,checks,showDetails,err}
+  var dgSt=useState({}),dgCtl=dgSt[0],setDgCtl=dgSt[1] // gatewayId -> {mode:'config'|'gateway'|null, form fields, busy, err, lastResult/gwStatus}
+
+  function setModbusFor(loopId,patch){
+    setModbusComm(function(prev){var next=Object.assign({},prev);next[loopId]=Object.assign({},next[loopId],patch);return next})
+  }
+  function busTarget(){
+    var v=(bus||'').trim()
+    if(/^[\w.-]+:\d+$/.test(v))return {tcp:v}
+    return {serial_port:v}
+  }
+  function loopGatewayKey(loop){return loop.gateway?ca.gatewayKeyFor(loop.gateway):loop.id}
+  function runPreflight(loop){
+    if(!projectId)return
+    setModbusFor(loop.id,{busy:'preflight',err:''})
+    ca.modbusPreflight({project_id:projectId,gateway_key:loopGatewayKey(loop)})
+      .then(function(res){setModbusFor(loop.id,{busy:null,preflightWarnings:res.warnings||[]})})
+      .catch(function(e){setModbusFor(loop.id,{busy:null,err:e.message})})
+  }
+  function runScan(loop){
+    if(!projectId||!bus.trim())return
+    setModbusFor(loop.id,{busy:'scan',err:''})
+    ca.modbusScan(busTarget())
+      .then(function(res){setModbusFor(loop.id,{busy:null,scanFound:res.found||[]})})
+      .catch(function(e){setModbusFor(loop.id,{busy:null,err:e.message})})
+  }
+  function runVerify(loop){
+    if(!projectId||!bus.trim())return
+    setModbusFor(loop.id,{busy:'verify',err:''})
+    var body=Object.assign({project_id:projectId,gateway_key:loopGatewayKey(loop)},busTarget())
+    ca.modbusVerify(body)
+      .then(function(res){
+        var checks=(res.report&&res.report.checks)||[]
+        var sum={checked:checks.length,pass:0,fail:0}
+        checks.forEach(function(c){if(c.status==='pass')sum.pass++;else sum.fail++})
+        setModbusFor(loop.id,{busy:null,summary:sum,checks:checks.filter(function(c){return c.status!=='pass'}),showDetails:false})
+      })
+      .catch(function(e){setModbusFor(loop.id,{busy:null,err:e.message})})
+  }
 
 
   var allDevices=[]
@@ -362,9 +404,63 @@ export default function CommDevices(props){
       setAddDevTo(null)
     }
 
+    // Gateway commissioning: two independent ways to stand up the gateway side of a Modbus loop —
+    // export a config.csv for a real FieldServer box (loaded on site, manually), or run this
+    // toolkit as the gateway itself (no physical box). Kept as one small expandable strip per
+    // gateway card, not a permanent fixture — this isn't every-day info like the loop table above.
+    function openConfigForm(g){
+      setDgCtl(function(prev){var next=Object.assign({},prev);next[g.id]=Object.assign({mode:'config',cfgTitle:g.name,cfgNodeId:g.bacnet_id||'',cfgNetNum:'1',cfgProtoName:g.name,bacnetAddr:'127.0.0.1/8:47850',instance:'5115'},prev[g.id],{mode:'config'});return next})
+    }
+    function openGatewayForm(g){
+      setDgCtl(function(prev){var next=Object.assign({},prev);next[g.id]=Object.assign({mode:'gateway',bacnetAddr:'127.0.0.1/8:47850',instance:'5115'},prev[g.id],{mode:'gateway'});return next})
+    }
+    function closeCommForm(gid){
+      setDgCtl(function(prev){var next=Object.assign({},prev);if(next[gid])next[gid]=Object.assign({},next[gid],{mode:null});return next})
+    }
+    function dgSet(gid,patch){setDgCtl(function(prev){var next=Object.assign({},prev);next[gid]=Object.assign({},next[gid],patch);return next})}
+    function generateConfig(g){
+      var c=dgCtl[g.id]||{}
+      dgSet(g.id,{busy:'generate',err:''})
+      ca.modbusGenerateConfig({project_id:projectId,gateway_key:up(g.name),gateway_identity:{
+        title:c.cfgTitle||g.name, system_node_id:parseInt(c.cfgNodeId||'0',10)||0,
+        network_number:parseInt(c.cfgNetNum||'1',10)||1, protonode_name:c.cfgProtoName||g.name}})
+        .then(function(res){
+          var blob=new Blob([res.content],{type:'text/csv'})
+          var url=URL.createObjectURL(blob)
+          var a=document.createElement('a'); a.href=url; a.download=res.filename||(g.name+'_config.csv')
+          document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+          dgSet(g.id,{busy:null,lastResult:res.device_count+' devices, '+(res.warnings||[]).length+' warnings'})
+        })
+        .catch(function(e){dgSet(g.id,{busy:null,err:e.message})})
+    }
+    function startGateway(g){
+      var c=dgCtl[g.id]||{}
+      var bt=busTarget()
+      dgSet(g.id,{busy:'start',err:''})
+      ca.modbusGatewayStart(Object.assign({project_id:projectId,gateway_key:up(g.name),
+        bacnet_address:c.bacnetAddr||'127.0.0.1/8:47850',instance:parseInt(c.instance||'5115',10)},bt))
+        .then(function(res){dgSet(g.id,{busy:null,gwStatus:res})})
+        .catch(function(e){dgSet(g.id,{busy:null,err:e.message})})
+    }
+    function stopGateway(g){
+      dgSet(g.id,{busy:'stop',err:''})
+      ca.modbusGatewayStop({gateway_key:up(g.name)})
+        .then(function(res){dgSet(g.id,{busy:null,gwStatus:res})})
+        .catch(function(e){dgSet(g.id,{busy:null,err:e.message})})
+    }
+    function checkGatewayStatus(g){
+      ca.modbusGatewayStatus({gateway_key:up(g.name)}).then(function(res){dgSet(g.id,{gwStatus:res})}).catch(function(){})
+    }
+
     return (<div>
-      <div className="flex justify-between items-center mb-3">
+      <div className="flex justify-between items-center mb-3 gap-3">
         <div className="text-xs text-dgray uppercase">GATEWAY = MODBUS HEAD-END · RTR = BACNET MSTP/IP ROUTER. ASSIGN LOOPS ONCE — SYNCED WITH LOOP VIEW, LOCATION VIEW AND TRACED DRAWINGS.</div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] text-dgray uppercase">BUS</span>
+          <input type="text" value={bus} onChange={function(e){setBus(e.target.value);localStorage.setItem('kmc_modbus_bus',e.target.value)}}
+            placeholder="COM5 or host:port" title="This laptop's RS-485 serial port, or host:port for a TCP test bus"
+            className="w-32 px-1.5 py-1 text-[10px] bg-navy border border-border rounded text-dgray focus:text-white outline-none focus:border-teal"/>
+        </div>
         <button onClick={function(){setAddDevTo(showAddGw?null:'__gw__')}} className="px-4 py-2 bg-teal text-white text-xs font-semibold rounded-md hover:bg-teal/80 uppercase shrink-0">+ ADD GATEWAY/RTR</button>
       </div>
 
@@ -407,9 +503,43 @@ export default function CommDevices(props){
             <div className="md:col-span-3 flex items-center justify-end gap-2">
               <div className="w-16 h-1.5 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(gPct>=100?'bg-green':gPct>=50?'bg-teal':gPct>0?'bg-orange':'bg-red')} style={{width:gPct+'%'}}/></div>
               <span className="text-[10px] text-dgray w-8 text-right">{gPct}%</span>
+              {projectId&&!isRtr&&(<span className="flex items-center gap-1" onClick={function(e){e.stopPropagation()}}>
+                <button onClick={function(){openConfigForm(g)}} title="EXPORT A config.csv FOR A REAL FIELDSERVER — LOAD IT ON SITE MANUALLY" className={'px-1.5 py-0.5 text-[9px] font-semibold uppercase rounded border '+((dgCtl[g.id]||{}).mode==='config'?'bg-teal/20 border-teal text-teal':'border-border text-dgray hover:text-teal')}>CONFIG</button>
+                <button onClick={function(){openGatewayForm(g)}} title="RUN THIS TOOLKIT AS THE GATEWAY — NO PHYSICAL FIELDSERVER" className={'px-1.5 py-0.5 text-[9px] font-semibold uppercase rounded border '+((dgCtl[g.id]||{}).mode==='gateway'?'bg-orange/20 border-orange text-orange':'border-border text-dgray hover:text-orange')}>GATEWAY</button>
+              </span>)}
               <button onClick={function(e){e.stopPropagation();deleteGw(g.id)}} className="text-[10px] text-red/40 hover:text-red ml-1">X</button>
             </div>
           </div>
+
+          {/* CONFIG / GATEWAY commissioning strip — collapsed unless opened */}
+          {(dgCtl[g.id]||{}).mode&&(function(){
+            var c=dgCtl[g.id]
+            return (<div className="px-4 py-2.5 bg-navy/30 border-t border-border/30 border-b border-border/30 text-[10px]">
+              {c.mode==='config'?(<div className="flex flex-wrap items-end gap-2">
+                <div><label className="block text-dgray mb-0.5">TITLE</label><input value={c.cfgTitle||''} onChange={function(e){dgSet(g.id,{cfgTitle:e.target.value})}} className="w-28 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-teal"/></div>
+                <div><label className="block text-dgray mb-0.5">SYSTEM NODE ID</label><input value={c.cfgNodeId||''} onChange={function(e){dgSet(g.id,{cfgNodeId:e.target.value})}} placeholder="e.g. 5115" className="w-24 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-teal"/></div>
+                <div><label className="block text-dgray mb-0.5">NETWORK NUMBER</label><input value={c.cfgNetNum||''} onChange={function(e){dgSet(g.id,{cfgNetNum:e.target.value})}} placeholder="e.g. 55" className="w-20 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-teal"/></div>
+                <div><label className="block text-dgray mb-0.5">PROTONODE NAME</label><input value={c.cfgProtoName||''} onChange={function(e){dgSet(g.id,{cfgProtoName:e.target.value})}} placeholder="PROTONODE-8" className="w-28 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-teal"/></div>
+                <button onClick={function(){generateConfig(g)}} disabled={c.busy==='generate'} className="px-3 py-1 bg-teal text-white font-semibold uppercase rounded hover:bg-teal/80 disabled:opacity-40">{c.busy==='generate'?'GENERATING…':'DOWNLOAD CONFIG.CSV'}</button>
+                <button onClick={function(){closeCommForm(g.id)}} className="text-dgray hover:text-white px-1">X</button>
+                {c.lastResult&&<span className="text-green w-full">{c.lastResult}</span>}
+              </div>):(<div className="flex flex-wrap items-end gap-2">
+                <div><label className="block text-dgray mb-0.5">BACNET ADDRESS</label><input value={c.bacnetAddr||''} onChange={function(e){dgSet(g.id,{bacnetAddr:e.target.value})}} placeholder="192.168.1.60/24:47808" className="w-40 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-orange"/></div>
+                <div><label className="block text-dgray mb-0.5">DEVICE INSTANCE</label><input value={c.instance||''} onChange={function(e){dgSet(g.id,{instance:e.target.value})}} className="w-20 bg-navy border border-border rounded px-1.5 py-1 text-white outline-none focus:border-orange"/></div>
+                {c.gwStatus&&c.gwStatus.running?(
+                  <button onClick={function(){stopGateway(g)}} disabled={c.busy==='stop'} className="px-3 py-1 bg-red/20 text-red font-semibold uppercase rounded hover:bg-red/30 disabled:opacity-40">{c.busy==='stop'?'STOPPING…':'STOP'}</button>
+                ):(
+                  <button onClick={function(){startGateway(g)}} disabled={c.busy==='start'||!bus.trim()} title={!bus.trim()?'SET BUS ABOVE FIRST':''} className="px-3 py-1 bg-orange/20 text-orange font-semibold uppercase rounded hover:bg-orange/30 disabled:opacity-40">{c.busy==='start'?'STARTING…':'START'}</button>
+                )}
+                <button onClick={function(){checkGatewayStatus(g)}} className="px-2 py-1 border border-border text-dgray hover:text-white rounded uppercase">REFRESH</button>
+                <button onClick={function(){closeCommForm(g.id)}} className="text-dgray hover:text-white px-1">X</button>
+                {c.gwStatus&&(<span className={'w-full '+(c.gwStatus.running?'text-green':'text-dgray')}>
+                  {c.gwStatus.running?('RUNNING — PID '+c.gwStatus.pid+', UP '+c.gwStatus.uptime_s+'S'):'NOT RUNNING'}
+                </span>)}
+              </div>)}
+              {c.err&&<div className="text-red mt-1">{c.err}</div>}
+            </div>)
+          })()}
 
           {/* Expanded: loops under this gateway */}
           {isGExp&&(<div className="border-t border-border/30">
@@ -423,13 +553,50 @@ export default function CommDevices(props){
                   <span className="text-xs font-bold text-white uppercase">{l.name}</span>
                   {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
                   <span className="text-[9px] bg-purple/20 text-purple px-1.5 py-0.5 rounded">{l.protocol}</span>
+                  <select value={l.port||''} onClick={function(e){e.stopPropagation()}} onChange={function(e){handleLoopField(l.id,'port',e.target.value)}}
+                    title="WHICH RS-485 PORT ON THE PHYSICAL FIELDSERVER THIS LOOP IS WIRED TO"
+                    className={'text-[9px] font-bold px-1.5 py-0.5 rounded border outline-none cursor-pointer '+(l.port?'bg-cyan/10 border-cyan/40 text-cyan':'bg-red/10 border-red/40 text-red')}>
+                    <option value="">PORT?</option>
+                    <option value="R1">R1</option>
+                    <option value="R2">R2</option>
+                  </select>
                   <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
                   <div className="w-14 h-1 bg-navy rounded overflow-hidden"><div className={'h-full rounded '+(lPct>=100?'bg-green':lPct>0?'bg-teal':'bg-red/30')} style={{width:lPct+'%'}}/></div>
                   <span className="ml-auto flex items-center gap-3">
+                    {projectId&&(<span className="flex items-center gap-1.5" onClick={function(e){e.stopPropagation()}}>
+                      <button onClick={function(){runPreflight(l)}} disabled={!!(modbusComm[l.id]||{}).busy} title="CHECK SCHEDULE FOR DUPLICATE/MISSING ADDRESSES — NO HARDWARE NEEDED" className="px-2 py-0.5 text-[9px] font-semibold uppercase rounded border border-teal/50 text-teal hover:bg-teal/10 disabled:opacity-40">PREFLIGHT</button>
+                      <button onClick={function(){runScan(l)}} disabled={!!(modbusComm[l.id]||{}).busy||!bus.trim()} title="SCAN THE BUS FOR RESPONDING ADDRESSES" className="px-2 py-0.5 text-[9px] font-semibold uppercase rounded border border-cyan/50 text-cyan hover:bg-cyan/10 disabled:opacity-40">SCAN</button>
+                      <button onClick={function(){runVerify(l)}} disabled={!!(modbusComm[l.id]||{}).busy||!bus.trim()} title="READ EVERY DEVICE ON THIS LOOP AT ITS EXPECTED ADDRESS" className="px-2 py-0.5 text-[9px] font-semibold uppercase rounded border border-orange/50 text-orange hover:bg-orange/10 disabled:opacity-40">VERIFY</button>
+                    </span>)}
                     <button onClick={function(e){e.stopPropagation();onUpdateLoops(loops.map(function(x){return x.id===l.id?Object.assign({},x,{devices:sortDevsByAddr(x.devices)}):x}))}} title="ARRANGE DEVICES SMALLEST ADDRESS FIRST" className="text-[9px] text-teal hover:text-cyan uppercase">SORT BY ADDR</button>
                     <button onClick={function(e){e.stopPropagation();assignLoop(l.id,'')}} className="text-[9px] text-dgray hover:text-red uppercase">UNASSIGN</button>
                   </span>
                 </div>
+                {(function(){
+                  var mc=modbusComm[l.id]
+                  if(!mc)return null
+                  return (<div className="pl-8 pr-4 py-1.5 border-b border-border/20 bg-navy/20 text-[10px] flex flex-wrap items-center gap-2">
+                    {mc.busy&&<span className="text-dgray uppercase">{mc.busy}ING…</span>}
+                    {mc.err&&<span className="text-red">{mc.err}</span>}
+                    {mc.preflightWarnings&&(mc.preflightWarnings.length===0
+                      ? <span className="text-green uppercase">PREFLIGHT: NO ISSUES</span>
+                      : <span className="text-orange uppercase">PREFLIGHT: {mc.preflightWarnings.length} WARNING{mc.preflightWarnings.length===1?'':'S'} — {mc.preflightWarnings.slice(0,3).map(function(w){return w.kind}).join(', ')}</span>)}
+                    {mc.scanFound&&(mc.scanFound.length===0
+                      ? <span className="text-red uppercase">SCAN: NO DEVICES RESPONDED</span>
+                      : <span className="text-cyan uppercase">SCAN FOUND: {mc.scanFound.join(', ')}</span>)}
+                    {mc.summary&&(<>
+                      <span className="text-dgray">{mc.summary.checked} CHECKED</span>
+                      <span className="text-green">{mc.summary.pass} PASS</span>
+                      {mc.summary.fail>0&&<span className="text-red">{mc.summary.fail} FAIL</span>}
+                      {mc.checks&&mc.checks.length>0&&(
+                        <button onClick={function(){setModbusFor(l.id,{showDetails:!mc.showDetails})}} className="text-dgray hover:text-cyan underline decoration-dotted uppercase">{mc.showDetails?'HIDE':'DETAILS'}</button>
+                      )}
+                    </>)}
+                    {mc.showDetails&&mc.checks&&mc.checks.map(function(c,i){
+                      return <span key={i} className="text-[9px] bg-card2 px-1.5 py-0.5 rounded"><span className="text-white">{c.tag}</span> <span className="text-red">{c.status}</span></span>
+                    })}
+                  </div>)
+                })()}
                 {isLExp&&(<div className="pl-10 pr-4 py-2 bg-navy/40 border-b border-border/20 overflow-x-auto">
                   <table className="w-full"><thead><tr className="border-b border-border/50">
                     <th className="text-[9px] text-dgray text-left px-2 py-1.5">TYPE</th>

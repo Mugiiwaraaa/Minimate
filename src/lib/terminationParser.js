@@ -11,18 +11,37 @@ function isPinCell(v) { return /^U[OI]\d+$/i.test(v) }
 function sectionFor(pin) { return /^UO/i.test(pin) ? 'UNIVERSAL OUTPUT' : 'UNIVERSAL INPUT' }
 function isDdcSheet(name) { return /^DDC-/i.test(('' + name).trim()) }
 
+/* Multi-controller aware: a termination sheet can have more than one "Controller N" block
+   (confirmed on real BN01 data — DDC-RF-01 has 2). Each pin/module is tagged with the
+   controllerIndex of the block it fell under (1-based, matching sheet_parser.py's Python
+   parser). `controller` stays a single string (= controllers[0].model) for backward
+   compatibility with existing UI that reads it directly; `controllers` is the authoritative
+   multi-controller list. Object-instance tokens are only unique WITHIN one controller (BI-3 on
+   controller 1 and BI-3 on controller 2 are different physical points) — anything consuming
+   `objectInstance` must key on (controllerIndex, objectInstance) together, not the token alone. */
 function parseTerminationSheet(rows) {
-  var pins = []; var modules = []; var controller = ''
+  var pins = []; var modules = []; var controllers = []
+  var ctrlIndex = 0; var ctrlModel = ''
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i]
     var c2 = cS(r, 2)
-    if (!controller) {
-      var cc = cS(r, 2) + ' ' + cS(r, 3)
-      if (/controller/i.test(cc)) { controller = (cS(r, 3) || cS(r, 4) || '').replace(/controller/i, '').replace(/^[\s—\-]+/, '').trim() }
+    var cc = cS(r, 2) + ' ' + cS(r, 3)
+    if (/controller/i.test(cc)) {
+      ctrlIndex += 1
+      // Two physically separate controllers under one panel each get their own IP and their own
+      // independent EIO module numbering (1-4) -- the ONLY thing distinguishing them at the
+      // BACnet level is bacnetId. Extract it the same way sheet_parser.py does: from either this
+      // "Controller N — model | BACnet ID: id" row, or fall back to the panel's row-2 metadata.
+      var rowText = (cS(r, 2) + ' ' + cS(r, 3) + ' ' + cS(r, 4) + ' ' + cS(r, 5) + ' ' + cS(r, 6))
+      ctrlModel = (cS(r, 3) || cS(r, 4) || '').replace(/controller/i, '').replace(/^[\s—\-]+/, '').trim()
+      var bidMatch = rowText.match(/bacnet\s*id\s*[:\-]?\s*([A-Za-z0-9()/ \-]+)/i)
+      var bacnetId = bidMatch ? bidMatch[1].trim() : ''
+      controllers.push({ index: ctrlIndex, model: ctrlModel || 'ME521', bacnetId: bacnetId, ip: '' })
+      continue
     }
     var joined = cS(r, 2) + ' ' + cS(r, 3)
     var mm = joined.match(/module[-\s]*([A-Za-z0-9\-]+)/i)
-    if (mm) { modules.push({ type: mm[1].toUpperCase() }); continue }
+    if (mm) { modules.push({ type: mm[1].toUpperCase(), controllerIndex: ctrlIndex || 1 }); continue }
     if (isPinCell(c2)) {
       var desc = cS(r, 5)
       pins.push({
@@ -35,11 +54,13 @@ function parseTerminationSheet(rows) {
         cableDescription: cS(r, 8),
         sensorMCC: cS(r, 9),
         sectionLabel: sectionFor(c2),
-        linkedPointId: null
+        linkedPointId: null,
+        controllerIndex: ctrlIndex || 1
       })
     }
   }
-  return { controller: controller || 'ME521', modules: modules, pins: pins }
+  if (controllers.length === 0) controllers.push({ index: 1, model: 'ME521' })
+  return { controller: controllers[0].model, controllers: controllers, modules: modules, pins: pins }
 }
 
 function aoaOf(ws) {

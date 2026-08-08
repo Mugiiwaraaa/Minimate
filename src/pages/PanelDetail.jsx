@@ -4,6 +4,7 @@ import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
 import IoSheetGrid from '../components/IoSheetGrid'
 import { estimateEquipmentToPanelEquipment } from '../lib/estimateDiff'
+import * as ca from '../lib/commissioningAgent'
 
 var stages = ['cable_pulled','cable_continuity','term_ddc_side','term_field_side','functional_test']
 var stageLabels = {
@@ -91,6 +92,67 @@ export default function PanelDetail(props) {
   var setupMods = useState([])
   var selectedMods = setupMods[0]
   var setSelectedMods = setupMods[1]
+
+  // Commissioning (BACnet, via local commissioning_agent) — one compact state slot per
+  // controller index. Kept deliberately terse: a status line + optional details toggle,
+  // not a raw dump — this sits next to the pin table, it shouldn't compete with it.
+  var projectId = props.projectId
+  var ifaceState = useState(ca.getLocalAddress())
+  var iface = ifaceState[0]
+  var setIface = ifaceState[1]
+  var commState = useState({})
+  var comm = commState[0]
+  var setComm = commState[1]
+
+  function setCommFor(idx, patch) {
+    setComm(function(prev) {
+      var next = Object.assign({}, prev)
+      next[idx] = Object.assign({}, next[idx], patch)
+      return next
+    })
+  }
+
+  function summarize(checks) {
+    var s = { checked: checks.length, ok: 0, mismatch: 0, missing: 0, error: 0 }
+    checks.forEach(function(c) {
+      if (c.status === 'ok') s.ok++
+      else if (c.status === 'mismatch') s.mismatch++
+      else if (c.status === 'missing') s.missing++
+      else s.error++
+    })
+    return s
+  }
+
+  function runVerify(ctrl) {
+    if (!projectId || !ctrl.ip) return
+    setCommFor(ctrl.index, { busy: 'verify', err: '', regenNotice: '' })
+    ca.bacnetVerify({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined })
+      .then(function(res) {
+        var checks = (res.report && res.report.checks) || []
+        setCommFor(ctrl.index, { busy: null, summary: summarize(checks), details: checks.filter(function(c) { return c.status !== 'ok' }), showDetails: false })
+      })
+      .catch(function(e) { setCommFor(ctrl.index, { busy: null, err: e.message, summary: null }) })
+  }
+
+  function runWrite(ctrl) {
+    if (!projectId || !ctrl.ip) return
+    if (!confirm('WRITE THE TERMINATION SHEET TO ' + ctrl.ip + '? THIS CHANGES REAL CONTROLLER OBJECTS.')) return
+    setCommFor(ctrl.index, { busy: 'write', err: '', regenNotice: '' })
+    ca.bacnetWrite({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined, commit: true })
+      .then(function(res) {
+        var results = res.results || []
+        var committed = results.filter(function(r) { return r.status === 'committed' }).length
+        var errors = results.filter(function(r) { return r.status === 'error' }).length
+        setCommFor(ctrl.index, {
+          busy: null,
+          summary: { checked: results.length, ok: committed, mismatch: 0, missing: 0, error: errors },
+          details: results.filter(function(r) { return r.status === 'error' }),
+          showDetails: false,
+          regenNotice: res.regen_notice || '',
+        })
+      })
+      .catch(function(e) { setCommFor(ctrl.index, { busy: null, err: e.message, summary: null } ) })
+  }
 
   if (!panel) return <div className="text-center text-dgray mt-20 uppercase">PANEL NOT FOUND</div>
 
@@ -218,6 +280,23 @@ export default function PanelDetail(props) {
       })
     })
     onUpdateTermination(panelId, Object.assign({}, termData, { pins: newPins }))
+  }
+
+  // Digital field-entry for what used to only come from the Excel termination sheet: the BACnet
+  // device instance and static IP are decided on-site when the engineer connects to the
+  // controller, not known ahead of time — so they need somewhere to type it in directly, per
+  // controller (a panel can have more than one physical controller, e.g. DDC-RF-01: each has its
+  // own IP and BACnet ID; module numbering 1-4 restarts independently per controller too).
+  function updateControllerField(ctrlIndex, field, value) {
+    if (!termData) return
+    var controllers = termData.controllers || [{ index: 1, model: termData.controller || '', bacnetId: '', ip: '' }]
+    var newControllers = controllers.map(function(c) {
+      if (c.index !== ctrlIndex) return c
+      var updated = Object.assign({}, c)
+      updated[field] = value
+      return updated
+    })
+    onUpdateTermination(panelId, Object.assign({}, termData, { controllers: newControllers }))
   }
 
   function renameSection(oldLabel, newLabel) {
@@ -377,6 +456,97 @@ export default function PanelDetail(props) {
             <div className="text-[10px] text-dgray">PINS USED</div>
             <div className="text-sm font-bold text-cyan">{usedPins}/{totalPins}</div>
           </div>
+        </div>
+
+        <div className="bg-card rounded-xl border border-border p-3 mb-5">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[10px] text-dgray">
+              CONTROLLER NETWORK — set on-site when connecting, per controller
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-dgray">IFACE</span>
+              <input type="text" value={iface}
+                onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
+                placeholder="192.168.1.100/24:47809" title="This laptop's BACnet/IP interface — different port than KMC Connect (47808)"
+                className="w-44 px-1.5 py-0.5 text-[10px] bg-bg border border-border rounded text-dgray focus:text-white outline-none focus:border-teal" />
+            </div>
+          </div>
+          {(termData.controllers || [{ index: 1, model: termData.controller || '', bacnetId: '', ip: '' }]).map(function(c) {
+            var cs = comm[c.index] || {}
+            var sum = cs.summary
+            return (
+              <div key={c.index} className="py-1.5 border-t border-border first:border-t-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-24 text-xs font-bold text-cyan shrink-0">
+                    CTRL {c.index} <span className="text-dgray font-normal">({c.model})</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-dgray">BACNET ID</span>
+                    <input type="text" value={c.bacnetId || ''}
+                      onChange={function(e) { updateControllerField(c.index, 'bacnetId', e.target.value) }}
+                      placeholder="e.g. 900" className="w-20 px-2 py-1 text-xs bg-bg border border-border rounded" />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-dgray">STATIC IP</span>
+                    <input type="text" value={c.ip || ''}
+                      onChange={function(e) { updateControllerField(c.index, 'ip', e.target.value) }}
+                      placeholder="e.g. 192.168.1.12" className="w-32 px-2 py-1 text-xs bg-bg border border-border rounded" />
+                  </div>
+                  {projectId && c.ip && (
+                    <div className="flex items-center gap-1.5 ml-auto">
+                      <button onClick={function() { runVerify(c) }} disabled={!!cs.busy}
+                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-teal/50 text-teal hover:bg-teal/10 disabled:opacity-40">
+                        {cs.busy === 'verify' ? 'VERIFYING…' : 'VERIFY'}
+                      </button>
+                      <button onClick={function() { runWrite(c) }} disabled={!!cs.busy}
+                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-orange/50 text-orange hover:bg-orange/10 disabled:opacity-40">
+                        {cs.busy === 'write' ? 'WRITING…' : 'WRITE'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {cs.err && <div className="mt-1 text-[10px] text-red">{cs.err}</div>}
+
+                {sum && (
+                  <div className="mt-1 flex items-center gap-2 text-[10px]">
+                    <span className="text-dgray">{sum.checked} PTS</span>
+                    <span className="text-green">{sum.ok} OK</span>
+                    {sum.mismatch > 0 && <span className="text-orange">{sum.mismatch} MISMATCH</span>}
+                    {sum.missing > 0 && <span className="text-red">{sum.missing} MISSING</span>}
+                    {sum.error > 0 && <span className="text-red">{sum.error} ERROR</span>}
+                    {cs.details && cs.details.length > 0 && (
+                      <button onClick={function() { setCommFor(c.index, { showDetails: !cs.showDetails }) }}
+                        className="text-dgray hover:text-cyan underline decoration-dotted">
+                        {cs.showDetails ? 'HIDE' : 'DETAILS'}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {cs.showDetails && cs.details && (
+                  <div className="mt-1 max-h-40 overflow-y-auto border border-border/50 rounded">
+                    {cs.details.map(function(d, i) {
+                      return (
+                        <div key={i} className="flex gap-2 px-2 py-1 text-[10px] border-b border-border/20 last:border-0">
+                          <span className="text-cyan w-14 shrink-0">{d.obj_token}</span>
+                          <span className="text-dgray flex-1 truncate">{d.property_name || d.op}</span>
+                          {d.expected !== undefined && <span className="text-dgray truncate max-w-[30%]" title={String(d.expected)}>{String(d.expected)}</span>}
+                          <span className={'font-semibold ' + (d.status === 'error' ? 'text-red' : 'text-orange')}>{d.status}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {cs.regenNotice && (
+                  <div className="mt-1.5 px-2 py-1.5 text-[10px] bg-cyan/10 border border-cyan/30 text-cyan rounded">
+                    {cs.regenNotice}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
 
         <div className="bg-card rounded-xl border border-border overflow-hidden">

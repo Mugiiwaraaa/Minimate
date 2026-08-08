@@ -129,6 +129,7 @@ create table loops (
   name text not null,
   protocol text default 'MODBUS RTU',
   gateway text default '',
+  port text default '',   -- 'R1' | 'R2' | '' — which RS-485 port on the gateway's FieldServer this loop is wired to
   ddc_ref text default '',
   floor text default '',
   zone text default '',
