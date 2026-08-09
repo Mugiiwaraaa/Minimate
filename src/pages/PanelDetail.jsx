@@ -103,6 +103,11 @@ export default function PanelDetail(props) {
   var commState = useState({})
   var comm = commState[0]
   var setComm = commState[1]
+  // Verify depth. Off by default: each extra property is another BACnet read per point, so a
+  // 72-point panel goes from 144 reads to ~500 — worth it deliberately, not on every glance.
+  var depthState = useState({ io: false, health: false })
+  var depth = depthState[0]
+  var setDepth = depthState[1]
 
   function setCommFor(idx, patch) {
     setComm(function(prev) {
@@ -123,13 +128,32 @@ export default function PanelDetail(props) {
     return s
   }
 
+  // A sensor reporting open-loop/shorted-loop/no-sensor is a field fault, not a config mismatch —
+  // it's the one result worth acting on immediately, so it's pulled out of the details list.
+  function faultsIn(checks) {
+    return checks.filter(function(c) {
+      if ((c.property_name || '').indexOf('reliability') < 0) return false
+      var a = String(c.actual == null ? '' : c.actual)
+      return a.indexOf('no-fault-detected') < 0 && a !== '' && a !== '0'
+    })
+  }
+
   function runVerify(ctrl) {
     if (!projectId || !ctrl.ip) return
     setCommFor(ctrl.index, { busy: 'verify', err: '', regenNotice: '' })
-    ca.bacnetVerify({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined })
+    ca.bacnetVerify({
+      project_id: projectId, panel_id: panelId, target: ctrl.ip,
+      local_address: iface || undefined,
+      include_io_config: depth.io, check_health: depth.health,
+    })
       .then(function(res) {
         var checks = (res.report && res.report.checks) || []
-        setCommFor(ctrl.index, { busy: null, summary: summarize(checks), details: checks.filter(function(c) { return c.status !== 'ok' }), showDetails: false })
+        setCommFor(ctrl.index, {
+          busy: null, summary: summarize(checks),
+          faults: faultsIn(checks),
+          details: checks.filter(function(c) { return c.status !== 'ok' }),
+          showDetails: false,
+        })
       })
       .catch(function(e) { setCommFor(ctrl.index, { busy: null, err: e.message, summary: null }) })
   }
@@ -463,12 +487,26 @@ export default function PanelDetail(props) {
             <div className="text-[10px] text-dgray">
               CONTROLLER NETWORK — set on-site when connecting, per controller
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-dgray">IFACE</span>
-              <input type="text" value={iface}
-                onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
-                placeholder="192.168.1.100/24:47809" title="This laptop's BACnet/IP interface — different port than KMC Connect (47808)"
-                className="w-44 px-1.5 py-0.5 text-[10px] bg-bg border border-border rounded text-dgray focus:text-white outline-none focus:border-teal" />
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1 text-[10px] text-dgray hover:text-white cursor-pointer"
+                title="Also check the terminal's own configuration — KMC termination/bias (647) and scaling (531/532). Catches a correctly-named point wired as the wrong input type (10K thermistor vs 0-10V vs dry contact).">
+                <input type="checkbox" checked={depth.io}
+                  onChange={function(e) { setDepth(Object.assign({}, depth, { io: e.target.checked })) }} />
+                IO CONFIG
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-dgray hover:text-white cursor-pointer"
+                title="Also read RELIABILITY, OUT-OF-SERVICE and PRESENT-VALUE. Reports open-loop / shorted-loop / no-sensor from the panel, without walking to the field device.">
+                <input type="checkbox" checked={depth.health}
+                  onChange={function(e) { setDepth(Object.assign({}, depth, { health: e.target.checked })) }} />
+                HEALTH
+              </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-dgray">IFACE</span>
+                <input type="text" value={iface}
+                  onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
+                  placeholder="192.168.1.100/24:47809" title="This laptop's BACnet/IP interface — different port than KMC Connect (47808)"
+                  className="w-44 px-1.5 py-0.5 text-[10px] bg-bg border border-border rounded text-dgray focus:text-white outline-none focus:border-teal" />
+              </div>
             </div>
           </div>
           {(termData.controllers || [{ index: 1, model: termData.controller || '', bacnetId: '', ip: '' }]).map(function(c) {
@@ -521,6 +559,22 @@ export default function PanelDetail(props) {
                         {cs.showDetails ? 'HIDE' : 'DETAILS'}
                       </button>
                     )}
+                  </div>
+                )}
+
+                {cs.faults && cs.faults.length > 0 && (
+                  <div className="mt-1.5 px-2 py-1.5 bg-red/10 border border-red/40 rounded">
+                    <div className="text-[10px] font-bold text-red uppercase mb-1">
+                      {cs.faults.length} FIELD FAULT{cs.faults.length === 1 ? '' : 'S'} — SENSOR/WIRING, NOT CONFIG
+                    </div>
+                    {cs.faults.map(function(f, i) {
+                      return (
+                        <div key={i} className="flex gap-2 text-[10px]">
+                          <span className="text-cyan w-14 shrink-0">{f.obj_token}</span>
+                          <span className="text-red">{String(f.actual)}</span>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
 
