@@ -50,6 +50,14 @@ export function modbusGatewayStart(body) { return req('POST', '/modbus/gateway/s
 export function modbusGatewayStatus(body) { return req('POST', '/modbus/gateway/status', body) }
 export function modbusGatewayStop(body) { return req('POST', '/modbus/gateway/stop', body) }
 
+/* Template library — config generation needs exactly one ACTIVE template per device_type. Multiple
+   templates can exist per device_type (different vendors, unverified drafts); the user picks which
+   is active, never guessed automatically. */
+export function modbusTemplatesList() { return req('GET', '/modbus/templates') }
+export function modbusTemplatesActivate(body) { return req('POST', '/modbus/templates/activate', body) }
+export function modbusTemplatesImportConfigCsv(body) { return req('POST', '/modbus/templates/import-config-csv', body) }
+export function modbusTemplatesImportRegisterSheet(body) { return req('POST', '/modbus/templates/import-register-sheet', body) }
+
 /* Local BACnet interface (e.g. "192.168.1.100/24:47809") is a laptop/site setting, not
    project data — persisted per-browser, not synced to Supabase. */
 var LOCAL_ADDR_KEY = 'kmc_local_bacnet_iface'
