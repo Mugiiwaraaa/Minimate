@@ -50,11 +50,14 @@ export function modbusGatewayStart(body) { return req('POST', '/modbus/gateway/s
 export function modbusGatewayStatus(body) { return req('POST', '/modbus/gateway/status', body) }
 export function modbusGatewayStop(body) { return req('POST', '/modbus/gateway/stop', body) }
 
-/* Template library — config generation needs exactly one ACTIVE template per device_type. Multiple
-   templates can exist per device_type (different vendors, unverified drafts); the user picks which
-   is active, never guessed automatically. */
+/* Template library — one template per device_type; every slave resolves its own registers through
+   its device_type. A real loop mixes device kinds (pressure + velocity + temp/humidity sensors on
+   one bus), so thermostat registers must never be applied to a PMU or a sensor. Two thermostat
+   models are two device_types, not one type with a chosen variant. */
 export function modbusTemplatesList() { return req('GET', '/modbus/templates') }
-export function modbusTemplatesActivate(body) { return req('POST', '/modbus/templates/activate', body) }
+export function modbusTemplatesRetype(body) { return req('POST', '/modbus/templates/retype', body) }
+export function modbusTemplatesDelete(body) { return req('POST', '/modbus/templates/delete', body) }
+export function modbusTemplatesInspectConfigCsv(body) { return req('POST', '/modbus/templates/inspect-config-csv', body) }
 export function modbusTemplatesImportConfigCsv(body) { return req('POST', '/modbus/templates/import-config-csv', body) }
 export function modbusTemplatesImportRegisterSheet(body) { return req('POST', '/modbus/templates/import-register-sheet', body) }
 

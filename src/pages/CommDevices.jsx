@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import StatusBadge from '../components/StatusBadge'
 import TemplateLibrary from '../components/TemplateLibrary'
 import * as ca from '../lib/commissioningAgent'
@@ -70,6 +70,19 @@ export default function CommDevices(props){
   var busSt=useState(localStorage.getItem('kmc_modbus_bus')||''),bus=busSt[0],setBus=busSt[1]
   var mcSt=useState({}),modbusComm=mcSt[0],setModbusComm=mcSt[1] // loopId -> {busy,summary,checks,showDetails,err}
   var dgSt=useState({}),dgCtl=dgSt[0],setDgCtl=dgSt[1] // gatewayId -> {mode:'config'|'gateway'|null, form fields, busy, err, lastResult/gwStatus}
+  // Device kinds that actually have a register map. A loop mixes kinds freely, and each slave's
+  // registers come from its own kind — so the picker offers what the library can really generate,
+  // not a hardcoded list that silently can't.
+  var tplTypesSt=useState([]),tplTypes=tplTypesSt[0],setTplTypes=tplTypesSt[1]
+  useEffect(function(){
+    if(!props.projectId)return
+    ca.modbusTemplatesList()
+      .then(function(res){setTplTypes((res.templates||[]).map(function(t){return t.device_type}).filter(Boolean))})
+      .catch(function(){/* agent not running — fall back to the built-in list */})
+  },[props.projectId])
+  // Union so existing data is never silently unselectable, even if its kind has no map yet.
+  var deviceTypeOptions=deviceTypes.slice()
+  tplTypes.forEach(function(t){if(deviceTypeOptions.indexOf(t)<0)deviceTypeOptions.push(t)})
 
   function setModbusFor(loopId,patch){
     setModbusComm(function(prev){var next=Object.assign({},prev);next[loopId]=Object.assign({},next[loopId],patch);return next})
@@ -336,7 +349,7 @@ export default function CommDevices(props){
             </div>
             {addDevTo===loop.id?(<div className="bg-card2 rounded-lg p-3 mb-3 border border-border">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
-                <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
+                <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">EQUIP TAG</label><input value={newDev.tag} onChange={function(e){setNewDev(Object.assign({},newDev,{tag:e.target.value}))}} placeholder="FCU-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ROOM</label><input value={newDev.room_name} onChange={function(e){setNewDev(Object.assign({},newDev,{room_name:e.target.value}))}} placeholder="ROOM 101" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ADDRESS</label><input value={newDev.address} onChange={function(e){setNewDev(Object.assign({},newDev,{address:e.target.value}))}} placeholder="1" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
@@ -360,7 +373,7 @@ export default function CommDevices(props){
                   onDrop={function(e){e.stopPropagation();if(dragIdx&&dragIdx.loopId===loop.id)dropReorder(loop.id,di)}}
                   onDragEnd={function(){setDragDev(null);setDragIdx(null)}}>
                   <td className="text-center px-1 py-1.5 cursor-grab text-dgray text-[10px]">::</td>
-                  <td className="px-1 py-1.5"><select value={dev.device_type} onChange={function(e){handleDeviceField(loop.id,dev.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypes.indexOf(dev.device_type)<0&&<option value={dev.device_type}>{dev.device_type}</option>}</select></td>
+                  <td className="px-1 py-1.5"><select value={dev.device_type} onChange={function(e){handleDeviceField(loop.id,dev.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypeOptions.indexOf(dev.device_type)<0&&<option value={dev.device_type}>{dev.device_type}</option>}</select></td>
                   <td className="px-2 py-1.5"><div className="flex items-center gap-1">{cbl[dev.tag]&&(<span title={cbl[dev.tag]} className="text-[10px] text-red shrink-0 cursor-help">⚠</span>)}<input type="text" value={dev.tag||''} onChange={function(e){handleDeviceField(loop.id,dev.id,'tag',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'tag')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white font-medium outline-none w-24" placeholder="-"/></div></td>
                   <td className="px-2 py-1.5"><div className="flex items-center gap-1"><input type="text" value={dev.room_name} onChange={function(e){handleDeviceField(loop.id,dev.id,'room_name',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'room_name')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white outline-none w-full" placeholder="-"/>{dev.floor&&floorArr.length>1&&(<span className="text-[8px] text-orange shrink-0">{dev.floor}</span>)}</div></td>
                   <td className="text-center px-2 py-1.5"><input type="text" value={dev.address} onChange={function(e){handleDeviceField(loop.id,dev.id,'address',e.target.value)}} onBlur={function(){handleDeviceBlur(loop.id,dev.id,'address')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan text-center outline-none w-10 mx-auto" placeholder="-"/></td>
@@ -611,7 +624,7 @@ export default function CommDevices(props){
                   </tr></thead><tbody>
                     {l.devices.map(function(dev){
                       return (<tr key={dev.id} className="border-b border-border/20 hover:bg-teal/4">
-                        <td className="px-1 py-1.5"><select value={dev.device_type} onChange={function(e){handleDeviceField(l.id,dev.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypes.indexOf(dev.device_type)<0&&<option value={dev.device_type}>{dev.device_type}</option>}</select></td>
+                        <td className="px-1 py-1.5"><select value={dev.device_type} onChange={function(e){handleDeviceField(l.id,dev.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypeOptions.indexOf(dev.device_type)<0&&<option value={dev.device_type}>{dev.device_type}</option>}</select></td>
                         <td className="text-[11px] px-2 py-1.5 text-white font-medium uppercase">{dev.tag||'-'}</td>
                         <td className="text-[11px] px-2 py-1.5 text-lgray uppercase">{dev.room_name||'-'}</td>
                         <td className="text-[11px] px-2 py-1.5 text-cyan text-center">{dev.address||'-'}</td>
@@ -727,7 +740,7 @@ export default function CommDevices(props){
             {addDevArea===area.id?(<div className="bg-card2 rounded-lg p-3 mb-3 border border-border">
               <div className="text-[9px] text-dgray mb-1 uppercase">NEW DEVICE (ADDED TO UNASSIGNED LOOP - MOVE TO PROPER LOOP LATER)</div>
               <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
-                <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
+                <div><label className="text-[9px] text-dgray block mb-0.5">TYPE</label><select value={newDev.device_type} onChange={function(e){setNewDev(Object.assign({},newDev,{device_type:e.target.value}))}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none uppercase">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}</select></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">EQUIP TAG</label><input value={newDev.tag} onChange={function(e){setNewDev(Object.assign({},newDev,{tag:e.target.value}))}} placeholder="FCU-01" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ROOM</label><input value={newDev.room_name} onChange={function(e){setNewDev(Object.assign({},newDev,{room_name:e.target.value}))}} placeholder="ROOM 101" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
                 <div><label className="text-[9px] text-dgray block mb-0.5">ADDRESS</label><input value={newDev.address} onChange={function(e){setNewDev(Object.assign({},newDev,{address:e.target.value}))}} placeholder="1" style={{textTransform:'uppercase'}} className="w-full bg-navy border border-border rounded px-1.5 py-1 text-[11px] text-white outline-none"/></div>
@@ -755,7 +768,7 @@ export default function CommDevices(props){
                   onDragEnd={function(){setDragDev(null);setDragAreaIdx(null)}}>
                   <td className="text-center px-1 py-1.5 cursor-grab text-dgray text-[10px]">::</td>
                   <td className="px-2 py-1.5"><input type="text" value={d.tag||''} onChange={function(e){handleDevFieldById(d.id,'tag',e.target.value)}} onBlur={function(){handleDevBlurById(d.id,'tag')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white font-medium outline-none w-24" placeholder="-"/></td>
-                  <td className="px-1 py-1.5"><select value={d.device_type} onChange={function(e){handleDevFieldById(d.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypes.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypes.indexOf(d.device_type)<0&&<option value={d.device_type}>{d.device_type}</option>}</select></td>
+                  <td className="px-1 py-1.5"><select value={d.device_type} onChange={function(e){handleDevFieldById(d.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypeOptions.indexOf(d.device_type)<0&&<option value={d.device_type}>{d.device_type}</option>}</select></td>
                   <td className="px-2 py-1.5"><input type="text" value={d.room_name||''} onChange={function(e){handleDevFieldById(d.id,'room_name',e.target.value)}} onBlur={function(){handleDevBlurById(d.id,'room_name')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white outline-none w-full" placeholder="-"/></td>
                   <td className="text-[10px] px-2 py-1.5 text-dgray uppercase">{d.loop_name}</td>
                   <td className="text-center px-2 py-1.5"><input type="text" value={d.address||''} onChange={function(e){handleDevFieldById(d.id,'address',e.target.value)}} onBlur={function(){handleDevBlurById(d.id,'address')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan text-center outline-none w-10 mx-auto" placeholder="-"/></td>
