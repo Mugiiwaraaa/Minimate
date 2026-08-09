@@ -54,6 +54,10 @@ export function interfaces() { return req('GET', '/interfaces') }
 export function bacnetDiscover(body) { return req('POST', '/bacnet/discover', body) }
 export function bacnetVerify(body) { return req('POST', '/bacnet/verify', body) }
 export function bacnetWrite(body) { return req('POST', '/bacnet/write', body) }
+/* Provisions objects VERIFY reports MISSING — CreateObject at the sheet's own instance, then the
+   same name/description treatment WRITE gives an existing object. A controller with fewer physical
+   I/O terminals than the sheet expects will legitimately fail past its real terminal count. */
+export function bacnetCreateMissing(body) { return req('POST', '/bacnet/create-missing', body) }
 
 export function modbusPreflight(body) { return req('POST', '/modbus/preflight', body) }
 export function modbusScan(body) { return req('POST', '/modbus/scan', body) }

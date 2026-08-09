@@ -198,6 +198,34 @@ export default function PanelDetail(props) {
       .catch(function(e) { setCommFor(ctrl.index, { busy: null, err: e.message, summary: null } ) })
   }
 
+  // WRITE only renames objects that already exist — the MISSING ones VERIFY reports never had a
+  // database entry to rename. This provisions them (CreateObject at the sheet's instance), then
+  // applies name/description the same way WRITE does. A bench/smaller controller will legitimately
+  // fail past its real physical terminal count — that's the hardware's limit, surfaced per-object,
+  // not silently absorbed into a pass/fail count.
+  function runCreateMissing(ctrl) {
+    if (!projectId || !ctrl.ip) return
+    var known = comm[ctrl.index] && comm[ctrl.index].summary
+    var hint = known && known.missing != null ? (' LAST VERIFY SHOWED ~' + known.missing + ' MISSING OBJECT(S)/PROPERTIES.') : ''
+    if (!confirm('CREATE MISSING OBJECTS ON ' + ctrl.ip + '?' + hint + ' THIS ADDS REAL OBJECTS TO THE CONTROLLER — VERIFY FIRST IF UNSURE WHAT\'S MISSING.')) return
+    setCommFor(ctrl.index, { busy: 'create', err: '', regenNotice: '' })
+    ca.bacnetCreateMissing({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined, commit: true })
+      .then(function(res) {
+        var results = res.results || []
+        var failed = results.filter(function(r) { return r.status === 'error' })
+        setCommFor(ctrl.index, {
+          busy: null,
+          summary: { checked: res.attempted, ok: res.created, mismatch: 0, missing: 0, error: res.failed },
+          details: failed,
+          showDetails: false,
+          regenNotice: res.regen_notice || (res.attempted === 0
+            ? 'Nothing to create — every point on the sheet already has an object on this controller.'
+            : ''),
+        })
+      })
+      .catch(function(e) { setCommFor(ctrl.index, { busy: null, err: e.message, summary: null } ) })
+  }
+
   if (!panel) return <div className="text-center text-dgray mt-20 uppercase">PANEL NOT FOUND</div>
 
   var activePoints = equipment.flatMap(function(e) {
@@ -573,9 +601,14 @@ export default function PanelDetail(props) {
                         {cs.busy === 'verify' ? 'VERIFYING…' : 'VERIFY'}
                       </button>
                       <button onClick={function() { runWrite(c) }} disabled={!!cs.busy || !iface}
-                        title={!iface ? 'Pick an IFACE first' : ''}
+                        title={!iface ? 'Pick an IFACE first' : 'Renames objects that already exist — does not create new ones'}
                         className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-orange/50 text-orange hover:bg-orange/10 disabled:opacity-40 disabled:cursor-not-allowed">
                         {cs.busy === 'write' ? 'WRITING…' : 'WRITE'}
+                      </button>
+                      <button onClick={function() { runCreateMissing(c) }} disabled={!!cs.busy || !iface}
+                        title={!iface ? 'Pick an IFACE first' : 'Creates objects for sheet points the controller doesn\'t have yet, then names them'}
+                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-red/50 text-red hover:bg-red/10 disabled:opacity-40 disabled:cursor-not-allowed">
+                        {cs.busy === 'create' ? 'CREATING…' : 'CREATE MISSING'}
                       </button>
                     </div>
                   )}
@@ -620,10 +653,12 @@ export default function PanelDetail(props) {
                     {cs.details.map(function(d, i) {
                       return (
                         <div key={i} className="flex gap-2 px-2 py-1 text-[10px] border-b border-border/20 last:border-0">
-                          <span className="text-cyan w-14 shrink-0">{d.obj_token}</span>
-                          <span className="text-dgray flex-1 truncate">{d.property_name || d.op}</span>
-                          {d.expected !== undefined && <span className="text-dgray truncate max-w-[30%]" title={String(d.expected)}>{String(d.expected)}</span>}
-                          <span className={'font-semibold ' + (d.status === 'error' ? 'text-red' : 'text-orange')}>{d.status}</span>
+                          <span className="text-cyan w-16 shrink-0">{d.obj_token || d.object}</span>
+                          <span className="text-dgray flex-1 truncate" title={d.error || ''}>
+                            {d.error || d.property_name || d.op}
+                          </span>
+                          {d.error == null && d.expected !== undefined && <span className="text-dgray truncate max-w-[30%]" title={String(d.expected)}>{String(d.expected)}</span>}
+                          <span className={'font-semibold shrink-0 ' + (d.status === 'error' ? 'text-red' : 'text-orange')}>{d.status}</span>
                         </div>
                       )
                     })}
