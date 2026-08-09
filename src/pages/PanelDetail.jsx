@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
@@ -108,6 +108,26 @@ export default function PanelDetail(props) {
   var depthState = useState({ io: false, health: false })
   var depth = depthState[0]
   var setDepth = depthState[1]
+  // The IFACE must be an address that exists on THIS laptop — a wrong one used to hang the read
+  // forever (bacpypes3 retries a failed bind indefinitely). Offer the real ones instead of asking
+  // the tech to hand-type a "/24:47809" string correctly on a machine they may have just picked up.
+  var ifListState = useState([])
+  var ifList = ifListState[0]
+  var setIfList = ifListState[1]
+  useEffect(function() {
+    if (!props.projectId) return
+    ca.interfaces()
+      .then(function(res) {
+        var list = res.interfaces || []
+        setIfList(list)
+        // Preselect the first usable one only if nothing is saved yet — never override a choice.
+        if (!ca.getLocalAddress() && list.length) {
+          var best = list.filter(function(i) { return i.usable })[0] || list[0]
+          setIface(best.suggested); ca.setLocalAddress(best.suggested)
+        }
+      })
+      .catch(function() { /* agent down — the buttons already surface that */ })
+  }, [props.projectId])
 
   function setCommFor(idx, patch) {
     setComm(function(prev) {
@@ -502,10 +522,25 @@ export default function PanelDetail(props) {
               </label>
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] text-dgray">IFACE</span>
-                <input type="text" value={iface}
-                  onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
-                  placeholder="192.168.1.100/24:47809" title="This laptop's BACnet/IP interface — different port than KMC Connect (47808)"
-                  className="w-44 px-1.5 py-0.5 text-[10px] bg-bg border border-border rounded text-dgray focus:text-white outline-none focus:border-teal" />
+                {ifList.length > 0 ? (
+                  <select value={iface}
+                    onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
+                    title="This laptop's BACnet/IP interface. Must be an address that exists on this machine, on a port KMC Connect isn't holding."
+                    className={'px-1.5 py-0.5 text-[10px] bg-bg border rounded outline-none cursor-pointer ' +
+                      (iface ? 'border-border text-white' : 'border-red/60 text-red')}>
+                    <option value="">SELECT INTERFACE…</option>
+                    {ifList.map(function(i) {
+                      return <option key={i.suggested} value={i.suggested}>
+                        {i.suggested}{i.usable ? '' : ' (in use)'}
+                      </option>
+                    })}
+                  </select>
+                ) : (
+                  <input type="text" value={iface}
+                    onChange={function(e) { setIface(e.target.value); ca.setLocalAddress(e.target.value) }}
+                    placeholder="192.168.1.100/24:47809" title="Agent not reachable — type the interface manually"
+                    className="w-44 px-1.5 py-0.5 text-[10px] bg-bg border border-border rounded text-dgray focus:text-white outline-none focus:border-teal" />
+                )}
               </div>
             </div>
           </div>
@@ -532,12 +567,14 @@ export default function PanelDetail(props) {
                   </div>
                   {projectId && c.ip && (
                     <div className="flex items-center gap-1.5 ml-auto">
-                      <button onClick={function() { runVerify(c) }} disabled={!!cs.busy}
-                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-teal/50 text-teal hover:bg-teal/10 disabled:opacity-40">
+                      <button onClick={function() { runVerify(c) }} disabled={!!cs.busy || !iface}
+                        title={!iface ? 'Pick an IFACE first — without it the read cannot bind a socket' : ''}
+                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-teal/50 text-teal hover:bg-teal/10 disabled:opacity-40 disabled:cursor-not-allowed">
                         {cs.busy === 'verify' ? 'VERIFYING…' : 'VERIFY'}
                       </button>
-                      <button onClick={function() { runWrite(c) }} disabled={!!cs.busy}
-                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-orange/50 text-orange hover:bg-orange/10 disabled:opacity-40">
+                      <button onClick={function() { runWrite(c) }} disabled={!!cs.busy || !iface}
+                        title={!iface ? 'Pick an IFACE first' : ''}
+                        className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-orange/50 text-orange hover:bg-orange/10 disabled:opacity-40 disabled:cursor-not-allowed">
                         {cs.busy === 'write' ? 'WRITING…' : 'WRITE'}
                       </button>
                     </div>
