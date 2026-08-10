@@ -192,6 +192,10 @@ export default function TraceStudio(props) {
 
   var pinsRef = useRef(pins);               pinsRef.current = pins
   var loopsRef = useRef(loops);             loopsRef.current = loops
+  // Undo stack for loop/stroke edits (draw, delete-stroke, drag-resnap, delete-loop) — a plain
+  // snapshot stack, not per-field diffing, since every mutation here already replaces
+  // loopsRef.current wholesale via .map()/.filter() rather than mutating in place.
+  var undoStackRef = useRef([])
   var zonesRef = useRef(zones);             zonesRef.current = zones
   var activeLoopRef = useRef(activeLoopId); activeLoopRef.current = activeLoopId
   var pageRef = useRef(pageNum);            pageRef.current = pageNum
@@ -437,6 +441,22 @@ export default function TraceStudio(props) {
     if (!canvas) return
     canvas.addEventListener('wheel', onWheel, { passive: false })
     return function() { canvas.removeEventListener('wheel', onWheel) }
+  }, [])
+
+  // Ctrl+Z / Cmd+Z undoes the last loop/stroke edit (draw, delete-stroke, drag-resnap,
+  // delete-loop) via undoTrace()'s snapshot stack. Skipped while focus is in a text field so it
+  // doesn't hijack that field's own native undo (e.g. editing a pin's tag).
+  useEffect(function() {
+    function onKeyDown(e) {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || (e.key !== 'z' && e.key !== 'Z')) return
+      var t = e.target
+      var tag = t && t.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return
+      e.preventDefault()
+      undoTrace()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return function() { window.removeEventListener('keydown', onKeyDown) }
   }, [])
 
   // Free the big rasters the moment Trace Studio closes rather than waiting
@@ -784,7 +804,10 @@ export default function TraceStudio(props) {
       }
       var rStroke = hitStroke(pt)
       if (rStroke) {
-        if (window.confirm('DELETE THIS TRACED SEGMENT?')) deleteStroke(rStroke.loopId, rStroke.strokeIdx)
+        // No confirm() here on purpose — a blocking native dialog breaks the flow of a
+        // right-click-to-delete gesture on a canvas tool, and Ctrl+Z (undoTrace) is the
+        // real safety net now instead of a modal on every single delete.
+        deleteStroke(rStroke.loopId, rStroke.strokeIdx)
         return
       }
       gestureRef.current = { type: 'pan', startX: e.clientX, startY: e.clientY, v0: Object.assign({}, viewRef.current) }
@@ -1043,6 +1066,7 @@ export default function TraceStudio(props) {
     var pin = pinsRef.current.find(function(p) { return p.id === pinId })
     if (!pin || !img) return
     var pt = { x: pin.x * img.width, y: pin.y * img.height }
+    pushUndo()
     loopsRef.current = loopsRef.current.map(function(loop) {
       if (loop.deviceIds.indexOf(pinId) === -1) return loop
       var remaining = loop.deviceIds.filter(function(id) { return id !== pinId })
@@ -1100,6 +1124,7 @@ export default function TraceStudio(props) {
 
     var insertAt = findInsertIndex(loop, raw, img)
     var newIds = loop.deviceIds.slice(0, insertAt).concat(capturedIds).concat(loop.deviceIds.slice(insertAt))
+    pushUndo()
     loopsRef.current = loopsRef.current.map(function(l) {
       if (l.id !== loop.id) return l
       return Object.assign({}, l, {
@@ -1268,6 +1293,23 @@ export default function TraceStudio(props) {
     return ids
   }
 
+  // Snapshot loopsRef.current before a mutation so Ctrl+Z (undoTrace) can restore it. Called
+  // at the START of each mutating function, before that function reassigns loopsRef.current —
+  // a plain reference push is enough since nothing here ever mutates the array/objects in
+  // place, only replaces them via .map()/.filter().
+  function pushUndo() {
+    undoStackRef.current.push(loopsRef.current)
+    if (undoStackRef.current.length > 50) undoStackRef.current.shift()
+  }
+
+  function undoTrace() {
+    var prev = undoStackRef.current.pop()
+    if (!prev) return
+    loopsRef.current = prev
+    setLoops(prev)
+    requestDraw()
+  }
+
   // Right-click a traced line to delete just that segment (see hitStroke) —
   // deliberately smaller-grained than deleting the whole loop.
   function deleteStroke(loopId, strokeIdx) {
@@ -1277,6 +1319,7 @@ export default function TraceStudio(props) {
     if (!img) return
     var remaining = loop.strokes.filter(function(_, i) { return i !== strokeIdx })
     var ids = recaptureIds(remaining, loop.page || 1, img)
+    pushUndo()
     loopsRef.current = loopsRef.current.map(function(l) {
       return l.id === loopId ? Object.assign({}, l, { strokes: remaining, deviceIds: ids }) : l
     })
@@ -1319,6 +1362,7 @@ export default function TraceStudio(props) {
   }
 
   function deleteLoop(loopId) {
+    pushUndo()
     loopsRef.current = loopsRef.current.filter(function(l) { return l.id !== loopId })
     setLoops(loopsRef.current)
     if (activeLoopRef.current === loopId) {
