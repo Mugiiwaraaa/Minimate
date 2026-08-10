@@ -654,6 +654,41 @@ export default function TraceStudio(props) {
     return found
   }
 
+  // Magnetic snap while tracing: when a stroke point lands within range of an existing pin,
+  // lock it to that pin's exact coordinates instead of the raw cursor position — the drawn
+  // line visually attaches to the node rather than passing near it.
+  //
+  // Hysteresis via snapState (the active stroke gesture object, carried across the whole
+  // drag): a flat entry/exit radius flickers right at the boundary — ordinary mouse jitter
+  // crosses it several times a second, so the line would pop in and out of the pin. Once
+  // locked onto a pin, releasing it requires moving noticeably farther away (1.6x the entry
+  // radius) than it took to lock on, so a held cursor near a pin stays put — but it's still
+  // freely resnappable to a DIFFERENT pin the instant that one becomes the nearest, since the
+  // wider radius only ever applies to whichever pin is already locked, never to a candidate
+  // it'd be switching to.
+  function snapToPin(pagePt, snapState) {
+    var img = pageImgRef.current
+    if (!img) return pagePt
+    var v = viewRef.current
+    var page = pageRef.current
+    var enterR = 16 / v.scale
+    var best = null
+    var bestD = Infinity
+    pinsRef.current.forEach(function(pin) {
+      if ((pin.page || 1) !== page) return
+      var d = Math.hypot(pin.x * img.width - pagePt.x, pin.y * img.height - pagePt.y)
+      if (d < bestD) { bestD = d; best = pin }
+    })
+    var stuck = snapState && best && best.id === snapState.snapPinId
+    var r = stuck ? enterR * 1.6 : enterR
+    if (best && bestD <= r) {
+      if (snapState) snapState.snapPinId = best.id
+      return { x: best.x * img.width, y: best.y * img.height }
+    }
+    if (snapState) snapState.snapPinId = null
+    return pagePt
+  }
+
   // ─── Text picking (PDF text layer only — see file header) ──
   function pickTextAt(pagePt) {
     var pf = pickRef.current
@@ -776,8 +811,9 @@ export default function TraceStudio(props) {
 
     if (m === 'trace') {
       ensureActiveLoop()
-      gestureRef.current = { type: 'stroke' }
-      strokeRef.current = [pt]
+      var strokeGesture = { type: 'stroke', snapPinId: null }
+      gestureRef.current = strokeGesture
+      strokeRef.current = [snapToPin(pt, strokeGesture)]
       return
     }
 
@@ -859,7 +895,7 @@ export default function TraceStudio(props) {
     }
 
     if (g.type === 'stroke') {
-      var pt2 = toPage(e.clientX, e.clientY)
+      var pt2 = snapToPin(toPage(e.clientX, e.clientY), g)
       var s = strokeRef.current
       var last = s[s.length - 1]
       var minStep = 3 / viewRef.current.scale
@@ -881,6 +917,7 @@ export default function TraceStudio(props) {
     if (g.type === 'stroke') { commitStroke(); return }
     if (g.type === 'addpin' && !g.moved) { addPinAt(g.pt); return }
     if (g.type === 'dragpin' && !g.moved) { setEditPinId(g.pinId); return }
+    if (g.type === 'dragpin' && g.moved) { resequencePinInLoops(g.pinId); return }
     if (g.type === 'picktap' && !g.moved) { pickTextAt(g.pt); return }
     if (g.type === 'picktap' && g.moved) { return }
     if (g.type === 'marktap' && !g.moved) { markCableAt(g.pt); return }
@@ -956,13 +993,29 @@ export default function TraceStudio(props) {
   // lands it as #15, instead of always appending to the end of the loop.
   // Falls back to appending when there's nothing yet to anchor against (the
   // loop's first stroke) or the stroke doesn't reach any captured device.
+  //
+  // Two real bugs fixed here (both caused a stroke continuing forward from #20 to land as #6
+  // instead of #21, because an unrelated earlier pin happened to sit close by on the drawing):
+  //   1. nearest() searched every pin in the loop with no page filter — a pin on a different
+  //      sheet with coincidentally-close normalized coordinates could "win" purely by chance,
+  //      unlike commitStroke()'s own pin-capture loop, which does filter by page.
+  //   2. nearest() had no distance cutoff, so it always returned SOME pin even when nothing was
+  //      genuinely close to the stroke, and Math.min(a.idx, b.idx) then unconditionally
+  //      preferred whichever end matched the EARLIER pin — even a spurious, unrelated match.
+  //      Now the far end only overrides the append-forward default when it's both within range
+  //      AND immediately adjacent to the near end (the actual "fill a gap" case); a lone/no
+  //      match at the far end just appends after the near end, as tracing forward expects.
   function findInsertIndex(loop, rawStroke, img) {
+    var page = pageRef.current
     var existing = []
     loop.deviceIds.forEach(function(pid, idx) {
-      var p = pinsRef.current.find(function(x) { return x.id === pid })
+      var p = pinsRef.current.find(function(x) { return x.id === pid && (x.page || 1) === page })
       if (p) existing.push({ idx: idx, pin: p })
     })
     if (existing.length === 0) return loop.deviceIds.length
+    var anchorR = 20 / viewRef.current.scale
+    if (anchorR < 14) anchorR = 14
+    anchorR *= 3
     function nearest(pt) {
       var best = null
       var bestD = Infinity
@@ -970,12 +1023,48 @@ export default function TraceStudio(props) {
         var d = Math.hypot(e.pin.x * img.width - pt.x, e.pin.y * img.height - pt.y)
         if (d < bestD) { bestD = d; best = e }
       })
-      return best
+      return (best && bestD <= anchorR) ? best : null
     }
     var a = nearest(rawStroke[0])
     var b = nearest(rawStroke[rawStroke.length - 1])
-    if (!a || !b) return loop.deviceIds.length
-    return Math.min(a.idx, b.idx) + 1
+    if (a && b && Math.abs(a.idx - b.idx) === 1) return Math.min(a.idx, b.idx) + 1
+    if (a) return a.idx + 1
+    if (b) return b.idx
+    return loop.deviceIds.length
+  }
+
+  // Dragging an already-captured pin to a new spot should move it in the sequence too — a
+  // freely-resnappable device, not one stuck at whatever index it got when first captured.
+  // For every loop the pin belongs to, finds the nearest point on the polyline formed by the
+  // OTHER devices already in that loop's sequence (an interior segment via perpDist, or one of
+  // the two open ends by straight-line distance) and reinserts the pin at that position.
+  function resequencePinInLoops(pinId) {
+    var img = pageImgRef.current
+    var pin = pinsRef.current.find(function(p) { return p.id === pinId })
+    if (!pin || !img) return
+    var pt = { x: pin.x * img.width, y: pin.y * img.height }
+    loopsRef.current = loopsRef.current.map(function(loop) {
+      if (loop.deviceIds.indexOf(pinId) === -1) return loop
+      var remaining = loop.deviceIds.filter(function(id) { return id !== pinId })
+      var others = []
+      remaining.forEach(function(id, idx) {
+        var p = pinsRef.current.find(function(x) { return x.id === id })
+        if (p) others.push({ pos: idx, x: p.x * img.width, y: p.y * img.height })
+      })
+      if (others.length === 0) return loop
+      var last = others[others.length - 1]
+      var bestPos = last.pos + 1
+      var bestD = Math.hypot(pt.x - last.x, pt.y - last.y)
+      var d0 = Math.hypot(pt.x - others[0].x, pt.y - others[0].y)
+      if (d0 < bestD) { bestD = d0; bestPos = others[0].pos }
+      for (var i = 0; i < others.length - 1; i++) {
+        var d = perpDist(pt, others[i], others[i + 1])
+        if (d < bestD) { bestD = d; bestPos = others[i + 1].pos }
+      }
+      var newIds = remaining.slice(0, bestPos).concat([pinId]).concat(remaining.slice(bestPos))
+      return Object.assign({}, loop, { deviceIds: newIds })
+    })
+    setLoops(loopsRef.current)
   }
 
   function commitStroke() {
