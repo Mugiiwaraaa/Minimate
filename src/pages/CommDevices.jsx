@@ -438,7 +438,7 @@ export default function CommDevices(props){
     function generateConfig(g){
       var c=dgCtl[g.id]||{}
       dgSet(g.id,{busy:'generate',err:''})
-      ca.modbusGenerateConfig({project_id:projectId,gateway_key:up(g.name),gateway_identity:{
+      ca.modbusGenerateConfig({project_id:projectId,gateway_key:ca.gatewayKeyFor(g.name),gateway_identity:{
         title:c.cfgTitle||g.name, system_node_id:parseInt(c.cfgNodeId||'0',10)||0,
         network_number:parseInt(c.cfgNetNum||'1',10)||1, protonode_name:c.cfgProtoName||g.name}})
         .then(function(res){
@@ -454,19 +454,19 @@ export default function CommDevices(props){
       var c=dgCtl[g.id]||{}
       var bt=busTarget()
       dgSet(g.id,{busy:'start',err:''})
-      ca.modbusGatewayStart(Object.assign({project_id:projectId,gateway_key:up(g.name),
+      ca.modbusGatewayStart(Object.assign({project_id:projectId,gateway_key:ca.gatewayKeyFor(g.name),
         bacnet_address:c.bacnetAddr||'127.0.0.1/8:47850',instance:parseInt(c.instance||'5115',10)},bt))
         .then(function(res){dgSet(g.id,{busy:null,gwStatus:res})})
         .catch(function(e){dgSet(g.id,{busy:null,err:e.message})})
     }
     function stopGateway(g){
       dgSet(g.id,{busy:'stop',err:''})
-      ca.modbusGatewayStop({gateway_key:up(g.name)})
+      ca.modbusGatewayStop({gateway_key:ca.gatewayKeyFor(g.name)})
         .then(function(res){dgSet(g.id,{busy:null,gwStatus:res})})
         .catch(function(e){dgSet(g.id,{busy:null,err:e.message})})
     }
     function checkGatewayStatus(g){
-      ca.modbusGatewayStatus({gateway_key:up(g.name)}).then(function(res){dgSet(g.id,{gwStatus:res})}).catch(function(){})
+      ca.modbusGatewayStatus({gateway_key:ca.gatewayKeyFor(g.name)}).then(function(res){dgSet(g.id,{gwStatus:res})}).catch(function(){})
     }
 
     return (<div>
