@@ -231,6 +231,14 @@ export function flushLoopOps() {
   drainNow()
 }
 
+// True while a row write is queued, debouncing, or mid-flight — i.e. it would NOT survive an
+// unload right now. beforeunload uses this to decide whether to warn instead of silently losing
+// whatever hasn't landed yet (a real loss this caught: a fresh loop's device rows were still
+// inside the 300ms debounce window when a hard refresh cut the flush off mid-request).
+export function hasPendingLoopOps() {
+  return queueSize() > 0 || opInFlight
+}
+
 function drainNow() {
   if (opTimer) { clearTimeout(opTimer); opTimer = null }
   if (opInFlight) { opTimer = setTimeout(drainNow, 400); return }

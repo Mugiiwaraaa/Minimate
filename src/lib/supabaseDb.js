@@ -488,6 +488,13 @@ export function flushPendingSave() {
   flushSave()
 }
 
+// True while a blob save (panels/drawings/gateways/etc) is queued, debouncing, or mid-flight —
+// i.e. it would NOT survive an unload right now. See hasPendingLoopOps() in loopStore.js for the
+// row-write equivalent; beforeunload checks both before deciding whether to warn.
+export function hasPendingSave() {
+  return pendingData !== null || saveTimer !== null || inFlight
+}
+
 // ─── Helpers ───────────────────────────────────────────────
 
 function countPoints(data) {

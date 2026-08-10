@@ -18,9 +18,9 @@ import GlobalImport from './components/GlobalImport'
 import { listDocuments, archiveDocument, upsertDocument, deleteDocument } from './lib/docStore'
 import { parseTermination, applyTermination } from './lib/terminationParser'
 import { isDemo } from './lib/supabase'
-import { loadProject, saveProjectData, flushPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
+import { loadProject, saveProjectData, flushPendingSave, hasPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
-import { syncLoops, flushLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
+import { syncLoops, flushLoopOps, hasPendingLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
 import { snapshotProgress } from './lib/reportStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
@@ -230,9 +230,23 @@ export default function App() {
     return function() { clearTimeout(t); clearTimeout(t2) }
   }, [panels, equipmentMap, terminationMap, areaGroups, drawings, blockers, gateways, reportConfig, estimateScope, designCanvasNotes, designLocations])
 
-  // Flush save before page unload
+  // Flush save before page unload. Firing the flush alone isn't enough — it's a plain fetch with
+  // no sendBeacon/keepalive, so the browser can and does cancel it mid-flight on an abrupt unload
+  // (a hard refresh lost a loop's device rows exactly this way). If anything is still pending once
+  // the flush kicks off, ask the browser to show its native "leave site?" prompt — that pause is
+  // what actually gives the in-flight save time to land, and lets the user back out entirely if
+  // they'd rather wait for the debounce to finish on its own.
   useEffect(function() {
-    function onBeforeUnload() { flushPendingSave(); flushLoopOps() }
+    function onBeforeUnload(e) {
+      var pending = hasPendingSave() || hasPendingLoopOps()
+      flushPendingSave()
+      flushLoopOps()
+      if (pending) {
+        e.preventDefault()
+        e.returnValue = ''
+        return ''
+      }
+    }
     window.addEventListener('beforeunload', onBeforeUnload)
     return function() { window.removeEventListener('beforeunload', onBeforeUnload) }
   }, [])
