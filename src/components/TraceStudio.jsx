@@ -203,6 +203,8 @@ export default function TraceStudio(props) {
   var gestureRef = useRef(null)
   var strokeRef = useRef([])
   var tempZoneRef = useRef(null)    // live rectangle while dragging, page px
+  var tempSelectRef = useRef(null)  // live box-select rectangle while dragging, page px
+  var selectedRef = useRef({})      // pin id -> true, multi-select for group drag (PIN mode)
   var fileHashRef = useRef(rec ? (rec.fileHash || '') : '')
   var rafRef = useRef(0)
   // Hi-res tile: re-render of the VISIBLE region at current zoom (vector PDFs
@@ -858,6 +860,18 @@ export default function TraceStudio(props) {
       ctx.setLineDash([])
     }
 
+    // Live box-select rectangle (PIN mode, drag on empty space)
+    var tsel = tempSelectRef.current
+    if (tsel) {
+      ctx.fillStyle = 'rgba(34,211,238,0.12)'
+      ctx.fillRect(Math.min(tsel.x1, tsel.x2), Math.min(tsel.y1, tsel.y2), Math.abs(tsel.x2 - tsel.x1), Math.abs(tsel.y2 - tsel.y1))
+      ctx.strokeStyle = '#22D3EE'
+      ctx.lineWidth = 1.5 / v.scale
+      ctx.setLineDash([6 / v.scale, 4 / v.scale])
+      ctx.strokeRect(Math.min(tsel.x1, tsel.x2), Math.min(tsel.y1, tsel.y2), Math.abs(tsel.x2 - tsel.x1), Math.abs(tsel.y2 - tsel.y1))
+      ctx.setLineDash([])
+    }
+
     // Strokes per loop
     loopsRef.current.forEach(function(loop) {
       if ((loop.page || 1) !== page) return
@@ -928,6 +942,15 @@ export default function TraceStudio(props) {
       var px = pin.x * W
       var py = pin.y * H
       var lp = pinLoop[pin.id]
+      if (selectedRef.current[pin.id]) {
+        ctx.beginPath()
+        ctx.arc(px, py, r + 5 / v.scale, 0, Math.PI * 2)
+        ctx.strokeStyle = '#22D3EE'
+        ctx.lineWidth = 2.5 / v.scale
+        ctx.setLineDash([3 / v.scale, 3 / v.scale])
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
       ctx.beginPath()
       ctx.arc(px, py, r, 0, Math.PI * 2)
       ctx.fillStyle = lp ? lp.color : (pin.source === 'ai' ? 'rgba(34,211,238,0.9)' : 'rgba(248,250,252,0.9)')
@@ -966,6 +989,24 @@ export default function TraceStudio(props) {
       x: (clientX - rect.left - v.tx) / v.scale,
       y: (clientY - rect.top - v.ty) / v.scale
     }
+  }
+
+  // Box-select (PIN mode, drag on empty space — same convention as selecting files in Explorer):
+  // every pin on the current page whose center falls inside the dragged rectangle gets selected,
+  // replacing any prior selection. Box coordinates are page-space, unordered corners.
+  function selectPinsInBox(box) {
+    var img = pageImgRef.current
+    if (!img) return
+    var page = pageRef.current
+    var x1 = Math.min(box.x1, box.x2), x2 = Math.max(box.x1, box.x2)
+    var y1 = Math.min(box.y1, box.y2), y2 = Math.max(box.y1, box.y2)
+    var sel = {}
+    pinsRef.current.forEach(function(pin) {
+      if ((pin.page || 1) !== page) return
+      var px = pin.x * img.width, py = pin.y * img.height
+      if (px >= x1 && px <= x2 && py >= y1 && py <= y2) sel[pin.id] = true
+    })
+    selectedRef.current = sel
   }
 
   function hitPin(pagePt) {
@@ -1134,10 +1175,37 @@ export default function TraceStudio(props) {
 
     if (m === 'pin') {
       var hit = hitPin(pt)
+      if (hit && (e.ctrlKey || e.metaKey)) {
+        // Ctrl/Cmd+click toggles this pin in the selection without starting a drag — same
+        // convention as multi-selecting files. Drag any selected pin afterward to move the group.
+        var sel = Object.assign({}, selectedRef.current)
+        if (sel[hit.id]) delete sel[hit.id]; else sel[hit.id] = true
+        selectedRef.current = sel
+        gestureRef.current = { type: 'togglepin', moved: false }
+        requestDraw()
+        return
+      }
       if (hit) {
-        gestureRef.current = { type: 'dragpin', pinId: hit.id, moved: false }
+        if (selectedRef.current[hit.id] && Object.keys(selectedRef.current).length > 1) {
+          // Dragging a pin that's part of an active multi-selection moves the whole group,
+          // preserving each pin's offset from the drag start rather than snapping them together.
+          var origins = {}
+          Object.keys(selectedRef.current).forEach(function(pid) {
+            var p = pinsRef.current.find(function(x) { return x.id === pid })
+            if (p) origins[pid] = { x: p.x, y: p.y }
+          })
+          gestureRef.current = { type: 'groupdrag', anchor: pt, origins: origins, moved: false }
+        } else {
+          // Clicking a pin outside the current selection acts like Explorer: it replaces the
+          // selection (here: clears it) and drags just that one pin, same as before multi-select existed.
+          if (Object.keys(selectedRef.current).length) { selectedRef.current = {}; requestDraw() }
+          gestureRef.current = { type: 'dragpin', pinId: hit.id, moved: false }
+        }
       } else {
+        // Empty space: could be a tap-to-add-pin, or the start of a box-select drag — resolved
+        // by movement distance in onPointerMove/onPointerUp, same ambiguity addpin already had.
         gestureRef.current = { type: 'addpin', pt: pt, moved: false, startX: e.clientX, startY: e.clientY }
+        tempSelectRef.current = { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y }
       }
       return
     }
@@ -1215,8 +1283,35 @@ export default function TraceStudio(props) {
       return
     }
 
-    if (g.type === 'addpin' || g.type === 'picktap' || g.type === 'marktap') {
+    if (g.type === 'addpin') {
       if (Math.hypot(e.clientX - g.startX, e.clientY - g.startY) > 8) g.moved = true
+      if (g.moved && tempSelectRef.current) {
+        var sp = toPage(e.clientX, e.clientY)
+        tempSelectRef.current = { x1: g.pt.x, y1: g.pt.y, x2: sp.x, y2: sp.y }
+        requestDraw()
+      }
+      return
+    }
+
+    if (g.type === 'picktap' || g.type === 'marktap') {
+      if (Math.hypot(e.clientX - g.startX, e.clientY - g.startY) > 8) g.moved = true
+      return
+    }
+
+    if (g.type === 'groupdrag') {
+      var gp = toPage(e.clientX, e.clientY)
+      var img2 = pageImgRef.current
+      if (!img2) return
+      var dx = (gp.x - g.anchor.x) / img2.width
+      var dy = (gp.y - g.anchor.y) / img2.height
+      if (dx !== 0 || dy !== 0) g.moved = true
+      pinsRef.current = pinsRef.current.map(function(p) {
+        var o = g.origins[p.id]
+        if (!o) return p
+        return Object.assign({}, p, { x: o.x + dx, y: o.y + dy })
+      })
+      setPins(pinsRef.current)
+      requestDraw()
       return
     }
 
@@ -1248,7 +1343,23 @@ export default function TraceStudio(props) {
     if (g.type === 'pan' || g.type === 'pinch') scheduleHiRes()
 
     if (g.type === 'stroke') { commitStroke(); return }
-    if (g.type === 'addpin' && !g.moved) { addPinAt(g.pt); return }
+    if (g.type === 'addpin' && !g.moved) {
+      tempSelectRef.current = null
+      // A plain tap on empty space clears an active selection instead of adding a pin — matches
+      // "click empty space to deselect." Only adds a pin when there was nothing selected to clear.
+      if (Object.keys(selectedRef.current).length) { selectedRef.current = {}; requestDraw() }
+      else { addPinAt(g.pt) }
+      return
+    }
+    if (g.type === 'addpin' && g.moved) {
+      var box = tempSelectRef.current
+      tempSelectRef.current = null
+      if (box) selectPinsInBox(box)
+      requestDraw()
+      return
+    }
+    if (g.type === 'groupdrag') { if (g.moved) resequencePins(Object.keys(g.origins)); return }
+    if (g.type === 'togglepin') { return }
     if (g.type === 'dragpin' && !g.moved) { setEditPinId(g.pinId); return }
     if (g.type === 'dragpin' && g.moved) { resequencePinInLoops(g.pinId); return }
     if (g.type === 'picktap' && !g.moved) { pickTextAt(g.pt); return }
@@ -1371,13 +1482,15 @@ export default function TraceStudio(props) {
   // For every loop the pin belongs to, finds the nearest point on the polyline formed by the
   // OTHER devices already in that loop's sequence (an interior segment via perpDist, or one of
   // the two open ends by straight-line distance) and reinserts the pin at that position.
-  function resequencePinInLoops(pinId) {
-    var img = pageImgRef.current
+  // Pure core, shared by both entry points below: given a loops array, moves pinId to its best
+  // position in every loop it belongs to and returns the (possibly) updated array. No side
+  // effects (no undo push, no setLoops) — callers own the undo boundary, which is what makes a
+  // multi-pin group move collapse into ONE undo step instead of one per pin.
+  function computeResequenced(loopsIn, pinId, img) {
     var pin = pinsRef.current.find(function(p) { return p.id === pinId })
-    if (!pin || !img) return
+    if (!pin) return loopsIn
     var pt = { x: pin.x * img.width, y: pin.y * img.height }
-    pushUndo()
-    loopsRef.current = loopsRef.current.map(function(loop) {
+    return loopsIn.map(function(loop) {
       if (loop.deviceIds.indexOf(pinId) === -1) return loop
       var remaining = loop.deviceIds.filter(function(id) { return id !== pinId })
       var others = []
@@ -1398,7 +1511,27 @@ export default function TraceStudio(props) {
       var newIds = remaining.slice(0, bestPos).concat([pinId]).concat(remaining.slice(bestPos))
       return Object.assign({}, loop, { deviceIds: newIds })
     })
+  }
+
+  // Single-pin entry point — dragging one pin (no active multi-selection).
+  function resequencePinInLoops(pinId) {
+    var img = pageImgRef.current
+    if (!img) return
+    pushUndo()
+    loopsRef.current = computeResequenced(loopsRef.current, pinId, img)
     setLoops(loopsRef.current)
+  }
+
+  // Multi-pin entry point — a box-select/Ctrl+click group drag. One pushUndo() for the whole
+  // batch, so Ctrl+Z undoes the entire group move in a single step, not pin-by-pin.
+  function resequencePins(pinIds) {
+    var img = pageImgRef.current
+    if (!img || !pinIds.length) return
+    pushUndo()
+    var next = loopsRef.current
+    pinIds.forEach(function(pinId) { next = computeResequenced(next, pinId, img) })
+    loopsRef.current = next
+    setLoops(next)
   }
 
   function commitStroke() {
