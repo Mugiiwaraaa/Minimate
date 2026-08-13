@@ -20,7 +20,7 @@ import { parseTermination, applyTermination } from './lib/terminationParser'
 import { isDemo } from './lib/supabase'
 import { loadProject, saveProjectData, flushPendingSave, hasPendingSave, onSaveConflict, setLoadedVersion, setLoadedData, onRemoteData, subscribeToProject, unsubscribeFromProject, autoBackup } from './lib/supabaseDb'
 import { hashFile } from './lib/fileStore'
-import { syncLoops, flushLoopOps, hasPendingLoopOps, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
+import { syncLoops, flushLoopOps, hasPendingLoopOps, onSyncError, ensureBackfill, loadLoops, subscribeLoops, unsubscribeLoops, loopRowToLoop, deviceRowToDevice, isOwnEcho, fetchLoopDevices } from './lib/loopStore'
 import { snapshotProgress } from './lib/reportStore'
 import { smartParse, DOC_TYPES, DOC_LABELS } from './lib/smartParser'
 import { FILE_KINDS, KIND_LABELS, PDF_KIND_CYCLE, IMAGE_KIND_CYCLE, isPdf, classifyFile, runImportSession } from './lib/importEngine'
@@ -190,7 +190,12 @@ export default function App() {
   // batching a user tick together with a server patch.
   var activeProjectIdRef = useRef(null) // stable id for row-event handlers (closures)
 
-  // M6 P2: LOOPS live in rows. A tick = one row upsert, not a blob save.
+  // M6 P2: LOOPS live in rows. A tick = one row upsert, not a blob save. The 'saving'->'saved'
+  // timeline below is optimistic (most syncs genuinely do land in well under a second, and
+  // waiting for a real round-trip on every keystroke would feel laggy) — but it's not the only
+  // source of truth: loopSyncErrorRef lets onSyncError (registered below) cancel it and show a
+  // real, persistent error instead whenever a row batch is actually failing to save.
+  var loopSaveTimersRef = useRef([])
   useEffect(function() {
     if (!activeProject || !activeProject.id || isDemo) return
     if (!initialLoadDone.current) return
@@ -199,10 +204,30 @@ export default function App() {
     syncLoops(activeProject.id, prevLoopsRef.current, loops)
     prevLoopsRef.current = loops
     setSaveStatus('saving')
+    loopSaveTimersRef.current.forEach(clearTimeout)
     var t = setTimeout(function() { setSaveStatus('saved') }, 1200)
     var t2 = setTimeout(function() { setSaveStatus('idle') }, 3200)
+    loopSaveTimersRef.current = [t, t2]
     return function() { clearTimeout(t); clearTimeout(t2) }
   }, [loops])
+
+  // Real signal from loopStore's retry loop — wins over the optimistic timers above. A row
+  // batch failing means changes are NOT saved yet (still retrying, nothing dropped — see
+  // loopStore.js's drainNow()), and that must be visible, not silently hidden behind "SAVED ✓".
+  useEffect(function() {
+    onSyncError(function(failing) {
+      loopSaveTimersRef.current.forEach(clearTimeout)
+      loopSaveTimersRef.current = []
+      if (failing) {
+        setSaveStatus('error')
+      } else {
+        setSaveStatus('saved')
+        var t = setTimeout(function() { setSaveStatus('idle') }, 2000)
+        loopSaveTimersRef.current = [t]
+      }
+    })
+    return function() { onSyncError(null) }
+  }, [])
 
   // Everything else stays in the versioned blob (3-way merged)
   useEffect(function() {

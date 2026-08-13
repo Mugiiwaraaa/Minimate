@@ -80,6 +80,31 @@ export default function CommDevices(props){
       .then(function(res){setTplTypes((res.templates||[]).map(function(t){return t.device_type}).filter(Boolean))})
       .catch(function(){/* agent not running — fall back to the built-in list */})
   },[props.projectId])
+  // One-time self-heal for pre-gateway_id data: a loop assigned to a gateway before this field
+  // existed only has the gateway's NAME text stored. Resolve it to the stable id once so the
+  // link survives a future gateway rename — matching by name text alone is exactly the bug this
+  // fixes (see 2026-08-10 dev log). Settles itself: re-runs on every loops/gateways change but
+  // is a no-op once every loop has a gateway_id, so it can never loop.
+  useEffect(function(){
+    if(!gateways.length||!loops.length)return
+    var byName={}
+    gateways.forEach(function(g){byName[up(g.name)]=g})
+    var healed=false
+    var next=loops.map(function(l){
+      if(l.gateway_id||!l.gateway)return l
+      var g=byName[up(l.gateway)]
+      if(!g)return l
+      healed=true
+      return Object.assign({},l,{gateway_id:g.id})
+    })
+    if(healed)onUpdateLoops(next)
+  },[loops,gateways])
+  // Single place every display of "this loop's gateway" resolves through — live lookup by id,
+  // never the denormalized name copy directly, so a rename shows up everywhere immediately.
+  function gatewayNameOf(loop){
+    var g=loop.gateway_id&&gateways.find(function(x){return x.id===loop.gateway_id})
+    return (g&&g.name)||loop.gateway||''
+  }
   // Union so existing data is never silently unselectable, even if its kind has no map yet.
   var deviceTypeOptions=deviceTypes.slice()
   tplTypes.forEach(function(t){if(deviceTypeOptions.indexOf(t)<0)deviceTypeOptions.push(t)})
@@ -326,7 +351,7 @@ export default function CommDevices(props){
             <div className="hidden md:block md:col-span-1 text-[11px] font-bold text-orange">{loop.floor||'-'}</div>
             <div className="hidden md:block md:col-span-1 text-[11px] text-orange">{loop.zone||'-'}</div>
             <div className="hidden md:block md:col-span-2 text-[11px] text-cyan font-medium">{loop.ddc_ref||'-'}</div>
-            <div className="hidden md:block md:col-span-2 text-[11px] text-cyan">{loop.gateway||'-'}</div>
+            <div className="hidden md:block md:col-span-2 text-[11px] text-cyan">{gatewayNameOf(loop)||'-'}</div>
             <div className="flex-1 md:flex-none md:col-span-2 text-sm font-bold uppercase">{loop.name}
               {(loop.cable_remarks||[]).length>0&&(<span title={(loop.cable_remarks||[]).map(function(r){return (r.from||'?')+' → '+(r.to||'?')+': '+r.text}).join('\n')} className="ml-1.5 text-[9px] font-bold bg-red/20 text-red px-1.5 py-0.5 rounded align-middle">⚠ {(loop.cable_remarks||[]).length}</span>)}
               {floorArr.length>1&&(<span title={'DEVICES ON: '+floorArr.join(', ')} className="ml-1.5 text-[8px] font-bold bg-orange/20 text-orange px-1.5 py-0.5 rounded align-middle">{floorArr.join('/')}</span>)}
@@ -396,7 +421,9 @@ export default function CommDevices(props){
   // Hierarchy: GATEWAY/RTR → DDC REF → IP → BACNET ID → loops → devices
   function renderGatewayView(){
     var showAddGw=addDevTo==='__gw__'
-    function loopsOf(g){return loops.filter(function(l){return up(l.gateway)===up(g.name)&&up(g.name)!==''})}
+    // gateway_id is the real reference (stable across renames); `gateway` name-text match is a
+    // fallback for the sliver of a render before the self-heal effect above has run.
+    function loopsOf(g){return loops.filter(function(l){return l.gateway_id?l.gateway_id===g.id:(up(l.gateway)===up(g.name)&&up(g.name)!=='')})}
     var assignedLoopIds={}
     gateways.forEach(function(g){loopsOf(g).forEach(function(l){assignedLoopIds[l.id]=true})})
     var unassignedLoops=loops.filter(function(l){return !assignedLoopIds[l.id]})
@@ -407,12 +434,17 @@ export default function CommDevices(props){
     function deleteGw(gid){
       var g=gateways.find(function(x){return x.id===gid})
       if(!g)return
-      // Unlink its loops so they show as unassigned again
-      onUpdateLoops(loops.map(function(l){return up(l.gateway)===up(g.name)?Object.assign({},l,{gateway:''}):l}))
+      // Unlink its loops so they show as unassigned again — by id, not name, so a loop linked
+      // under an old name (before a rename) still gets correctly unlinked here.
+      onUpdateLoops(loops.map(function(l){return (l.gateway_id?l.gateway_id===gid:up(l.gateway)===up(g.name))?Object.assign({},l,{gateway:'',gateway_id:''}):l}))
       onUpdateGateways(gateways.filter(function(x){return x.id!==gid}))
     }
-    function assignLoop(loopId,gwName){
-      onUpdateLoops(loops.map(function(l){return l.id===loopId?Object.assign({},l,{gateway:up(gwName)}):l}))
+    // gwId '' unassigns. Stores both the stable id (the real reference) and a denormalized name
+    // copy (display fallback only — never matched against, see loopsOf) so nothing reads blank
+    // if a gateway is later renamed without a live lookup available.
+    function assignLoop(loopId,gwId){
+      var g=gwId?gateways.find(function(x){return x.id===gwId}):null
+      onUpdateLoops(loops.map(function(l){return l.id===loopId?Object.assign({},l,{gateway_id:gwId||'',gateway:g?g.name:''}):l}))
     }
     function addGw(){
       if(!newLoop.name.trim())return
@@ -625,14 +657,13 @@ export default function CommDevices(props){
                     {l.devices.map(function(dev){
                       return (<tr key={dev.id} className="border-b border-border/20 hover:bg-teal/4">
                         <td className="px-1 py-1.5"><select value={dev.device_type} onChange={function(e){handleDeviceField(l.id,dev.id,'device_type',e.target.value)}} className="bg-transparent text-[10px] text-purple uppercase outline-none cursor-pointer w-full">{deviceTypeOptions.map(function(dt){return <option key={dt} value={dt}>{dt}</option>})}{deviceTypeOptions.indexOf(dev.device_type)<0&&<option value={dev.device_type}>{dev.device_type}</option>}</select></td>
-                        <td className="text-[11px] px-2 py-1.5 text-white font-medium uppercase">{dev.tag||'-'}</td>
-                        <td className="text-[11px] px-2 py-1.5 text-lgray uppercase">{dev.room_name||'-'}</td>
-                        <td className="text-[11px] px-2 py-1.5 text-cyan text-center">{dev.address||'-'}</td>
+                        <td className="px-2 py-1.5"><input type="text" value={dev.tag||''} onChange={function(e){handleDeviceField(l.id,dev.id,'tag',e.target.value)}} onBlur={function(){handleDeviceBlur(l.id,dev.id,'tag')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-white font-medium outline-none w-24" placeholder="-"/></td>
+                        <td className="px-2 py-1.5"><input type="text" value={dev.room_name||''} onChange={function(e){handleDeviceField(l.id,dev.id,'room_name',e.target.value)}} onBlur={function(){handleDeviceBlur(l.id,dev.id,'room_name')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-lgray outline-none w-full" placeholder="-"/></td>
+                        <td className="text-center px-2 py-1.5"><input type="text" value={dev.address||''} onChange={function(e){handleDeviceField(l.id,dev.id,'address',e.target.value)}} onBlur={function(){handleDeviceBlur(l.id,dev.id,'address')}} style={{textTransform:'uppercase'}} className="bg-transparent border-b border-transparent focus:border-teal text-[11px] text-cyan text-center outline-none w-10 mx-auto" placeholder="-"/></td>
                         {loopStages.map(function(s){var ch=dev[s],idx=loopStages.indexOf(s),prev=idx===0||dev[loopStages[idx-1]];return <td key={s} className="text-center px-1 py-1.5"><StgBtn checked={ch} prevDone={prev} onClick={function(){handleToggle(l.id,dev.id,s)}}/></td>})}
                       </tr>)
                     })}
                   </tbody></table>
-                  <div className="text-[8px] text-dgray uppercase mt-1.5">EDIT TAGS/ROOMS/ADDRESSES IN LOOP VIEW — DEVICE TYPE AND STAGES ARE LIVE HERE</div>
                 </div>)}
               </div>)
             })}
@@ -649,10 +680,10 @@ export default function CommDevices(props){
             <span className="text-xs font-bold text-white uppercase">{l.name}</span>
             {l.floor&&<span className="text-[9px] text-orange uppercase">{l.floor}</span>}
             <span className="text-[10px] text-dgray">{l.devices.length} DEV</span>
-            {l.gateway&&<span className="text-[9px] text-dgray uppercase">(GATEWAY "{l.gateway}" NOT DEFINED)</span>}
+            {(l.gateway_id||l.gateway)&&<span className="text-[9px] text-dgray uppercase">(GATEWAY "{l.gateway||l.gateway_id}" NOT FOUND — MAY HAVE BEEN DELETED)</span>}
             <select value="" onChange={function(e){if(e.target.value)assignLoop(l.id,e.target.value)}} className="ml-auto bg-navy border border-border rounded px-2 py-1 text-[10px] text-white outline-none uppercase cursor-pointer">
               <option value="">ASSIGN TO...</option>
-              {gateways.map(function(g){return <option key={g.id} value={g.name}>{g.name} ({g.kind})</option>})}
+              {gateways.map(function(g){return <option key={g.id} value={g.id}>{g.name} ({g.kind})</option>})}
             </select>
           </div>)
         })}

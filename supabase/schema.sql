@@ -128,7 +128,11 @@ create table loops (
   id text not null,
   name text not null,
   protocol text default 'MODBUS RTU',
-  gateway text default '',
+  gateway text default '',      -- display-only fallback name; gateway_id is the real reference
+  gateway_id text default '',   -- gateways[].id (gateways live in the project blob, not their own
+                                 -- table) — the stable reference. Matching by `gateway` name text
+                                 -- alone silently broke the loop-gateway link on any rename; see
+                                 -- 2026-08-10 dev log "gateway_id stable-reference fix".
   port text default '',   -- 'R1' | 'R2' | '' — which RS-485 port on the gateway's FieldServer this loop is wired to
   ddc_ref text default '',
   floor text default '',

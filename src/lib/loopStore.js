@@ -4,8 +4,10 @@
    A checkbox tick = one row upsert. Two users on different devices can
    never conflict.
 
-   P1 (current): DUAL-WRITE. Blob stays canonical; rows are written in
-   parallel and backfilled once per project. P2 switches reads to rows. */
+   P2 (current): rows are the source of truth for loops. The project blob
+   no longer carries a loops copy at all (see App.jsx's blob-save effect) —
+   which is exactly why a dropped row-sync batch is real, permanent data
+   loss, not just a stale cache. See drainNow()'s retry policy below. */
 
 import { supabase, isDemo } from './supabase'
 
@@ -20,6 +22,7 @@ function loopToRow(projectId, loop, position) {
     name: loop.name || '',
     protocol: loop.protocol || 'MODBUS RTU',
     gateway: loop.gateway || '',
+    gateway_id: loop.gateway_id || '',
     port: loop.port || '',
     ddc_ref: loop.ddc_ref || '',
     floor: loop.floor || '',
@@ -64,6 +67,7 @@ export function loopRowToLoop(r) {
     name: r.name,
     protocol: r.protocol,
     gateway: r.gateway,
+    gateway_id: r.gateway_id || '',
     port: r.port || '',
     ddc_ref: r.ddc_ref,
     floor: r.floor,
@@ -112,6 +116,7 @@ export function rowsToLoops(loopRows, deviceRows) {
         name: r.name,
         protocol: r.protocol,
         gateway: r.gateway,
+        gateway_id: r.gateway_id || '',
         port: r.port || '',
         ddc_ref: r.ddc_ref,
         floor: r.floor,
@@ -201,10 +206,19 @@ var queue = { projectId: null, loopUpserts: {}, loopDeletes: {}, devUpserts: {},
 var opTimer = null
 var opInFlight = false
 var opAttempts = 0
+var opFailing = false
+var syncErrorHandler = null
 
 function queueSize() {
   return Object.keys(queue.loopUpserts).length + Object.keys(queue.loopDeletes).length +
          Object.keys(queue.devUpserts).length + Object.keys(queue.devDeletes).length
+}
+
+// App registers a callback: called with true when row sync starts failing (still retrying,
+// nothing lost yet — but the UI must say so, not show a stale "SAVED"), and false once a
+// subsequent attempt succeeds. There is no "give up" callback — see drainNow()'s retry policy.
+export function onSyncError(handler) {
+  syncErrorHandler = handler
 }
 
 export function syncLoops(projectId, prevLoops, nextLoops) {
@@ -258,23 +272,23 @@ function drainNow() {
     .then(function() {
       opInFlight = false
       opAttempts = 0
+      if (opFailing) { opFailing = false; if (syncErrorHandler) syncErrorHandler(false) }
       if (queueSize() > 0) drainNow()
     })
     .catch(function(err) {
       opInFlight = false
       opAttempts++
-      console.warn('[M6] Row sync failed (attempt ' + opAttempts + '/3):', err && err.message)
-      if (opAttempts < 3) {
-        // Put the batch back (fresh edits win over requeued ones)
-        batch.loopUpserts.forEach(function(r) { if (!queue.loopUpserts[r.id] && !queue.loopDeletes[r.id]) queue.loopUpserts[r.id] = r })
-        batch.devUpserts.forEach(function(r) { if (!queue.devUpserts[r.id] && !queue.devDeletes[r.id]) queue.devUpserts[r.id] = r })
-        batch.devDeletes.forEach(function(id) { if (!queue.devUpserts[id]) queue.devDeletes[id] = true })
-        batch.loopDeletes.forEach(function(id) { if (!queue.loopUpserts[id]) queue.loopDeletes[id] = true })
-        opTimer = setTimeout(drainNow, 1500 * opAttempts)
-      } else {
-        opAttempts = 0
-        console.error('[M6] Row sync dropped a batch — blob remains canonical in P1, no data lost')
-      }
+      console.warn('[M6] Row sync failed (attempt ' + opAttempts + '):', err && err.message)
+      // Never drop the batch. Rows are the only place loops live (see file header) — a dropped
+      // batch here is real, permanent data loss, not a fallback-to-blob situation. Put it back
+      // and keep retrying with a capped backoff (30s ceiling) instead of giving up after a few
+      // quick attempts; a job-site WiFi hiccup routinely outlasts 3 tries totaling ~9 seconds.
+      batch.loopUpserts.forEach(function(r) { if (!queue.loopUpserts[r.id] && !queue.loopDeletes[r.id]) queue.loopUpserts[r.id] = r })
+      batch.devUpserts.forEach(function(r) { if (!queue.devUpserts[r.id] && !queue.devDeletes[r.id]) queue.devUpserts[r.id] = r })
+      batch.devDeletes.forEach(function(id) { if (!queue.devUpserts[id]) queue.devDeletes[id] = true })
+      batch.loopDeletes.forEach(function(id) { if (!queue.loopUpserts[id]) queue.loopDeletes[id] = true })
+      if (!opFailing) { opFailing = true; if (syncErrorHandler) syncErrorHandler(true) }
+      opTimer = setTimeout(drainNow, Math.min(1500 * opAttempts, 30000))
     })
 }
 

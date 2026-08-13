@@ -13,11 +13,21 @@
    update log 2026-07-12 for the decision. */
 
 import { useState, useEffect, useRef } from 'react'
+import { jsPDF } from 'jspdf'
 import { putFile } from '../lib/fileStore'
 import { saveDraft, getDraft, clearDraft } from '../lib/traceDraftStore'
 import { uploadDrawing } from '../lib/drawingCloudStore'
 
-var LOOP_COLORS = ['#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899']
+// 20 distinct, high-saturation colors — a real project runs well past 6 loops (BN01 alone has
+// 20+), and the old 6-color array silently wrapped and repeated (GW1-R1 and LOOP-07 both landed
+// on the same cyan). Still not infinite — the color-picker dot lets a user override past that,
+// or pick a specific color deliberately regardless of count.
+var LOOP_COLORS = [
+  '#22D3EE', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#EC4899',
+  '#3B82F6', '#6366F1', '#A855F7', '#D946EF', '#F43F5E', '#F97316',
+  '#EAB308', '#84CC16', '#22C55E', '#14B8A6', '#0EA5E9', '#0891B2',
+  '#B45309', '#65A30D'
+]
 var ZONE_COLORS = ['#8B5CF6', '#22D3EE', '#10B981', '#F59E0B', '#EC4899', '#EF4444']
 
 /* Uppercase WITHOUT trim — used while typing so spaces survive keystrokes */
@@ -140,6 +150,9 @@ export default function TraceStudio(props) {
   })
   var meta = metaState[0]
   var setMeta = metaState[1]
+  var exportingState = useState(false)
+  var exporting = exportingState[0]
+  var setExporting = exportingState[1]
   var activeLoopState = useState(null)
   var activeLoopId = activeLoopState[0]
   var setActiveLoopId = activeLoopState[1]
@@ -152,6 +165,9 @@ export default function TraceStudio(props) {
   var editZoneState = useState(null)
   var editZoneId = editZoneState[0]
   var setEditZoneId = editZoneState[1]
+  var colorPickerState = useState(null) // loop id whose color swatch grid is open, or null
+  var colorPickerLoopId = colorPickerState[0]
+  var setColorPickerLoopId = colorPickerState[1]
   var editRemarkState = useState(null) // {loopId, afterIndex}
   var editRemark = editRemarkState[0]
   var setEditRemark = editRemarkState[1]
@@ -173,6 +189,7 @@ export default function TraceStudio(props) {
 
   // ─── Refs ──────────────────────────────────────────────────
   var canvasRef = useRef(null)
+  var importInputRef = useRef(null)
   var wrapRef = useRef(null)
   var pdfRef = useRef(null)
   var pageImgRef = useRef(null)
@@ -283,17 +300,13 @@ export default function TraceStudio(props) {
     setResumeDraft(null)
   }
 
-  function renderPage(n) {
+  // Rasterize page N to its own fresh canvas + viewport, with no side effects on any live-view
+  // state (pageImgRef, pageNum, hi-res tiles, text layer). Shared by renderPage() (the normal
+  // "switch to this page" path) and exportPdf() (which rasterizes every page with loops on it
+  // without disturbing whatever page the user is actively looking at).
+  function rasterizePageRaw(n) {
     var pdf = pdfRef.current
-    if (!pdf) return Promise.resolve()
-    // Zero outgoing canvases before dropping the reference — canvas backing
-    // memory isn't always promptly reclaimed by GC alone, and holding two
-    // full-res rasters at once is exactly the kind of spike that gets a tab
-    // killed on a phone.
-    if (hiResRef.current && hiResRef.current.canvas) { hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0 }
-    hiResRef.current = null
-    hiResTokenRef.current++
-    setLoading(true)
+    if (!pdf) return Promise.resolve(null) // single-image file — caller falls back to pageImgRef
     return pdf.getPage(n).then(function(page) {
       var vp1 = page.getViewport({ scale: 1 })
       var mobile = isMobileDevice()
@@ -305,31 +318,234 @@ export default function TraceStudio(props) {
       var off = document.createElement('canvas')
       off.width = Math.round(vp.width)
       off.height = Math.round(vp.height)
-      var ctx = off.getContext('2d')
-      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function() {
-        if (pageImgRef.current) { pageImgRef.current.width = 0; pageImgRef.current.height = 0 }
-        pageImgRef.current = off
-        // Text layer (true CAD PDFs) -> selectable labels
-        return page.getTextContent().then(function(content) {
-          var items = []
-          ;(content.items || []).forEach(function(it) {
-            if (!it.str || !it.str.trim()) return
-            var p = vp.convertToViewportPoint(it.transform[4], it.transform[5])
-            items.push({ str: it.str.trim(), x: p[0], y: p[1], page: n })
-          })
-          textItemsRef.current = textItemsRef.current.filter(function(t) { return t.page !== n }).concat(items)
-          setHasTextLayer(items.length >= 25)
-        }).catch(function() { setHasTextLayer(false) })
-      }).then(function() {
-        setPageNum(n)
-        pageRef.current = n
-        setLoading(false)
-        fitView()
-      })
+      return page.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise
+        .then(function() { return { canvas: off, page: page, viewport: vp } })
+    })
+  }
+
+  function renderPage(n) {
+    if (!pdfRef.current) return Promise.resolve()
+    // Zero outgoing canvases before dropping the reference — canvas backing
+    // memory isn't always promptly reclaimed by GC alone, and holding two
+    // full-res rasters at once is exactly the kind of spike that gets a tab
+    // killed on a phone.
+    if (hiResRef.current && hiResRef.current.canvas) { hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0 }
+    hiResRef.current = null
+    hiResTokenRef.current++
+    setLoading(true)
+    return rasterizePageRaw(n).then(function(res) {
+      if (pageImgRef.current) { pageImgRef.current.width = 0; pageImgRef.current.height = 0 }
+      pageImgRef.current = res.canvas
+      // Text layer (true CAD PDFs) -> selectable labels
+      return res.page.getTextContent().then(function(content) {
+        var items = []
+        ;(content.items || []).forEach(function(it) {
+          if (!it.str || !it.str.trim()) return
+          var p = res.viewport.convertToViewportPoint(it.transform[4], it.transform[5])
+          items.push({ str: it.str.trim(), x: p[0], y: p[1], page: n })
+        })
+        textItemsRef.current = textItemsRef.current.filter(function(t) { return t.page !== n }).concat(items)
+        setHasTextLayer(items.length >= 25)
+      }).catch(function() { setHasTextLayer(false) })
+    }).then(function() {
+      setPageNum(n)
+      pageRef.current = n
+      setLoading(false)
+      fitView()
     }).catch(function(err) {
       setError(err.message || 'PAGE RENDER FAILED')
       setLoading(false)
     })
+  }
+
+  // ─── PDF export: clean copy of every page that has traced loops on it ──
+  // Deliberately NOT a 1:1 screenshot of the live view — skips zones and cable-issue markers,
+  // draws every pin at full opacity regardless of which loop is "active", and only labels pins
+  // that are actually captured onto a loop (an untraced stray pin isn't a "traced object"). That
+  // is what "clean" means here: the trace record, not the working canvas.
+  function pageHasLoops(n) {
+    return loopsRef.current.some(function(l) { return (l.page || 1) === n && l.strokes.length > 0 })
+  }
+
+  function drawExportOverlay(ctx, img, page) {
+    var W = img.width, H = img.height
+    var pinLoop = {}
+    loopsRef.current.forEach(function(loop) { loop.deviceIds.forEach(function(pid) { pinLoop[pid] = loop }) })
+
+    loopsRef.current.forEach(function(loop) {
+      if ((loop.page || 1) !== page) return
+      ctx.strokeStyle = loop.color
+      ctx.lineWidth = Math.max(3, W / 700)
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      loop.strokes.forEach(function(stroke) {
+        if (stroke.length < 2) return
+        ctx.beginPath()
+        ctx.moveTo(stroke[0].x, stroke[0].y)
+        for (var i = 1; i < stroke.length; i++) ctx.lineTo(stroke[i].x, stroke[i].y)
+        ctx.stroke()
+      })
+    })
+
+    var r = Math.max(9, W / 750)
+    pinsRef.current.forEach(function(pin) {
+      if ((pin.page || 1) !== page) return
+      var lp = pinLoop[pin.id]
+      if (!lp) return
+      var idx = lp.deviceIds.indexOf(pin.id)
+      var px = pin.x * W, py = pin.y * H
+      ctx.beginPath()
+      ctx.arc(px, py, r, 0, Math.PI * 2)
+      ctx.fillStyle = lp.color
+      ctx.fill()
+      ctx.lineWidth = Math.max(1.5, r * 0.15)
+      ctx.strokeStyle = '#0F172A'
+      ctx.stroke()
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = 'bold ' + Math.round(r * 1.1) + 'px Arial, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(idx + 1), px, py)
+      ctx.fillStyle = '#111111'
+      ctx.font = Math.round(r * 0.95) + 'px Arial, sans-serif'
+      ctx.textAlign = 'left'
+      ctx.fillText(pin.tag || '', px + r + 4, py)
+    })
+  }
+
+  function exportPdf() {
+    var pages = []
+    for (var n = 1; n <= pageCount; n++) if (pageHasLoops(n)) pages.push(n)
+    if (pages.length === 0) { setAiMsg('NO TRACED LOOPS TO EXPORT'); return }
+    setExporting(true)
+    var doc = null
+    var chain = Promise.resolve()
+    pages.forEach(function(n) {
+      chain = chain
+        .then(function() { return pdfRef.current ? rasterizePageRaw(n).then(function(res) { return res.canvas }) : pageImgRef.current })
+        .then(function(img) {
+          var off = document.createElement('canvas')
+          off.width = img.width
+          off.height = img.height
+          var ctx = off.getContext('2d')
+          ctx.fillStyle = '#FFFFFF'
+          ctx.fillRect(0, 0, off.width, off.height)
+          ctx.drawImage(img, 0, 0)
+          drawExportOverlay(ctx, img, n)
+
+          var headerH = Math.max(30, img.width / 35)
+          var pageW = img.width, pageH = img.height + headerH
+          if (!doc) doc = new jsPDF({ orientation: pageW >= pageH ? 'landscape' : 'portrait', unit: 'pt', format: [pageW, pageH] })
+          else doc.addPage([pageW, pageH], pageW >= pageH ? 'landscape' : 'portrait')
+          doc.setFillColor(15, 23, 42)
+          doc.rect(0, 0, pageW, headerH, 'F')
+          doc.setTextColor(255, 255, 255)
+          doc.setFontSize(Math.max(11, headerH * 0.4))
+          doc.text((meta.name || 'DRAWING') + (pages.length > 1 ? ' — PAGE ' + n : '') + ' — ' + new Date().toLocaleDateString(), 10, headerH * 0.65)
+          doc.addImage(off.toDataURL('image/jpeg', 0.92), 'JPEG', 0, headerH, img.width, img.height)
+        })
+    })
+    chain.then(function() {
+      doc.save((meta.name || 'trace-export').toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.pdf')
+      setExporting(false)
+    }).catch(function(err) {
+      setAiMsg('EXPORT FAILED: ' + (err && err.message || err))
+      setExporting(false)
+    })
+  }
+
+  // ─── Traced-objects export/import: recover from a slow/corrupted drawing by re-uploading a
+  // fresh copy of the SAME floor without redoing the trace work ────────────────────────────
+  // Deliberately excludes stroke geometry and zones — a traced line's coordinates only mean
+  // anything relative to the exact image they were drawn on; carrying them onto a different
+  // (even if very similar) source image would draw a meaningless line. What's actually
+  // expensive to redo — and what this preserves — is the DATA: tags, addresses, room names,
+  // and which devices belong to which loop, in what order.
+  function exportTraceObjects() {
+    var loopsWithDevices = loopsRef.current.filter(function(l) { return l.deviceIds.length > 0 })
+    if (loopsWithDevices.length === 0) { setAiMsg('NO TRACED LOOPS TO EXPORT'); return }
+    var pinIds = {}
+    loopsWithDevices.forEach(function(l) { l.deviceIds.forEach(function(pid) { pinIds[pid] = true }) })
+    var exportPins = pinsRef.current.filter(function(p) { return pinIds[p.id] }).map(function(p) {
+      return { id: p.id, tag: p.tag || '', room: p.room || '', address: p.address || '', thermostat: p.thermostat || '', serial: p.serial || '', x: p.x, y: p.y }
+    })
+    var exportLoops = loopsWithDevices.map(function(l) {
+      return { id: l.id, name: l.name, color: l.color, deviceIds: l.deviceIds.slice() }
+    })
+    var payload = {
+      minimate_trace_export: true,
+      version: 1,
+      exported_at: new Date().toISOString(),
+      source_name: meta.name || '',
+      pins: exportPins,
+      loops: exportLoops
+    }
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    var url = URL.createObjectURL(blob)
+    var a = document.createElement('a')
+    a.href = url
+    a.download = (meta.name || 'trace-objects').toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function importTraceObjects(file) {
+    var reader = new FileReader()
+    reader.onload = function() {
+      var data
+      try { data = JSON.parse(reader.result) } catch (e) { setAiMsg('NOT A VALID TRACE EXPORT FILE'); return }
+      if (!data || !data.minimate_trace_export) { setAiMsg('NOT A MINIMATE TRACE EXPORT FILE'); return }
+      var srcPins = data.pins || []
+      var srcLoops = data.loops || []
+      if (srcPins.length === 0) { setAiMsg('FILE HAS NO TRACED OBJECTS'); return }
+
+      // Fit the imported cluster's bounding box into the current page, centered, preserving its
+      // relative layout — re-uploading a fresh copy of the SAME floor (the intended use case)
+      // means this lands very close to correct; a genuinely different drawing still gets a much
+      // better starting point to drag-correct from than a random pile.
+      var xs = srcPins.map(function(p) { return p.x }), ys = srcPins.map(function(p) { return p.y })
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs)
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys)
+      var spanX = Math.max(maxX - minX, 0.001), spanY = Math.max(maxY - minY, 0.001)
+      var targetPage = pageRef.current
+
+      var idMap = {}
+      var newPins = srcPins.map(function(p) {
+        var newId = nid('pin')
+        idMap[p.id] = newId
+        return {
+          id: newId, tag: p.tag || '', serial: p.serial || '', address: p.address || '',
+          thermostat: p.thermostat || '', room: p.room || '',
+          x: (p.x - minX) / spanX * 0.8 + 0.1,
+          y: (p.y - minY) / spanY * 0.8 + 0.1,
+          source: 'import', page: targetPage
+        }
+      })
+      var existingNames = {}
+      loopsRef.current.forEach(function(l) { existingNames[up(l.name)] = true })
+      var newLoops = srcLoops.map(function(l, li) {
+        var baseName = l.name || 'IMPORTED LOOP'
+        var finalName = baseName, n = 1
+        while (existingNames[up(finalName)]) { finalName = baseName + ' (' + (++n) + ')' }
+        existingNames[up(finalName)] = true
+        return {
+          id: nid('loop'), name: finalName, color: l.color || LOOP_COLORS[(loopsRef.current.length + li) % LOOP_COLORS.length],
+          page: targetPage, strokes: [],
+          deviceIds: (l.deviceIds || []).map(function(oldId) { return idMap[oldId] }).filter(Boolean),
+          remarks: []
+        }
+      })
+
+      pushUndo()
+      pinsRef.current = pinsRef.current.concat(newPins)
+      setPins(pinsRef.current)
+      loopsRef.current = loopsRef.current.concat(newLoops)
+      setLoops(loopsRef.current)
+      requestDraw()
+      setAiMsg('IMPORTED ' + newPins.length + ' DEVICES ACROSS ' + newLoops.length + ' LOOPS — DRAG THEM INTO POSITION')
+    }
+    reader.onerror = function() { setAiMsg('FAILED TO READ FILE') }
+    reader.readAsText(file)
   }
 
   // ─── Progressive sharp rendering ───────────────────────────
@@ -1495,6 +1711,20 @@ export default function TraceStudio(props) {
           </span>
         )}
         <div className="flex-1"></div>
+        <input ref={importInputRef} type="file" accept="application/json" className="hidden"
+          onChange={function(e) { var f = e.target.files && e.target.files[0]; if (f) importTraceObjects(f); e.target.value = '' }} />
+        <button onClick={function() { importInputRef.current && importInputRef.current.click() }} title="RE-IMPORT TRACED OBJECTS EXPORTED FROM ANOTHER DRAWING (E.G. A FRESHER COPY OF THE SAME FLOOR) — YOU DRAG THEM INTO POSITION AFTER"
+          className="px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition bg-card2 text-dgray hover:text-white">
+          ⬆ IMPORT
+        </button>
+        <button onClick={exportTraceObjects} disabled={tracedCount === 0} title="SAVE TRACED OBJECTS (TAGS, ADDRESSES, LOOP MEMBERSHIP) TO RE-UPLOAD ONTO ANOTHER DRAWING"
+          className="px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition bg-card2 text-dgray hover:text-white disabled:opacity-40 disabled:cursor-not-allowed">
+          ⬇ OBJECTS
+        </button>
+        <button onClick={exportPdf} disabled={exporting || tracedCount === 0} title="CLEAN PDF OF EVERY PAGE WITH TRACED LOOPS"
+          className="px-3 py-1.5 rounded-md text-[10px] font-bold uppercase transition bg-card2 text-dgray hover:text-white disabled:opacity-40 disabled:cursor-not-allowed">
+          {exporting ? 'EXPORTING…' : '⬇ PDF'}
+        </button>
         <button onClick={handleDone} disabled={tracedCount === 0} className={'px-4 py-1.5 rounded-md text-[10px] font-bold uppercase transition ' + (tracedCount > 0 ? 'bg-teal text-white hover:bg-teal/80' : 'bg-card2 text-dgray cursor-not-allowed')}>
           DONE ({tracedCount})
         </button>
@@ -1687,7 +1917,9 @@ export default function TraceStudio(props) {
               <div key={loop.id} className={'m-2 rounded-lg border p-2 cursor-pointer transition ' + (isActive ? 'border-teal bg-teal/5' : 'border-border hover:border-dgray')}
                 onClick={function() { setActiveLoopId(loop.id); activeLoopRef.current = loop.id; requestDraw() }}>
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="w-3 h-3 rounded-full shrink-0" style={{ background: loop.color }}></span>
+                  <button onClick={function(e) { e.stopPropagation(); setColorPickerLoopId(colorPickerLoopId === loop.id ? null : loop.id) }}
+                    title="CHANGE COLOR"
+                    className="w-3 h-3 rounded-full shrink-0 ring-1 ring-white/30 hover:ring-white transition" style={{ background: loop.color }}></button>
                   <input value={loop.name}
                     onClick={function(e) { e.stopPropagation() }}
                     onChange={function(e) {
@@ -1699,6 +1931,19 @@ export default function TraceStudio(props) {
                   <span className="text-[9px] text-dgray">{loop.deviceIds.length}</span>
                   <button onClick={function(e) { e.stopPropagation(); deleteLoop(loop.id) }} className="text-dgray hover:text-red text-[10px]">✕</button>
                 </div>
+                {colorPickerLoopId === loop.id && (
+                  <div className="flex flex-wrap gap-1 mb-2" onClick={function(e) { e.stopPropagation() }}>
+                    {LOOP_COLORS.map(function(c) {
+                      return <button key={c} onClick={function() {
+                          loopsRef.current = loopsRef.current.map(function(l) { return l.id === loop.id ? Object.assign({}, l, { color: c }) : l })
+                          setLoops(loopsRef.current)
+                          setColorPickerLoopId(null)
+                        }}
+                        className={'w-4 h-4 rounded-full transition ' + (loop.color === c ? 'ring-2 ring-white scale-110' : 'opacity-60 hover:opacity-100')}
+                        style={{ background: c }}></button>
+                    })}
+                  </div>
+                )}
                 {isActive && (
                   <div>
                     {loop.deviceIds.length > 0 && (
