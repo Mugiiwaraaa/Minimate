@@ -17,6 +17,7 @@ import { jsPDF } from 'jspdf'
 import { putFile } from '../lib/fileStore'
 import { saveDraft, getDraft, clearDraft } from '../lib/traceDraftStore'
 import { uploadDrawing } from '../lib/drawingCloudStore'
+import { buildPageCache, getManifest, drawRegion, drawFullPage } from '../lib/rasterCache'
 
 // 20 distinct, high-saturation colors — a real project runs well past 6 loops (BN01 alone has
 // 20+), and the old 6-color array silently wrapped and repeated (GW1-R1 and LOOP-07 both landed
@@ -186,6 +187,9 @@ export default function TraceStudio(props) {
   var resumeDraftState = useState(null) // {pins, loops, zones, meta, pageNum, savedAt} awaiting Restore/Discard
   var resumeDraft = resumeDraftState[0]
   var setResumeDraft = resumeDraftState[1]
+  var cacheMsgState = useState('')  // one-time raster cache build progress, '' when idle
+  var cacheMsg = cacheMsgState[0]
+  var setCacheMsg = cacheMsgState[1]
 
   // ─── Refs ──────────────────────────────────────────────────
   var canvasRef = useRef(null)
@@ -206,6 +210,13 @@ export default function TraceStudio(props) {
   var hiResRef = useRef(null)        // {canvas, x, y, w, h, page} page-px space
   var hiResTokenRef = useRef(0)
   var hiResTimerRef = useRef(null)
+  // Raster cache (see lib/rasterCache.js). Heavy CAD exports cost 10+ seconds
+  // PER RENDER regardless of resolution, so re-rendering the vector page on
+  // every zoom is unusable. Once a page is cached, both the base raster and the
+  // sharp zoom tiles come from stored tiles instead of the vector page.
+  var hashReadyRef = useRef(null)    // Promise<hash> — putFile() runs in parallel with the PDF load
+  var manifestRef = useRef({})       // pageNo -> manifest, for the current file
+  var cacheBuildingRef = useRef({})  // pageNo -> true while a build is in flight
 
   var pinsRef = useRef(pins);               pinsRef.current = pins
   var loopsRef = useRef(loops);             loopsRef.current = loops
@@ -223,7 +234,11 @@ export default function TraceStudio(props) {
   useEffect(function() {
     var cancelled = false
 
-    putFile(props.file).then(function(hash) {
+    // Never rejects — the raster cache awaits this and must not be taken down
+    // by a best-effort IndexedDB write failing.
+    hashReadyRef.current = putFile(props.file).catch(function() { return null })
+    hashReadyRef.current.then(function(hash) {
+      if (!hash) return
       fileHashRef.current = hash
       // Autosaved draft from an earlier session on this exact file (tab
       // killed before DONE, etc.) — offer to restore rather than silently
@@ -307,20 +322,68 @@ export default function TraceStudio(props) {
   function rasterizePageRaw(n) {
     var pdf = pdfRef.current
     if (!pdf) return Promise.resolve(null) // single-image file — caller falls back to pageImgRef
-    return pdf.getPage(n).then(function(page) {
-      var vp1 = page.getViewport({ scale: 1 })
-      var mobile = isMobileDevice()
-      var maxDim = mobile ? 2048 : 4096
-      var scaleCap = mobile ? 2 : 4
-      var scale = Math.min(maxDim / vp1.width, maxDim / vp1.height)
-      if (scale > scaleCap) scale = scaleCap
-      var vp = page.getViewport({ scale: scale })
-      var off = document.createElement('canvas')
-      off.width = Math.round(vp.width)
-      off.height = Math.round(vp.height)
-      return page.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise
-        .then(function() { return { canvas: off, page: page, viewport: vp } })
+    var mobile = isMobileDevice()
+    var maxDim = mobile ? 2048 : 4096
+
+    return (hashReadyRef.current || Promise.resolve(null)).then(function(hash) {
+      // Cache hit: the whole base view is an image blit, no vector work at all.
+      if (!hash) return null
+      return getManifest(hash, n).then(function(m) {
+        if (!m) return null
+        manifestRef.current[n] = m
+        return drawFullPage(hash, n, m, maxDim).then(function(canvas) {
+          return pdf.getPage(n).then(function(page) {
+            return { canvas: canvas, page: page, viewport: page.getViewport({ scale: canvas.width / m.pageWidth }) }
+          })
+        })
+      }).catch(function() { return null })
+    }).then(function(cached) {
+      if (cached) return cached
+
+      return pdf.getPage(n).then(function(page) {
+        var vp1 = page.getViewport({ scale: 1 })
+        var scaleCap = mobile ? 2 : 4
+        var scale = Math.min(maxDim / vp1.width, maxDim / vp1.height)
+        if (scale > scaleCap) scale = scaleCap
+        var vp = page.getViewport({ scale: scale })
+        var off = document.createElement('canvas')
+        off.width = Math.round(vp.width)
+        off.height = Math.round(vp.height)
+        var t0 = Date.now()
+        return page.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise
+          .then(function() {
+            // How long that took IS the heaviness test — no need to count
+            // operators. Anything past ~1.2s will make every zoom miserable,
+            // so pay the one-time cache build now.
+            if (Date.now() - t0 > 1200) maybeBuildCache(n)
+            return { canvas: off, page: page, viewport: vp }
+          })
+      })
     })
+  }
+
+  /* One-time raster cache build for a heavy page. Fire-and-forget: the user
+     keeps working on the already-rendered base raster while it runs, and the
+     payoff lands on the next zoom (and every future open of this file). */
+  function maybeBuildCache(n) {
+    if (cacheBuildingRef.current[n] || manifestRef.current[n]) return
+    var pdf = pdfRef.current
+    if (!pdf) return
+    cacheBuildingRef.current[n] = true
+    ;(hashReadyRef.current || Promise.resolve(null)).then(function(hash) {
+      if (!hash) return null
+      setCacheMsg('OPTIMIZING DRAWING FOR FAST ZOOM…')
+      return buildPageCache(pdf, hash, n, function(frac, label) {
+        setCacheMsg(label + ' ' + Math.round(frac * 100) + '%')
+      }).then(function(m) {
+        manifestRef.current[n] = m
+        console.log('[TRACE] Raster cache built for page ' + n + ' in ' + m.buildMs + 'ms (' + m.cols + 'x' + m.rows + ' tiles @ ' + m.width + 'x' + m.height + ')')
+        setCacheMsg('')
+      })
+    }).catch(function(err) {
+      console.warn('[TRACE] Raster cache build failed:', err && err.message)
+      setCacheMsg('')
+    }).then(function() { cacheBuildingRef.current[n] = false })
   }
 
   function renderPage(n) {
@@ -598,6 +661,37 @@ export default function TraceStudio(props) {
 
     var token = ++hiResTokenRef.current
     var pageNo = pageRef.current
+
+    // Cached path: crop the tile straight out of stored tiles. This is the
+    // whole point of the cache — on a heavy CAD export the vector re-render
+    // below costs 10+ seconds EVERY zoom, and this costs a few milliseconds.
+    var m = manifestRef.current[pageNo]
+    if (m) {
+      var k = m.width / img.width // base-raster px -> cached-raster px
+      // Never stretch the cache more than this. Past 1:1 the cache has no more
+      // detail to give, and blowing it up further just makes labels mushy —
+      // clamping keeps strokes and text crisp and shrinks the tile we decode.
+      var MAX_UPSCALE = 1.35
+      if (density > k * MAX_UPSCALE) {
+        density = k * MAX_UPSCALE
+        tw = Math.round((x1 - x0) * density)
+        th = Math.round((y1 - y0) * density)
+      }
+      ;(hashReadyRef.current || Promise.resolve(null)).then(function(hash) {
+        if (!hash || token !== hiResTokenRef.current) return
+        return drawRegion(hash, pageNo, m, x0 * k, y0 * k, x1 * k, y1 * k, tw, th)
+          .then(function(c) {
+            if (token !== hiResTokenRef.current) { c.width = 0; c.height = 0; return }
+            if (hiResRef.current && hiResRef.current.canvas && hiResRef.current.canvas !== c) {
+              hiResRef.current.canvas.width = 0; hiResRef.current.canvas.height = 0
+            }
+            hiResRef.current = { canvas: c, x: x0, y: y0, w: x1 - x0, h: y1 - y0, page: pageNo }
+            requestDraw()
+          })
+      }).catch(function(err) { console.warn('[TRACE] Cached tile failed:', err && err.message) })
+      return
+    }
+
     pdf.getPage(pageNo).then(function(page) {
       var vp1 = page.getViewport({ scale: 1 })
       var baseScale = img.width / vp1.width
@@ -1770,6 +1864,13 @@ export default function TraceStudio(props) {
           {error && (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="bg-red/10 border border-red/30 rounded-lg p-4 text-xs text-red uppercase">{error}</div>
+            </div>
+          )}
+          {/* Non-blocking: tracing stays fully usable on the base raster while
+              the one-time cache builds in the background. */}
+          {!loading && cacheMsg && (
+            <div className="absolute top-3 right-3 bg-card/95 border border-teal/40 rounded-lg px-3 py-1.5 text-[9px] text-teal uppercase pointer-events-none">
+              {cacheMsg}
             </div>
           )}
           {!loading && !error && !pickField && (
