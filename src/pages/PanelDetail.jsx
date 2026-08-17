@@ -185,12 +185,18 @@ export default function PanelDetail(props) {
     ca.bacnetWrite({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined, commit: true })
       .then(function(res) {
         var results = res.results || []
-        var committed = results.filter(function(r) { return r.status === 'committed' }).length
-        var errors = results.filter(function(r) { return r.status === 'error' }).length
+        // apply_ops() (bacnet_client.py) sets status='committed' right after a successful write,
+        // then — since verify defaults to true and nothing here turns it off — immediately
+        // OVERWRITES that to 'verified' or 'mismatch' after a read-back check. 'committed' only
+        // survives as final status if verify was somehow skipped; counting just 'committed' here
+        // showed 0 OK on every fully successful, verified write. Real successes are 'verified'.
+        var ok = results.filter(function(r) { return r.status === 'verified' || r.status === 'committed' })
+        var mismatches = results.filter(function(r) { return r.status === 'mismatch' })
+        var errors = results.filter(function(r) { return r.status === 'error' })
         setCommFor(ctrl.index, {
           busy: null,
-          summary: { checked: results.length, ok: committed, mismatch: 0, missing: 0, error: errors },
-          details: results.filter(function(r) { return r.status === 'error' }),
+          summary: { checked: results.length, ok: ok.length, mismatch: mismatches.length, missing: 0, error: errors.length },
+          details: errors.concat(mismatches),
           showDetails: false,
           regenNotice: res.regen_notice || '',
         })
