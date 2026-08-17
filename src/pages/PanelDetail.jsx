@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/StatusBadge'
 import { CONTROLLERS, MODULES, generatePinLayout } from '../lib/controllerModules'
+import { assignPinBlocks } from '../lib/terminationParser'
 import IoSheetGrid from '../components/IoSheetGrid'
 import { estimateEquipmentToPanelEquipment } from '../lib/estimateDiff'
 import * as ca from '../lib/commissioningAgent'
@@ -410,23 +411,15 @@ export default function PanelDetail(props) {
   // pin order, nothing the BACnet write path reads (that keys off objectInstance alone).
   function regroupSections() {
     if (!termData || !(termData.pins || []).length) return
-    var mods = termData.modules || []
-    var ctrlName = termData.controller || 'CONTROLLER'
-    var newPins = termData.pins.map(function(p) {
-      var label
-      var m = /^M(\d+)-/.exec(p.pin || '')
-      var slot = m ? parseInt(m[1], 10) : (/^MODULE-(\d+)$/.test(p.section || '') ? parseInt((p.section || '').split('-')[1], 10) : 0)
-      if (slot > 0) {
-        var mt = mods[slot - 1] && mods[slot - 1].type
-        label = 'MODULE ' + slot + (mt ? ' (' + mt + ')' : '')
-      } else {
-        var isOut = /^(UO|AO|DO|BO)/i.test(p.pin || '')
-        label = ctrlName + ' - UNIVERSAL ' + (isOut ? 'OUTPUT' : 'INPUT')
-      }
-      return p.sectionLabel === label ? p : Object.assign({}, p, { sectionLabel: label })
+    var newPins = assignPinBlocks(termData.pins, termData.modules || [], termData.controller)
+    var changed = newPins.some(function(p, i) {
+      var o = termData.pins[i]
+      return p.pin !== o.pin || p.sectionLabel !== o.sectionLabel || p.section !== o.section
     })
-    var changed = newPins.some(function(p, i) { return p !== termData.pins[i] })
-    if (!changed) { alert('SECTIONS ARE ALREADY GROUPED BY MODULE.'); return }
+    if (!changed) { alert('SECTIONS AND PIN LABELS ARE ALREADY GROUPED BY MODULE.'); return }
+    var renamed = newPins.filter(function(p, i) { return p.pin !== termData.pins[i].pin }).length
+    if (renamed > 0 && !confirm(renamed + ' PIN LABEL(S) WILL BE PREFIXED (e.g. UI3 ON MODULE 1 BECOMES M1-UI3) '
+      + 'SO EACH PHYSICAL TERMINAL IS UNIQUE. POINT DATA, OBJECT INSTANCES AND ORDER ARE UNCHANGED. CONTINUE?')) return
     onUpdateTermination(panelId, Object.assign({}, termData, { pins: newPins }))
   }
 

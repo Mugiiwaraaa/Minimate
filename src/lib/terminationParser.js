@@ -11,6 +11,61 @@ function isPinCell(v) { return /^U[OI]\d+$/i.test(v) }
 function sectionFor(pin) { return /^UO/i.test(pin) ? 'UNIVERSAL OUTPUT' : 'UNIVERSAL INPUT' }
 function isDdcSheet(name) { return /^DDC-/i.test(('' + name).trim()) }
 
+/* Split a controller's pin rows into physical device blocks (its own onboard I/O, then each
+   expansion module) and make every pin label globally unique within the panel.
+
+   WHY: a termination workbook labels every device's terminals from its own 1, so one sheet can
+   carry three different physical "UI3" terminals — the ME521's own UI3, module 1's UI3 and
+   module 2's UI3. Imported pins kept the bare label, so the PIN column couldn't tell an engineer
+   which terminal to actually wire (found on real BN01 data: DDC-GF-02's UI3 appears 3x, holding
+   AI-3, AI-13 and BI-61). generatePinLayout() already prefixes module pins 'M<n>-'; this brings
+   imported sheets to the same convention.
+
+   HOW: a block boundary is detected by the pin number RESETTING for a given prefix (…UI9, UI10,
+   UI1 -> new device), NOT by the position of the 'Module-FBM-16I' marker rows — those are
+   footers in some sheets and headers in others, so relying on them would mis-assign pins to the
+   wrong module. Verified against real BN01 DDC-GF-02: 48 pins split exactly 16/16/16 into
+   ME521 (UO1-8, UI3-10), FBM-8I8O (UO1-8, UI1-8), FBM-16I (UI1-16).
+
+   Pure function, and idempotent: pins already carrying an 'M<n>-' prefix are left alone, so
+   running it twice (or on a freshly generated sheet) changes nothing. */
+function assignPinBlocks(pins, modules, controllerModel) {
+  var byCtrl = {}
+  ;(pins || []).forEach(function(p) {
+    var ci = p.controllerIndex || 1
+    if (!byCtrl[ci]) byCtrl[ci] = { block: 0, last: {} }
+    var st = byCtrl[ci]
+    var m = /^(?:M(\d+)-)?([A-Za-z]+)(\d+)$/.exec(p.pin || '')
+    if (!m) { p._block = st.block; return }
+    if (m[1]) { p._block = parseInt(m[1], 10); return }   // already prefixed — trust it
+    var prefix = m[2].toUpperCase()
+    var num = parseInt(m[3], 10)
+    if (st.last[prefix] !== undefined && num <= st.last[prefix]) { st.block += 1; st.last = {} }
+    st.last[prefix] = num
+    p._block = st.block
+  })
+
+  var ctrlName = controllerModel || 'CONTROLLER'
+  return (pins || []).map(function(p) {
+    var blk = p._block || 0
+    var ci = p.controllerIndex || 1
+    var out = {}
+    Object.keys(p).forEach(function(k) { if (k !== '_block') out[k] = p[k] })
+    if (blk === 0) {
+      out.section = 'CONTROLLER'
+      out.sectionLabel = ctrlName + ' - ' + sectionFor(out.pin || '')
+      return out
+    }
+    // Module numbering restarts per controller, matching generatePinLayout + sheet_parser.py.
+    var mine = (modules || []).filter(function(md) { return (md.controllerIndex || 1) === ci })
+    var mt = mine[blk - 1] && mine[blk - 1].type
+    out.section = 'MODULE-' + blk
+    out.sectionLabel = 'MODULE ' + blk + (mt ? ' (' + mt + ')' : '')
+    if (!/^M\d+-/.test(out.pin || '')) out.pin = 'M' + blk + '-' + (out.pin || '')
+    return out
+  })
+}
+
 /* Multi-controller aware: a termination sheet can have more than one "Controller N" block
    (confirmed on real BN01 data — DDC-RF-01 has 2). Each pin/module is tagged with the
    controllerIndex of the block it fell under (1-based, matching sheet_parser.py's Python
@@ -60,6 +115,8 @@ function parseTerminationSheet(rows) {
     }
   }
   if (controllers.length === 0) controllers.push({ index: 1, model: 'ME521' })
+  // Disambiguate per-device pin labels before handing the sheet to the app (see assignPinBlocks).
+  pins = assignPinBlocks(pins, modules, controllers[0].model)
   return { controller: controllers[0].model, controllers: controllers, modules: modules, pins: pins }
 }
 
@@ -105,4 +162,4 @@ function applyTermination(terminationMap, panels, parsed) {
   return { terminationMap: map, matched: matched, unmatched: unmatched }
 }
 
-export { parseTermination, parseTerminationSheet, looksLikeTermination, applyTermination, isDdcSheet, aoaOf }
+export { parseTermination, parseTerminationSheet, looksLikeTermination, applyTermination, isDdcSheet, aoaOf, assignPinBlocks }
