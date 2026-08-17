@@ -108,6 +108,12 @@ export default function PanelDetail(props) {
   var depthState = useState({ io: false, health: false })
   var depth = depthState[0]
   var setDepth = depthState[1]
+  // CREATE MISSING can hit a terminal already occupied by a DIFFERENT object type (sheet wants
+  // AI-7, terminal is BI-7). Converting fixes it but is destructive (delete-then-create), so it
+  // stays an explicit opt-in rather than something CREATE MISSING silently decides to do.
+  var convertState = useState(false)
+  var allowConvert = convertState[0]
+  var setAllowConvert = convertState[1]
   // The IFACE must be an address that exists on THIS laptop — a wrong one used to hang the read
   // forever (bacpypes3 retries a failed bind indefinitely). Offer the real ones instead of asking
   // the tech to hand-type a "/24:47809" string correctly on a machine they may have just picked up.
@@ -213,16 +219,24 @@ export default function PanelDetail(props) {
     if (!projectId || !ctrl.ip) return
     var known = comm[ctrl.index] && comm[ctrl.index].summary
     var hint = known && known.missing != null ? (' LAST VERIFY SHOWED ~' + known.missing + ' MISSING OBJECT(S)/PROPERTIES.') : ''
-    if (!confirm('CREATE MISSING OBJECTS ON ' + ctrl.ip + '?' + hint + ' THIS ADDS REAL OBJECTS TO THE CONTROLLER — VERIFY FIRST IF UNSURE WHAT\'S MISSING.')) return
+    var convertWarn = allowConvert
+      ? '\n\nCONVERT IS ON: any terminal already holding a DIFFERENT object type than the sheet expects '
+        + '(e.g. BI-7 where the sheet wants AI-7) will be DELETED and recreated as the sheet\'s type. '
+        + 'Any control logic bound to those objects is lost. There is no undo.'
+      : ''
+    if (!confirm('CREATE MISSING OBJECTS ON ' + ctrl.ip + '?' + hint + ' THIS ADDS REAL OBJECTS TO THE CONTROLLER — VERIFY FIRST IF UNSURE WHAT\'S MISSING.' + convertWarn)) return
     setCommFor(ctrl.index, { busy: 'create', err: '', regenNotice: '' })
-    ca.bacnetCreateMissing({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined, commit: true })
+    ca.bacnetCreateMissing({ project_id: projectId, panel_id: panelId, target: ctrl.ip, local_address: iface || undefined, commit: true, allow_convert: allowConvert })
       .then(function(res) {
         var results = res.results || []
         var failed = results.filter(function(r) { return r.status === 'error' })
+        var converted = res.converted || 0
         setCommFor(ctrl.index, {
           busy: null,
-          summary: { checked: res.attempted, ok: res.created, mismatch: 0, missing: 0, error: res.failed },
-          details: failed,
+          // Converted objects are successes, not errors — counted with created in OK, with the
+          // per-object "was BI-7, converted to AI-7" note kept in details for the record.
+          summary: { checked: res.attempted, ok: (res.created || 0) + converted, mismatch: 0, missing: 0, error: res.failed },
+          details: failed.concat(results.filter(function(r) { return r.status === 'converted' })),
           showDetails: false,
           regenNotice: res.regen_notice || (res.attempted === 0
             ? 'Nothing to create — every point on the sheet already has an object on this controller.'
@@ -388,6 +402,34 @@ export default function PanelDetail(props) {
     onUpdateTermination(panelId, Object.assign({}, termData, { pins: newPins }))
   }
 
+  // Rebuild section headers so each physical expansion module is one group, from each pin's own
+  // structural fields (`section` = CONTROLLER | MODULE-N, `pin` = 'M1-DO3' | 'UO1'). Sheets
+  // generated before per-module grouping — or imported from Excel, where sectionFor() only ever
+  // emitted flat UNIVERSAL OUTPUT/INPUT — otherwise stay flat forever, since generatePinLayout()
+  // only runs once at setup. Touches sectionLabel ONLY: no point data, no object instances, no
+  // pin order, nothing the BACnet write path reads (that keys off objectInstance alone).
+  function regroupSections() {
+    if (!termData || !(termData.pins || []).length) return
+    var mods = termData.modules || []
+    var ctrlName = termData.controller || 'CONTROLLER'
+    var newPins = termData.pins.map(function(p) {
+      var label
+      var m = /^M(\d+)-/.exec(p.pin || '')
+      var slot = m ? parseInt(m[1], 10) : (/^MODULE-(\d+)$/.test(p.section || '') ? parseInt((p.section || '').split('-')[1], 10) : 0)
+      if (slot > 0) {
+        var mt = mods[slot - 1] && mods[slot - 1].type
+        label = 'MODULE ' + slot + (mt ? ' (' + mt + ')' : '')
+      } else {
+        var isOut = /^(UO|AO|DO|BO)/i.test(p.pin || '')
+        label = ctrlName + ' - UNIVERSAL ' + (isOut ? 'OUTPUT' : 'INPUT')
+      }
+      return p.sectionLabel === label ? p : Object.assign({}, p, { sectionLabel: label })
+    })
+    var changed = newPins.some(function(p, i) { return p !== termData.pins[i] })
+    if (!changed) { alert('SECTIONS ARE ALREADY GROUPED BY MODULE.'); return }
+    onUpdateTermination(panelId, Object.assign({}, termData, { pins: newPins }))
+  }
+
   // ─── IO List View ─────────────────────────────────────────
   function renderIOView() {
     // IoSheetGrid handles an empty eqs array fine — its own + ADD EQUIPMENT
@@ -536,6 +578,14 @@ export default function PanelDetail(props) {
           </div>
         </div>
 
+        <div className="flex justify-end mb-2">
+          <button onClick={regroupSections}
+            title="Rebuild the section headers so each expansion module is its own group. Changes headers only — never point data, object instances or pin order. Use on sheets created before per-module grouping, or imported from Excel."
+            className="px-2.5 py-1 text-[10px] font-semibold uppercase rounded border border-border text-dgray hover:text-cyan hover:border-cyan/50">
+            ⟳ REGROUP BY MODULE
+          </button>
+        </div>
+
         <div className="bg-card rounded-xl border border-border p-3 mb-5">
           <div className="flex items-center justify-between mb-2">
             <div className="text-[10px] text-dgray">
@@ -553,6 +603,12 @@ export default function PanelDetail(props) {
                 <input type="checkbox" checked={depth.health}
                   onChange={function(e) { setDepth(Object.assign({}, depth, { health: e.target.checked })) }} />
                 HEALTH
+              </label>
+              <label className={'flex items-center gap-1 text-[10px] cursor-pointer ' + (allowConvert ? 'text-red font-semibold' : 'text-dgray hover:text-white')}
+                title="CREATE MISSING only: if a terminal already holds a DIFFERENT object type than the sheet expects (e.g. BI-7 where the sheet wants AI-7), delete and recreate it as the sheet's type instead of reporting an error. DESTRUCTIVE — any control logic bound to the old object is lost, and there is no undo. Leave off unless you know the controller's existing points are safe to repurpose.">
+                <input type="checkbox" checked={allowConvert}
+                  onChange={function(e) { setAllowConvert(e.target.checked) }} />
+                CONVERT TYPE
               </label>
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] text-dgray">IFACE</span>
