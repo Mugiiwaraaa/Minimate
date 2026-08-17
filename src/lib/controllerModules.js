@@ -126,7 +126,9 @@ function generatePinLayout(controllerType, moduleSlots) {
     })
   })
 
-  // Module pins
+  // Module pins — ONE heading per physical module (outputs then inputs together underneath),
+  // not split into separate OUTPUT/INPUT sections. A neat, at-a-glance "which module is this
+  // point on" view was the actual ask — splitting each module in two worked against that.
   if (moduleSlots && moduleSlots.length > 0) {
     moduleSlots.forEach(function(ms, slotIdx) {
       var mod = MODULES[ms.type]
@@ -137,7 +139,7 @@ function generatePinLayout(controllerType, moduleSlots) {
       mod.outputs.forEach(function(o) {
         pins.push({
           section: 'MODULE-' + slotNum,
-          sectionLabel: slotLabel + ' - OUTPUT',
+          sectionLabel: slotLabel,
           pin: 'M' + slotNum + '-' + o.pin,
           pinType: o.type,
           com: '',
@@ -154,7 +156,7 @@ function generatePinLayout(controllerType, moduleSlots) {
       mod.inputs.forEach(function(i) {
         pins.push({
           section: 'MODULE-' + slotNum,
-          sectionLabel: slotLabel + ' - INPUT',
+          sectionLabel: slotLabel,
           pin: 'M' + slotNum + '-' + i.pin,
           pinType: i.type,
           com: '',
