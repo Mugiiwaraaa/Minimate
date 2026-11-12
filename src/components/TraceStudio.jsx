@@ -289,6 +289,15 @@ export default function TraceStudio(props) {
     return function() { cancelled = true }
   }, [])
 
+  // Warn before closing mid cache-build: the manifest is written last, so an
+  // interrupted build saves nothing and the next open pays the full cost again.
+  useEffect(function() {
+    if (!cacheMsg) return
+    function warn(e) { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return function() { window.removeEventListener('beforeunload', warn) }
+  }, [!!cacheMsg])
+
   // ─── Draft autosave ──────────────────────────────────────────
   // Pins/traces/zones otherwise live only in React state until DONE commits
   // the real drawing record — a killed tab before that loses everything.
@@ -351,16 +360,61 @@ export default function TraceStudio(props) {
         var off = document.createElement('canvas')
         off.width = Math.round(vp.width)
         off.height = Math.round(vp.height)
-        var t0 = Date.now()
-        return page.render({ canvasContext: off.getContext('2d'), viewport: vp }).promise
-          .then(function() {
-            // How long that took IS the heaviness test — no need to count
-            // operators. Anything past ~1.2s will make every zoom miserable,
-            // so pay the one-time cache build now.
-            if (Date.now() - t0 > 1200) maybeBuildCache(n)
-            return { canvas: off, page: page, viewport: vp }
-          })
+        var heavy = false
+        var task = page.render({ canvasContext: off.getContext('2d'), viewport: vp })
+        // Heaviness test: a page still rendering after ~1.5s is a heavy CAD
+        // sheet. Cancel this throwaway render and go straight to the one-time
+        // cache build — otherwise the same multi-second operator walk is paid
+        // twice (once here, once for the cache). Light pages finish well
+        // inside the window and never touch the cache.
+        var timer = setTimeout(function() { heavy = true; try { task.cancel() } catch (e) {} }, 1500)
+        function plainRender() {
+          var o2 = document.createElement('canvas')
+          o2.width = off.width; o2.height = off.height
+          return page.render({ canvasContext: o2.getContext('2d'), viewport: vp }).promise
+            .then(function() { return { canvas: o2, page: page, viewport: vp } })
+        }
+        return task.promise.then(function() {
+          clearTimeout(timer)
+          return { canvas: off, page: page, viewport: vp }
+        }, function(err) {
+          clearTimeout(timer)
+          if (!heavy) throw err
+          off.width = 0; off.height = 0
+          return buildCacheNow(n).then(function(m) {
+            if (!m) return plainRender()
+            return (hashReadyRef.current || Promise.resolve(null)).then(function(hash) {
+              return drawFullPage(hash, n, m, maxDim)
+            }).then(function(canvas) {
+              return { canvas: canvas, page: page, viewport: page.getViewport({ scale: canvas.width / m.pageWidth }) }
+            })
+          }).catch(function() { return plainRender() })
+        })
       })
+    })
+  }
+
+  // Awaited variant of the cache build, used when the base render was
+  // cancelled as too heavy. Resolves the manifest, or null on failure.
+  function buildCacheNow(n) {
+    var pdf = pdfRef.current
+    if (!pdf) return Promise.resolve(null)
+    cacheBuildingRef.current[n] = true
+    return (hashReadyRef.current || Promise.resolve(null)).then(function(hash) {
+      if (!hash) return null
+      return buildPageCache(pdf, hash, n, function(frac, label) {
+        setCacheMsg(label + ' ' + Math.round(frac * 100) + '%')
+      }).then(function(m) {
+        manifestRef.current[n] = m
+        return m
+      })
+    }).catch(function(err) {
+      console.warn('[TRACE] Raster cache build failed:', err && err.message)
+      return null
+    }).then(function(m) {
+      cacheBuildingRef.current[n] = false
+      setCacheMsg('')
+      return m
     })
   }
 
@@ -1990,7 +2044,8 @@ export default function TraceStudio(props) {
             <div className="absolute inset-0 flex items-center justify-center bg-navy/80">
               <div className="text-center">
                 <div className="w-8 h-8 border-2 border-teal border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                <div className="text-[10px] text-dgray uppercase">RENDERING DRAWING...</div>
+                <div className="text-[10px] text-dgray uppercase">{cacheMsg || 'RENDERING DRAWING...'}</div>
+                {cacheMsg && <div className="text-[9px] text-dgray/70 uppercase mt-1">ONE-TIME SETUP FOR THIS DEVICE — KEEP THIS TAB OPEN</div>}
               </div>
             </div>
           )}

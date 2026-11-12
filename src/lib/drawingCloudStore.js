@@ -37,11 +37,17 @@ function drawingPath(projectId, hash, fileName) {
 function uploadDrawing(projectId, hash, file) {
   if (isDemo || !supabase || !projectId || !hash || !file) return Promise.resolve(null)
   var path = drawingPath(projectId, hash, file.name)
-  return supabase.storage.from(BUCKET).upload(path, file, {
-    upsert: true, contentType: file.type || 'application/octet-stream'
-  }).then(function(res) {
-    if (res.error) throw res.error
-    return path
+  var name = path.slice(projectId.length + 1)
+  // The path embeds the content hash, so an existing object IS these exact
+  // bytes — skip re-uploading tens of MB on every open.
+  return supabase.storage.from(BUCKET).list(projectId, { search: hash }).then(function(res) {
+    if (!res.error && (res.data || []).some(function(o) { return o.name === name })) return path
+    return supabase.storage.from(BUCKET).upload(path, file, {
+      upsert: true, contentType: file.type || 'application/octet-stream'
+    }).then(function(r) {
+      if (r.error) throw r.error
+      return path
+    })
   }).catch(function() { return null })
 }
 
